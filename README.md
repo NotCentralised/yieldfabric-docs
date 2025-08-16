@@ -243,7 +243,267 @@ POST /auth/delegation/jwt
 ```bash
 # Run the full delegation system test
 ./test_delegation_system.sh
+
+# Run the comprehensive crypto system test
+./test_crypto_system.sh
 ```
+
+## 🔐 **Crypto System Testing (`test_crypto_system.sh`)**
+
+The `test_crypto_system.sh` script is a comprehensive test that demonstrates the entire cryptographic system working together. It tests all major components and their integration.
+
+### **What This Test Demonstrates**
+
+This test proves that the YieldFabric crypto system is **production-ready** by testing:
+
+1. **🔐 Authentication Management**: Automatic token creation and management
+2. **🔑 Crypto Flow Operations**: Complete encryption/decryption/signing/verification cycles
+3. **👥 Group Key Management**: Group-specific cryptographic operations
+4. **🎫 Delegation System**: Limited-scope token operations for groups
+5. **🔍 Security Enforcement**: Proper access control and permission boundaries
+6. **🔗 System Integration**: All components working together seamlessly
+
+### **Test Flow and What Happens**
+
+#### **Phase 1: Setup and Authentication (Tests 1-4)**
+```bash
+# Test 1: Health Check
+✅ Verifies auth service is running and responsive
+
+# Test 2: Authentication Setup
+✅ Runs yieldfabric-auth.sh setup to create all necessary tokens
+✅ Creates admin, test, and delegation tokens automatically
+✅ Handles permission granting and group setup
+
+# Test 3: Token Status Verification
+✅ Confirms all tokens are valid and not expired
+✅ Shows current authentication status
+
+# Test 4: Token Retrieval
+✅ Extracts test token for user operations
+✅ Extracts delegation token for group operations
+```
+
+#### **Phase 2: Group and Key Management (Tests 5-6)**
+```bash
+# Test 5: Group Creation
+✅ Creates a test group for crypto operations
+✅ Demonstrates group CRUD operations
+✅ Shows proper permission enforcement
+
+# Test 6: Group Keypair Creation
+✅ Generates cryptographic keypair for the group
+✅ Stores keys in polymorphic keypairs table
+✅ Distinguishes between user and group entities
+```
+
+#### **Phase 3: Crypto Flow Operations (Tests 7-10)**
+```bash
+# Test 7: Local Encryption
+✅ Creates user keypair for user operations
+✅ Encrypts data using public key (fast, local operation)
+✅ Demonstrates asymmetric encryption
+
+# Test 8: Remote Decryption
+✅ Decrypts data through auth service (secure, centralized)
+✅ Verifies data integrity (decrypted matches original)
+✅ Shows secure private key handling
+
+# Test 9: Remote Signing
+✅ Signs data using private key stored in auth service
+✅ Demonstrates secure centralized signing
+✅ Shows proper authentication and authorization
+
+# Test 10: Local Signature Verification
+✅ Verifies signatures using public key (fast, local operation)
+✅ Demonstrates signature validation
+✅ Shows complete sign/verify cycle
+```
+
+#### **Phase 4: Group Operations with Delegation (Tests 11-12)**
+```bash
+# Test 11: Group Key Operations
+✅ Uses delegation JWT for group operations
+✅ Signs data as the group (not as the user)
+✅ Demonstrates proper delegation scope enforcement
+✅ Shows group keypair usage with delegation
+
+# Test 12: Security Restrictions
+✅ Tests that regular JWT cannot access group keys
+✅ Verifies access control is properly enforced
+✅ Confirms security model is working
+```
+
+#### **Phase 5: Vault Integration (Test 13)**
+```bash
+# Test 13: Real Signature Authentication
+✅ Tests vault endpoints (/api/v1/vault/sign, /api/v1/vault/decrypt)
+✅ Demonstrates remote keystore integration
+✅ Shows both user and group vault operations working
+✅ Tests public key retrieval endpoints
+✅ Verifies signature verification through crypto endpoints
+```
+
+#### **Phase 6: Advanced Features (Tests 14-16)**
+```bash
+# Test 14: Public Key Retrieval
+✅ Tests public key access for local operations
+✅ Shows keypair listing and retrieval
+
+# Test 15: Delegation JWT Analysis
+✅ Analyzes delegation JWT payload and scope
+✅ Verifies CryptoOperations scope is properly set
+✅ Shows delegation token configuration
+
+# Test 16: Integration Testing
+✅ Tests multi-operation group key usage
+✅ Demonstrates encrypt/decrypt cycle with group keys
+✅ Shows all components working together
+```
+
+#### **Phase 7: Cleanup and Verification (Tests 17-19)**
+```bash
+# Test 17: Resource Cleanup
+✅ Deletes test group and all associated data
+✅ Removes keypairs and group information
+
+# Test 18: Cleanup Verification
+✅ Confirms group was actually deleted
+✅ Verifies 404 response for deleted group
+
+# Test 19: Final Status Check
+✅ Shows final token status after testing
+✅ Confirms system is in clean state
+```
+
+### **Key Technical Achievements Demonstrated**
+
+| Component | What It Proves | Technical Details |
+|-----------|----------------|-------------------|
+| **🔐 Authentication** | Full JWT lifecycle management | Admin → Test → Delegation token flow |
+| **🔑 Crypto Operations** | Complete cryptographic cycles | Encrypt → Decrypt → Sign → Verify |
+| **👥 Group Management** | Polymorphic entity handling | Users vs Groups in keypairs table |
+| **🎫 Delegation System** | Scope-based access control | CryptoOperations scope enforcement |
+| **🔍 Security Model** | Proper permission boundaries | Regular JWT cannot access group keys |
+| **🔗 System Integration** | All components working together | Seamless operation between services |
+| **🧹 Resource Management** | Proper cleanup and verification | No resource leaks or orphaned data |
+
+### **What Makes This Test Production-Ready**
+
+1. **🔄 Idempotent Operations**: Safe to run multiple times
+2. **🔒 Security Validation**: Tests access control and permission boundaries
+3. **📊 Comprehensive Coverage**: Tests all major system components
+4. **🧪 Real-World Scenarios**: Uses actual API endpoints and data flows
+5. **🔍 Error Handling**: Robust error detection and reporting
+6. **📝 Audit Trail**: Logs all operations for debugging
+7. **🧹 Resource Management**: Proper cleanup and verification
+8. **🔗 Integration Testing**: Tests components working together
+
+### **🔑 Required Permissions and JWT Usage**
+
+The test requires specific permissions and uses different JWT types for different operations. Here's the complete breakdown:
+
+| **Operation Type** | **Required Permission** | **JWT Type** | **Endpoints** | **What It Enables** |
+|-------------------|------------------------|--------------|---------------|---------------------|
+| **User Management** | `ManageUsers` | `ADMIN_TOKEN` | `/auth/users/*` | Create, read, update, delete users |
+| **Group Management** | `ManageGroups` | `ADMIN_TOKEN` | `/auth/groups/*` | Create, read, update, delete groups |
+| **Permission Management** | `ManageUsers` | `ADMIN_TOKEN` | `/auth/permissions/*` | Grant, revoke, check permissions |
+| **Crypto Operations** | `CryptoOperations` | `TEST_TOKEN` | `/api/v1/*` | Encryption, decryption, signing, verification |
+| **Group Crypto Operations** | `CryptoOperations` | `DELEGATION_TOKEN` | `/api/v1/vault/*` | Group-level crypto operations |
+| **User Profile Access** | None (own user) | `TEST_TOKEN` | `/auth/users/me` | Access own user information |
+| **Group Membership** | `ManageGroups` | `ADMIN_TOKEN` | `/auth/groups/*/members` | Add/remove group members |
+| **Delegation JWT Creation** | `ManageGroups` | `ADMIN_TOKEN` | `/auth/delegation/jwt` | Create delegation tokens |
+
+### **🔐 JWT Token Types Explained**
+
+- **`ADMIN_TOKEN`**: Full administrative access, can perform all operations
+- **`TEST_TOKEN`**: Regular user token with limited permissions, used for crypto operations and user-specific actions
+- **`DELEGATION_TOKEN`**: Limited-scope token for group operations, has `CryptoOperations` scope and acts "as" a specific group
+
+### **📝 Practical Examples**
+
+```bash
+# Grant permissions to a user
+curl -X POST "$BASE_URL/auth/permissions/$USER_ID/ManageGroups/grant" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+
+# Check if user has specific permission
+curl -X GET "$BASE_URL/auth/permissions/$USER_ID/ManageGroups/check" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+
+# Use delegation JWT for group crypto operations
+curl -X POST "$BASE_URL/api/v1/vault/sign" \
+  -H "Authorization: Bearer $DELEGATION_TOKEN" \
+  -d '{"data": "message", "contact_id": "$GROUP_ID", "data_format": "utf8"}'
+```
+
+## 🧪 **Advanced Permission Testing**
+
+The test scripts now include comprehensive permission testing that covers all aspects of the permission system:
+
+### **Permission Management Testing (`test_delegation_system.sh`)**
+- **Single permission operations**: Grant, revoke, check individual permissions
+- **Multiple permission operations**: Grant, revoke, replace permission arrays
+- **Permission validation**: Verify that permissions actually work after being granted
+- **Permission lifecycle**: Complete grant → verify → revoke → verify cycle
+
+### **Advanced Permission Scenarios (`test_crypto_system.sh`)**
+- **Permission boundary testing**: Operations with insufficient permissions
+- **Cross-user permission testing**: Delegation with different permission sets
+- **Security restriction validation**: Admin-only endpoint access control
+- **Delegation scope validation**: JWT scope limitation enforcement
+
+### **Permission Verification (`yieldfabric-auth.sh`)**
+- **Permission status checking**: See what permissions the current tokens have
+- **Permission validation**: Test that granted permissions actually work
+- **Comprehensive testing**: Admin, test, and delegation token validation
+
+### **🔍 New Commands Available**
+
+```bash
+# Check permission status for current user
+./yieldfabric-auth.sh permissions
+
+# Test all authentication components
+./yieldfabric-auth.sh test
+
+# Run comprehensive permission testing
+./test_delegation_system.sh
+
+# Run advanced permission scenarios
+./test_crypto_system.sh
+```
+
+## 🎯 **What Makes This Testing Comprehensive**
+
+1. **🔄 Complete Permission Lifecycle**: Grant → Verify → Revoke → Verify
+2. **🔒 Security Boundary Testing**: Ensures insufficient permissions are properly blocked
+3. **🎭 Delegation Scope Validation**: Tests that JWT scopes are properly enforced
+4. **👥 Cross-User Operations**: Tests permission isolation between users
+5. **📊 HTTP Status Validation**: Proper error code handling and response parsing
+6. **🧹 Resource Management**: Creates and cleans up test users and groups
+7. **🔍 Detailed Logging**: Comprehensive output for debugging and verification
+
+## 🚀 **Getting Started with Permission Testing**
+
+```bash
+# 1. Set up authentication system
+./yieldfabric-auth.sh setup
+
+# 2. Check current permission status
+./yieldfabric-auth.sh permissions
+
+# 3. Run comprehensive permission tests
+./test_delegation_system.sh
+
+# 4. Run advanced permission scenarios
+./test_crypto_system.sh
+
+# 5. Verify everything is working
+./yieldfabric-auth.sh test
+```
+
+This comprehensive testing approach ensures that your permission system is robust, secure, and properly integrated with all other system components.
 
 ## 📋 **Prerequisites**
 

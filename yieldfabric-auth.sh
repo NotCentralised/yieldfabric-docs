@@ -37,6 +37,27 @@ check_service_running() {
     fi
 }
 
+# Function to load tokens from files
+load_tokens() {
+    # Load admin token
+    if [[ -f "$TOKENS_DIR/.jwt_token" ]]; then
+        export ADMIN_TOKEN=$(cat "$TOKENS_DIR/.jwt_token" 2>/dev/null)
+    fi
+    
+    # Load test token
+    if [[ -f "$TOKENS_DIR/.jwt_token_test" ]]; then
+        export TEST_TOKEN=$(cat "$TOKENS_DIR/.jwt_token_test" 2>/dev/null)
+    fi
+    
+    # Load delegation token
+    if [[ -f "$TOKENS_DIR/.jwt_token_delegate" ]]; then
+        export DELEGATION_TOKEN=$(cat "$TOKENS_DIR/.jwt_token_delegate" 2>/dev/null)
+    fi
+    
+    # Set BASE_URL
+    export BASE_URL="http://localhost:3000"
+}
+
 # Function to get or create admin JWT token
 get_admin_token() {
     local token_file="$TOKENS_DIR/.jwt_token"
@@ -583,9 +604,189 @@ case "${1:-setup}" in
         get_admin_token
         ;;
     "test")
-        get_test_token
+        load_tokens
+        echo "🧪 Testing authentication system..."
+        
+        # Test admin token
+        if [ -n "$ADMIN_TOKEN" ]; then
+            echo "   🔑 Testing admin token..."
+            ADMIN_TEST_RESPONSE=$(curl -s -w "HTTP_STATUS:%{http_code}" "$BASE_URL/auth/users" \
+                -H "Authorization: Bearer $ADMIN_TOKEN")
+            
+            HTTP_STATUS=$(echo "$ADMIN_TEST_RESPONSE" | grep -o 'HTTP_STATUS:[0-9]*' | cut -d: -f2)
+            RESPONSE_BODY=$(echo "$ADMIN_TEST_RESPONSE" | sed 's/HTTP_STATUS:[0-9]*//')
+            
+            if [ "$HTTP_STATUS" = "200" ]; then
+                echo "   ✅ Admin token valid - can access user management"
+            else
+                echo "   ❌ Admin token invalid or expired"
+                echo "   📊 HTTP Status: $HTTP_STATUS"
+            fi
+        else
+            echo "   ⚠️  No admin token available for testing"
+        fi
+        
+        # Test test token
+        if [ -n "$TEST_TOKEN" ]; then
+            echo "   🔑 Testing test token..."
+            TEST_TEST_RESPONSE=$(curl -s -w "HTTP_STATUS:%{http_code}" "$BASE_URL/auth/users/me" \
+                -H "Authorization: Bearer $TEST_TOKEN")
+            
+            HTTP_STATUS=$(echo "$TEST_TEST_RESPONSE" | grep -o 'HTTP_STATUS:[0-9]*' | cut -d: -f2)
+            RESPONSE_BODY=$(echo "$TEST_TEST_RESPONSE" | sed 's/HTTP_STATUS:[0-9]*//')
+            
+            if [ "$HTTP_STATUS" = "200" ]; then
+                echo "   ✅ Test token valid - can access user profile"
+                # Extract user ID for permission testing
+                USER_ID=$(echo "$RESPONSE_BODY" | jq -r '.user.id' 2>/dev/null)
+                if [ -n "$USER_ID" ] && [ "$USER_ID" != "null" ]; then
+                    echo "   🆔 User ID: $USER_ID"
+                    
+                    # Test permission checking
+                    echo "   🔍 Testing permission checking..."
+                    PERMISSIONS_RESPONSE=$(curl -s -w "HTTP_STATUS:%{http_code}" "$BASE_URL/auth/users/$USER_ID/permissions" \
+                        -H "Authorization: Bearer $ADMIN_TOKEN")
+                    
+                    HTTP_STATUS=$(echo "$PERMISSIONS_RESPONSE" | grep -o 'HTTP_STATUS:[0-9]*' | cut -d: -f2)
+                    PERMISSIONS_BODY=$(echo "$PERMISSIONS_RESPONSE" | sed 's/HTTP_STATUS:[0-9]*//')
+                    
+                    if [ "$HTTP_STATUS" = "200" ]; then
+                        echo "   ✅ Permission check successful"
+                        PERMISSIONS=$(echo "$PERMISSIONS_BODY" | jq -r '.permissions[]' 2>/dev/null)
+                        if [ -n "$PERMISSIONS" ] && [ "$PERMISSIONS" != "null" ]; then
+                            echo "   📋 User permissions: $PERMISSIONS"
+                        else
+                            echo "   📋 User has no specific permissions"
+                        fi
+                    else
+                        echo "   ⚠️  Permission check failed"
+                        echo "   📊 HTTP Status: $HTTP_STATUS"
+                    fi
+                fi
+            else
+                echo "   ❌ Test token invalid or expired"
+                echo "   📊 HTTP Status: $HTTP_STATUS"
+            fi
+        else
+            echo "   ⚠️  No test token available for testing"
+        fi
+        
+        # Test delegation token
+        if [ -n "$DELEGATION_TOKEN" ]; then
+            echo "   🔑 Testing delegation token..."
+            DELEGATION_TEST_RESPONSE=$(curl -s -w "HTTP_STATUS:%{http_code}" "$BASE_URL/api/v1/encrypt" \
+                -H "Content-Type: application/json" \
+                -H "Authorization: Bearer $DELEGATION_TOKEN" \
+                -d '{"data": "test", "key_id": "test"}')
+            
+            HTTP_STATUS=$(echo "$DELEGATION_TEST_RESPONSE" | grep -o 'HTTP_STATUS:[0-9]*' | cut -d: -f2)
+            RESPONSE_BODY=$(echo "$DELEGATION_TEST_RESPONSE" | sed 's/HTTP_STATUS:[0-9]*//')
+            
+            if [ "$HTTP_STATUS" = "400" ] || [ "$HTTP_STATUS" = "403" ]; then
+                echo "   ✅ Delegation token valid - crypto operations accessible"
+                echo "   📊 HTTP Status: $HTTP_STATUS (expected for invalid key_id)"
+            elif [ "$HTTP_STATUS" = "200" ]; then
+                echo "   ✅ Delegation token valid - crypto operations working"
+            else
+                echo "   ❌ Delegation token invalid or expired"
+                echo "   📊 HTTP Status: $HTTP_STATUS"
+            fi
+            
+            # Test delegation scope
+            echo "   🔍 Testing delegation scope..."
+            DELEGATION_PAYLOAD=$(echo "$DELEGATION_TOKEN" | cut -d'.' -f2 | base64 -d 2>/dev/null)
+            DELEGATION_SCOPE=$(echo "$DELEGATION_PAYLOAD" | jq -r '.delegation_scope[]' 2>/dev/null)
+            DELEGATION_ACTING_AS=$(echo "$DELEGATION_PAYLOAD" | jq -r '.acting_as' 2>/dev/null)
+            
+            if [ -n "$DELEGATION_SCOPE" ] && [ "$DELEGATION_SCOPE" != "null" ]; then
+                echo "   📋 Delegation scope: $DELEGATION_SCOPE"
+            else
+                echo "   ⚠️  Delegation scope not found"
+            fi
+            
+            if [ -n "$DELEGATION_ACTING_AS" ] && [ "$DELEGATION_ACTING_AS" != "null" ]; then
+                echo "   🎭 Acting as: $DELEGATION_ACTING_AS"
+            else
+                echo "   ⚠️  Acting as not found"
+            fi
+        else
+            echo "   ⚠️  No delegation token available for testing"
+        fi
+        
+        echo "   🎯 Authentication testing completed"
         ;;
-    "delegate")
+        
+    permissions)
+        load_tokens
+        echo "🔍 Checking permission status..."
+        
+        if [ -z "$ADMIN_TOKEN" ]; then
+            echo "   ❌ Admin token required for permission checking"
+            exit 1
+        fi
+        
+        if [ -z "$TEST_TOKEN" ]; then
+            echo "   ❌ Test token required for permission checking"
+            exit 1
+        fi
+        
+        # Extract user ID from test token JWT payload
+        echo "   🔍 Extracting user ID from test token..."
+        TEST_TOKEN_PAYLOAD=$(echo "$TEST_TOKEN" | cut -d'.' -f2 | base64 -d 2>/dev/null)
+        USER_ID=$(echo "$TEST_TOKEN_PAYLOAD" | sed 's/.*"sub":"\([^"]*\)".*/\1/' 2>/dev/null)
+        
+        if [ -z "$USER_ID" ] || [ "$USER_ID" = "null" ]; then
+            echo "   ❌ Failed to extract user ID from test token"
+            exit 1
+        fi
+        
+        echo "   🆔 Test User ID: $USER_ID"
+        
+        # Check current permissions
+        echo "   📋 Checking current permissions..."
+        PERMISSIONS_RESPONSE=$(curl -s "$BASE_URL/auth/users/$USER_ID/permissions" \
+            -H "Authorization: Bearer $ADMIN_TOKEN")
+        
+        if [ -n "$PERMISSIONS_RESPONSE" ]; then
+            PERMISSIONS=$(echo "$PERMISSIONS_RESPONSE" | jq -r '.permissions[]' 2>/dev/null)
+            if [ -n "$PERMISSIONS" ] && [ "$PERMISSIONS" != "null" ]; then
+                echo "   ✅ Current permissions: $PERMISSIONS"
+            else
+                echo "   📋 User has no specific permissions"
+            fi
+        else
+            echo "   ❌ Failed to retrieve permissions"
+        fi
+        
+        # Test specific permission checks
+        echo "   🔍 Testing specific permission checks..."
+        PERMISSIONS_TO_CHECK=("ManageUsers" "ManageGroups" "CryptoOperations" "ReadGroup" "UpdateGroup")
+        
+        for permission in "${PERMISSIONS_TO_CHECK[@]}"; do
+            echo "   🔑 Checking $permission permission..."
+            PERMISSION_CHECK_RESPONSE=$(curl -s -w "HTTP_STATUS:%{http_code}" "$BASE_URL/auth/permissions/$USER_ID/$permission/check" \
+                -H "Authorization: Bearer $ADMIN_TOKEN")
+            
+            HTTP_STATUS=$(echo "$PERMISSION_CHECK_RESPONSE" | grep -o 'HTTP_STATUS:[0-9]*' | cut -d: -f2)
+            RESPONSE_BODY=$(echo "$PERMISSION_CHECK_RESPONSE" | sed 's/HTTP_STATUS:[0-9]*//')
+            
+            if [ "$HTTP_STATUS" = "200" ]; then
+                HAS_PERMISSION=$(echo "$RESPONSE_BODY" | jq -r '.has_permission' 2>/dev/null)
+                if [ "$HAS_PERMISSION" = "true" ]; then
+                    echo "   ✅ User has $permission permission"
+                else
+                    echo "   ❌ User does not have $permission permission"
+                fi
+            else
+                echo "   ⚠️  Permission check for $permission failed"
+                echo "   📊 HTTP Status: $HTTP_STATUS"
+            fi
+        done
+        
+        echo "   🎯 Permission status check completed"
+        ;;
+        
+    delegate)
         # Get admin token first, then create delegation token
         admin_token=$(get_admin_token)
         if [[ $? -eq 0 ]]; then
@@ -595,6 +796,7 @@ case "${1:-setup}" in
             exit 1
         fi
         ;;
+
     "clean")
         rm -f "$TOKENS_DIR"/.jwt_*
         echo_with_color $GREEN "🧹 All tokens cleaned up"

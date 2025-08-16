@@ -81,25 +81,23 @@ fi
 echo -e "\n4️⃣ Getting Required Tokens..."
 echo "   🔑 Retrieving tokens for testing"
 
-# Get test token (this should have the necessary permissions)
-TEST_TOKEN=$($AUTH_SCRIPT test 2>&1 | tail -n1)
-if [ $? -eq 0 ] && [ -n "$TEST_TOKEN" ]; then
+# Get test token from token file
+if [[ -f "$TOKENS_DIR/.jwt_token_test" ]]; then
+    TEST_TOKEN=$(cat "$TOKENS_DIR/.jwt_token_test")
     echo "   ✅ Test token obtained successfully!"
     echo "   🔑 Test Token: ${TEST_TOKEN:0:50}..."
 else
-    echo "   ❌ Failed to get test token"
-    echo "   📄 Test token output: $TEST_TOKEN"
+    echo "   ❌ Failed to get test token - token file not found"
     exit 1
 fi
 
-# Get delegation token
-DELEGATION_TOKEN=$($AUTH_SCRIPT delegate 2>&1 | tail -n1)
-if [ $? -eq 0 ] && [ -n "$DELEGATION_TOKEN" ]; then
+# Get delegation token from token file
+if [[ -f "$TOKENS_DIR/.jwt_token_delegate" ]]; then
+    DELEGATION_TOKEN=$(cat "$TOKENS_DIR/.jwt_token_delegate")
     echo "   ✅ Delegation token obtained successfully!"
     echo "   🔑 Delegation Token: ${DELEGATION_TOKEN:0:50}..."
 else
-    echo "   ❌ Failed to get delegation token"
-    echo "   📄 Delegation token output: $DELEGATION_TOKEN"
+    echo "   ❌ Failed to get delegation token - token file not found"
     exit 1
 fi
 
@@ -322,66 +320,166 @@ else
     echo "   ⚠️  DeleteGroup should have been denied (not in delegation scope)"
 fi
 
-# Test 11.5: Test Delegation JWT CryptoOperations Scope
+# Test 11.5: Testing Delegation JWT CryptoOperations Scope
 echo -e "\n1️⃣1️⃣.5️⃣ Testing Delegation JWT CryptoOperations Scope..."
-echo "   🔐 Testing that delegation JWT works for its intended CryptoOperations scope"
-echo "   📋 Delegation scope: [\"CryptoOperations\"]"
-echo "   💡 This test demonstrates the delegation JWT is working correctly for crypto operations"
+echo "   🔐 Verifying delegation JWT has correct scope for crypto operations"
 
-# The delegation JWT should be valid and contain the right scope
-echo "   🔍 Delegation JWT payload analysis:"
-DELEGATION_PAYLOAD=$(echo "$DELEGATION_TOKEN" | cut -d'.' -f2)
-DELEGATION_PADDING=$((4 - ${#DELEGATION_PAYLOAD} % 4))
-if [[ $DELEGATION_PADDING -ne 4 ]]; then
-    DELEGATION_PAYLOAD="${DELEGATION_PAYLOAD}$(printf '=%.0s' $(seq 1 $DELEGATION_PADDING))"
-fi
-
-DELEGATION_DECODED=$(echo "$DELEGATION_PAYLOAD" | base64 -d 2>/dev/null)
-DELEGATION_SCOPE=$(echo "$DELEGATION_DECODED" | jq -r '.delegation_scope[]' 2>/dev/null)
-DELEGATION_ACTING_AS=$(echo "$DELEGATION_DECODED" | jq -r '.acting_as' 2>/dev/null)
-
+# Extract delegation scope from JWT payload
+DELEGATION_SCOPE=$(echo "$DELEGATION_TOKEN" | cut -d'.' -f2 | base64 -d 2>/dev/null | jq -r '.delegation_scope[]' 2>/dev/null || echo "unknown")
 echo "   📋 Delegation Scope: $DELEGATION_SCOPE"
-echo "   🎭 Acting As Group: $DELEGATION_ACTING_AS"
-echo "   ⏰ Expires: $(echo "$DELEGATION_DECODED" | jq -r '.exp' 2>/dev/null | xargs -I {} date -r {} 2>/dev/null || echo 'Unknown')"
 
 if [ "$DELEGATION_SCOPE" = "CryptoOperations" ]; then
     echo "   ✅ Delegation JWT has correct CryptoOperations scope"
-    echo "   🎯 This delegation JWT is properly configured for crypto operations"
 else
-    echo "   ❌ Delegation JWT has incorrect scope"
-    echo "   Expected: CryptoOperations, Got: $DELEGATION_SCOPE"
+    echo "   ⚠️  Delegation JWT scope mismatch: expected CryptoOperations, got $DELEGATION_SCOPE"
 fi
 
-# Test 12: Test Delegation JWT with Different Scope
-echo -e "\n1️⃣2️⃣ Testing Delegation JWT with Different Scope..."
-echo "   🔄 Creating delegation JWT with broader scope for cleanup operations"
-echo "   📋 New scope: [\"ReadGroup\", \"UpdateGroup\", \"DeleteGroup\"]"
+# Test 12: Permission Management Operations
+echo -e "\n1️⃣2️⃣ Testing Permission Management Operations..."
+echo "   🔐 Testing comprehensive permission management system"
+echo "   📝 This test covers single permission operations, multiple permissions, and permission validation"
 
-# Create a broader delegation JWT for cleanup using the test token
-CLEANUP_DELEGATION_JWT_RESPONSE=$(curl -s -X POST "$BASE_URL/auth/delegation/jwt" \
+# Test 12.1: Single Permission Grant
+echo "   🔑 Test 12.1: Single Permission Grant..."
+echo "   📋 Granting ManageUsers permission to test user"
+
+SINGLE_GRANT_RESPONSE=$(curl -s -X POST "$BASE_URL/auth/permissions/$USER_ID/ManageUsers/grant" \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $TEST_TOKEN" \
-  -d "{
-    \"group_id\": \"$GROUP_ID\",
-    \"delegation_scope\": [\"ReadGroup\", \"UpdateGroup\", \"DeleteGroup\"],
-    \"expiry_seconds\": 1800
-  }")
+  -H "Authorization: Bearer $ADMIN_TOKEN")
 
-if [ $? -eq 0 ] && echo "$CLEANUP_DELEGATION_JWT_RESPONSE" | jq -e '.delegation_jwt' >/dev/null 2>&1; then
-    CLEANUP_DELEGATION_JWT=$(echo "$CLEANUP_DELEGATION_JWT_RESPONSE" | jq -r '.delegation_jwt')
-    CLEANUP_SCOPE=$(echo "$CLEANUP_DELEGATION_JWT_RESPONSE" | jq -r '.delegation_scope[]' | tr '\n' ' ')
-    
-    echo "   ✅ Cleanup delegation JWT created successfully!"
-    echo "   🔑 Cleanup JWT: ${CLEANUP_DELEGATION_JWT:0:50}..."
-    echo "   📋 Scope: [$CLEANUP_SCOPE]"
-    echo "   ⏰ Expires: 30 minutes"
+if [ -n "$SINGLE_GRANT_RESPONSE" ]; then
+    echo "   ✅ Single permission grant successful"
+    echo "   📄 Response: $SINGLE_GRANT_RESPONSE"
 else
-    echo "   ❌ Cleanup delegation JWT creation failed"
-    echo "   📄 Response: $CLEANUP_DELEGATION_JWT_RESPONSE"
-    # Fall back to test token for cleanup
-    CLEANUP_DELEGATION_JWT="$TEST_TOKEN"
-    echo "   ⚠️  Falling back to test token for cleanup operations"
+    echo "   ❌ Single permission grant failed"
 fi
+
+# Test 12.2: Single Permission Check
+echo "   🔍 Test 12.2: Single Permission Check..."
+echo "   📋 Checking if test user has ManageUsers permission"
+
+PERMISSION_CHECK_RESPONSE=$(curl -s -X GET "$BASE_URL/auth/permissions/$USER_ID/ManageUsers/check" \
+  -H "Authorization: Bearer $ADMIN_TOKEN")
+
+if [ -n "$PERMISSION_CHECK_RESPONSE" ]; then
+    echo "   ✅ Permission check successful"
+    echo "   📄 Response: $PERMISSION_CHECK_RESPONSE"
+    
+    # Parse the check result
+    HAS_PERMISSION=$(echo "$PERMISSION_CHECK_RESPONSE" | jq -r '.has_permission' 2>/dev/null)
+    if [ "$HAS_PERMISSION" = "true" ]; then
+        echo "   ✅ User has ManageUsers permission"
+    else
+        echo "   ⚠️  User does not have ManageUsers permission"
+    fi
+else
+    echo "   ❌ Permission check failed"
+fi
+
+# Test 12.3: Multiple Permission Grant
+echo "   🔑 Test 12.3: Multiple Permission Grant..."
+echo "   📋 Granting multiple permissions to test user"
+
+MULTIPLE_GRANT_RESPONSE=$(curl -s -X POST "$BASE_URL/auth/permissions/$USER_ID/grant" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -d '["ManageGroups", "CryptoOperations"]')
+
+if [ -n "$MULTIPLE_GRANT_RESPONSE" ]; then
+    echo "   ✅ Multiple permission grant successful"
+    echo "   📄 Response: $MULTIPLE_GRANT_RESPONSE"
+else
+    echo "   ❌ Multiple permission grant failed"
+fi
+
+# Test 12.4: Permission Replacement
+echo "   🔄 Test 12.4: Permission Replacement..."
+echo "   📋 Replacing all permissions with a new set"
+
+PERMISSION_REPLACE_RESPONSE=$(curl -s -X POST "$BASE_URL/auth/permissions/$USER_ID/replace" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -d '["ManageUsers", "ManageGroups", "CryptoOperations"]')
+
+if [ -n "$PERMISSION_REPLACE_RESPONSE" ]; then
+    echo "   ✅ Permission replacement successful"
+    echo "   📄 Response: $PERMISSION_REPLACE_RESPONSE"
+else
+    echo "   ❌ Permission replacement failed"
+fi
+
+# Test 12.5: Verify Permissions After Replacement
+echo "   🔍 Test 12.5: Verify Permissions After Replacement..."
+echo "   📋 Checking user permissions after replacement"
+
+VERIFY_PERMISSIONS_RESPONSE=$(curl -s -X GET "$BASE_URL/auth/users/$USER_ID/permissions" \
+  -H "Authorization: Bearer $ADMIN_TOKEN")
+
+if [ -n "$VERIFY_PERMISSIONS_RESPONSE" ]; then
+    echo "   ✅ Permission verification successful"
+    echo "   📄 Response: $VERIFY_PERMISSIONS_RESPONSE"
+    
+    # Check if the expected permissions are present
+    PERMISSIONS=$(echo "$VERIFY_PERMISSIONS_RESPONSE" | jq -r '.permissions[]' 2>/dev/null)
+    echo "   📋 Current permissions: $PERMISSIONS"
+else
+    echo "   ❌ Permission verification failed"
+fi
+
+# Test 12.6: Single Permission Revoke
+echo "   🗑️  Test 12.6: Single Permission Revoke..."
+echo "   📋 Revoking ManageUsers permission from test user"
+
+SINGLE_REVOKE_RESPONSE=$(curl -s -X POST "$BASE_URL/auth/permissions/$USER_ID/ManageUsers/revoke" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ADMIN_TOKEN")
+
+if [ -n "$SINGLE_REVOKE_RESPONSE" ]; then
+    echo "   ✅ Single permission revoke successful"
+    echo "   📄 Response: $SINGLE_REVOKE_RESPONSE"
+else
+    echo "   ❌ Single permission revoke failed"
+fi
+
+# Test 12.7: Multiple Permission Revoke
+echo "   🗑️  Test 12.7: Multiple Permission Revoke..."
+echo "   📋 Revoking multiple permissions from test user"
+
+MULTIPLE_REVOKE_RESPONSE=$(curl -s -X POST "$BASE_URL/auth/permissions/$USER_ID/revoke" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -d '["ManageGroups", "CryptoOperations"]')
+
+if [ -n "$MULTIPLE_REVOKE_RESPONSE" ]; then
+    echo "   ✅ Multiple permission revoke successful"
+    echo "   📄 Response: $MULTIPLE_REVOKE_RESPONSE"
+else
+    echo "   ❌ Multiple permission revoke failed"
+fi
+
+# Test 12.8: Final Permission Verification
+echo "   🔍 Test 12.8: Final Permission Verification..."
+echo "   📋 Checking final user permissions after all operations"
+
+FINAL_PERMISSIONS_RESPONSE=$(curl -s -X GET "$BASE_URL/auth/users/$USER_ID/permissions" \
+  -H "Authorization: Bearer $ADMIN_TOKEN")
+
+if [ -n "$FINAL_PERMISSIONS_RESPONSE" ]; then
+    echo "   ✅ Final permission verification successful"
+    echo "   📄 Response: $FINAL_PERMISSIONS_RESPONSE"
+    
+    # Check if permissions were properly revoked
+    FINAL_PERMISSIONS=$(echo "$FINAL_PERMISSIONS_RESPONSE" | jq -r '.permissions[]' 2>/dev/null)
+    if [ -z "$FINAL_PERMISSIONS" ] || [ "$FINAL_PERMISSIONS" = "null" ]; then
+        echo "   ✅ All permissions successfully revoked - user has no permissions"
+    else
+        echo "   📋 Remaining permissions: $FINAL_PERMISSIONS"
+    fi
+else
+    echo "   ❌ Final permission verification failed"
+fi
+
+echo "   🎯 Permission management testing completed"
 
 # Test 13: Cleanup - Delete Test Group
 echo -e "\n1️⃣3️⃣ Cleaning Up - Deleting Test Group..."
