@@ -79,10 +79,10 @@ For first-time users or comprehensive testing:
          │                       │                       │
          └───────────────────────┼───────────────────────┘
                                  │
-                    ┌─────────────────┐
+                    ┌──────────────────┐
                     │   Role-Based     │
                     │   Access Control │
-                    └─────────────────┘
+                    └──────────────────┘
 ```
 
 ### **Cryptographic Layer**
