@@ -330,7 +330,13 @@ echo -e "\n11.5. Testing Delegation JWT Comprehensive Scope..."
 echo "   Verifying delegation JWT has correct scope for comprehensive operations"
 
 # Extract delegation scope from JWT payload
-DELEGATION_SCOPES=$(echo "$DELEGATION_TOKEN" | cut -d'.' -f2 | base64 -d 2>/dev/null | jq -r '.delegation_scope[]' 2>/dev/null | tr '\n' ' ' || echo "unknown")
+# Fix base64 padding issues for JWT payload extraction
+DELEGATION_PAYLOAD=$(echo "$DELEGATION_TOKEN" | cut -d'.' -f2)
+DELEGATION_PADDING=$((4 - ${#DELEGATION_PAYLOAD} % 4))
+if [[ $DELEGATION_PADDING -ne 4 ]]; then
+    DELEGATION_PAYLOAD="${DELEGATION_PAYLOAD}$(printf '=%.0s' $(seq 1 $DELEGATION_PADDING))"
+fi
+DELEGATION_SCOPES=$(echo "$DELEGATION_PAYLOAD" | base64 -d 2>/dev/null | jq -r '.delegation_scope[]' 2>/dev/null | tr '\n' ' ' || echo "unknown")
 echo "   Delegation Scopes: $DELEGATION_SCOPES"
 
 # Check if all expected scopes are present
@@ -359,7 +365,13 @@ echo "   This test covers single permission operations, multiple permissions, an
 
 # Extract user ID from the test token for permission management tests
 echo "   🔍 Extracting user ID from test token for permission management tests..."
-USER_ID=$(echo "$TEST_TOKEN" | cut -d'.' -f2 | base64 -d 2>/dev/null | jq -r '.sub' 2>/dev/null || echo "")
+# Fix base64 padding issues for JWT payload extraction
+PAYLOAD=$(echo "$TEST_TOKEN" | cut -d'.' -f2)
+PADDING=$((4 - ${#PAYLOAD} % 4))
+if [[ $PADDING -ne 4 ]]; then
+    PAYLOAD="${PAYLOAD}$(printf '=%.0s' $(seq 1 $PADDING))"
+fi
+USER_ID=$(echo "$PAYLOAD" | base64 -d 2>/dev/null | jq -r '.sub' 2>/dev/null || echo "")
 if [ -n "$USER_ID" ] && [ "$USER_ID" != "null" ]; then
     echo "   ✅ User ID extracted: $USER_ID"
 else
@@ -377,7 +389,7 @@ if [ -n "$USER_ID" ]; then
     echo "   🔑 Test 12.1: Single Permission Grant..."
     echo "   📋 Granting ManageUsers permission to test user"
 
-    SINGLE_GRANT_RESPONSE=$(curl -s -X POST "$BASE_URL/auth/permissions/$USER_ID/ManageUsers/grant" \
+    SINGLE_GRANT_RESPONSE=$(curl -s -X POST "$BASE_URL/auth/users/$USER_ID/permissions/ManageUsers" \
       -H "Content-Type: application/json" \
       -H "Authorization: Bearer $ADMIN_TOKEN")
 
@@ -392,7 +404,7 @@ fi
 echo "   🔍 Test 12.2: Single Permission Check..."
 echo "   📋 Checking if test user has ManageUsers permission"
 
-PERMISSION_CHECK_RESPONSE=$(curl -s -X GET "$BASE_URL/auth/permissions/$USER_ID/ManageUsers/check" \
+PERMISSION_CHECK_RESPONSE=$(curl -s -X GET "$BASE_URL/auth/users/$USER_ID/permissions/ManageUsers" \
   -H "Authorization: Bearer $ADMIN_TOKEN")
 
 if [ -n "$PERMISSION_CHECK_RESPONSE" ]; then
@@ -400,7 +412,7 @@ if [ -n "$PERMISSION_CHECK_RESPONSE" ]; then
     echo "   📄 Response: $PERMISSION_CHECK_RESPONSE"
     
     # Parse the check result
-    HAS_PERMISSION=$(echo "$PERMISSION_CHECK_RESPONSE" | jq -r '.has_permission' 2>/dev/null)
+    HAS_PERMISSION=$(echo "$PERMISSION_CHECK_RESPONSE" | jq -r '.success' 2>/dev/null)
     if [ "$HAS_PERMISSION" = "true" ]; then
         echo "   ✅ User has ManageUsers permission"
     else
@@ -414,10 +426,10 @@ fi
 echo "   🔑 Test 12.3: Multiple Permission Grant..."
 echo "   📋 Granting multiple permissions to test user"
 
-MULTIPLE_GRANT_RESPONSE=$(curl -s -X POST "$BASE_URL/auth/permissions/$USER_ID/grant" \
+MULTIPLE_GRANT_RESPONSE=$(curl -s -X POST "$BASE_URL/auth/users/$USER_ID/permissions" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -d '["ManageGroups", "CryptoOperations"]')
+  -d '{"permissions": ["ManageGroups", "CryptoOperations"]}')
 
 if [ -n "$MULTIPLE_GRANT_RESPONSE" ]; then
     echo "   ✅ Multiple permission grant successful"
@@ -430,10 +442,10 @@ fi
 echo "   🔄 Test 12.4: Permission Replacement..."
 echo "   📋 Replacing all permissions with a new set"
 
-PERMISSION_REPLACE_RESPONSE=$(curl -s -X POST "$BASE_URL/auth/permissions/$USER_ID/replace" \
+PERMISSION_REPLACE_RESPONSE=$(curl -s -X PUT "$BASE_URL/auth/users/$USER_ID/permissions" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -d '["ManageUsers", "ManageGroups", "CryptoOperations"]')
+  -d '{"permissions": ["ManageUsers", "ManageGroups", "CryptoOperations"]}')
 
 if [ -n "$PERMISSION_REPLACE_RESPONSE" ]; then
     echo "   ✅ Permission replacement successful"
@@ -464,9 +476,9 @@ fi
 echo "   🗑️  Test 12.6: Single Permission Revoke..."
 echo "   📋 Revoking ManageUsers permission from test user"
 
-SINGLE_REVOKE_RESPONSE=$(curl -s -X POST "$BASE_URL/auth/permissions/$USER_ID/ManageUsers/revoke" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $ADMIN_TOKEN")
+    SINGLE_REVOKE_RESPONSE=$(curl -s -X DELETE "$BASE_URL/auth/users/$USER_ID/permissions/ManageUsers" \
+      -H "Content-Type: application/json" \
+      -H "Authorization: Bearer $ADMIN_TOKEN")
 
 if [ -n "$SINGLE_REVOKE_RESPONSE" ]; then
     echo "   ✅ Single permission revoke successful"
@@ -479,10 +491,10 @@ fi
 echo "   🗑️  Test 12.7: Multiple Permission Revoke..."
 echo "   📋 Revoking multiple permissions from test user"
 
-MULTIPLE_REVOKE_RESPONSE=$(curl -s -X POST "$BASE_URL/auth/permissions/$USER_ID/revoke" \
+MULTIPLE_REVOKE_RESPONSE=$(curl -s -X DELETE "$BASE_URL/auth/users/$USER_ID/permissions" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -d '["ManageGroups", "CryptoOperations"]')
+  -d '{"permissions": ["ManageGroups", "CryptoOperations"]}')
 
 if [ -n "$MULTIPLE_REVOKE_RESPONSE" ]; then
     echo "   ✅ Multiple permission revoke successful"

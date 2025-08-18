@@ -695,7 +695,13 @@ case "${1:-setup}" in
             
             # Test delegation scope
             echo "   Testing delegation scope..."
-            DELEGATION_PAYLOAD=$(echo "$DELEGATION_TOKEN" | cut -d'.' -f2 | base64 -d 2>/dev/null)
+            # Fix base64 padding issues for JWT payload extraction
+            DELEGATION_PAYLOAD=$(echo "$DELEGATION_TOKEN" | cut -d'.' -f2)
+            DELEGATION_PADDING=$((4 - ${#DELEGATION_PAYLOAD} % 4))
+            if [[ $DELEGATION_PADDING -ne 4 ]]; then
+                DELEGATION_PAYLOAD="${DELEGATION_PAYLOAD}$(printf '=%.0s' $(seq 1 $DELEGATION_PADDING))"
+            fi
+            DELEGATION_PAYLOAD=$(echo "$DELEGATION_PAYLOAD" | base64 -d 2>/dev/null)
             DELEGATION_SCOPE=$(echo "$DELEGATION_PAYLOAD" | jq -r '.delegation_scope[]' 2>/dev/null)
             DELEGATION_ACTING_AS=$(echo "$DELEGATION_PAYLOAD" | jq -r '.acting_as' 2>/dev/null)
             
@@ -733,7 +739,13 @@ case "${1:-setup}" in
         
         # Extract user ID from test token JWT payload
         echo "   Extracting user ID from test token..."
-        TEST_TOKEN_PAYLOAD=$(echo "$TEST_TOKEN" | cut -d'.' -f2 | base64 -d 2>/dev/null)
+        # Fix base64 padding issues for JWT payload extraction
+        TEST_TOKEN_PAYLOAD=$(echo "$TEST_TOKEN" | cut -d'.' -f2)
+        TEST_TOKEN_PADDING=$((4 - ${#TEST_TOKEN_PAYLOAD} % 4))
+        if [[ $TEST_TOKEN_PADDING -ne 4 ]]; then
+            TEST_TOKEN_PAYLOAD="${TEST_TOKEN_PAYLOAD}$(printf '=%.0s' $(seq 1 $TEST_TOKEN_PADDING))"
+        fi
+        TEST_TOKEN_PAYLOAD=$(echo "$TEST_TOKEN_PAYLOAD" | base64 -d 2>/dev/null)
         USER_ID=$(echo "$TEST_TOKEN_PAYLOAD" | sed 's/.*"sub":"\([^"]*\)".*/\1/' 2>/dev/null)
         
         if [ -z "$USER_ID" ] || [ "$USER_ID" = "null" ]; then
