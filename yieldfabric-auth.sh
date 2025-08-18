@@ -378,15 +378,16 @@ get_delegation_token() {
         fi
     fi
     
-    echo_with_color $BLUE "Creating delegation JWT with CryptoOperations scope..."
+    echo_with_color $BLUE "Creating delegation JWT with comprehensive scope (CryptoOperations + Group Management)..."
     echo_with_color $BLUE "   Group ID: $group_id"
     echo_with_color $BLUE "   Admin token preview: ${fresh_token:0:50}..."
     
     # Create delegation JWT using the exact format from test files
+    # Include both crypto operations and group management permissions for comprehensive testing
     local delegation_response=$(curl -s -X POST "http://localhost:3000/auth/delegation/jwt" \
         -H "Authorization: Bearer $fresh_token" \
         -H "Content-Type: application/json" \
-        -d "{\"group_id\": \"$group_id\", \"delegation_scope\": [\"CryptoOperations\"], \"expiry_seconds\": 3600}")
+        -d "{\"group_id\": \"$group_id\", \"delegation_scope\": [\"CryptoOperations\", \"ReadGroup\", \"UpdateGroup\", \"ManageGroupMembers\"], \"expiry_seconds\": 3600}")
     
     echo_with_color $BLUE "   Delegation Response Body: $delegation_response"
     
