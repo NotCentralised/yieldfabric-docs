@@ -130,10 +130,13 @@ For first-time users or comprehensive testing:
 ### **Permission Management Operations**
 | **Operation** | **Required Permission** | **API Endpoint** | **Description** |
 |---------------|------------------------|------------------|-----------------|
-| **Grant Permission** | `ManageUsers` | `POST /auth/permissions/{user_id}/{permission}/grant` | Give users specific permissions |
-| **Revoke Permission** | `ManageUsers` | `POST /auth/permissions/{user_id}/{permission}/revoke` | Remove specific permissions |
-| **Check Permission** | `ManageUsers` | `GET /auth/permissions/{user_id}/{permission}/check` | Verify user permissions |
-| **Replace Permissions** | `ManageUsers` | `POST /auth/permissions/{user_id}/replace` | Set complete permission set |
+| **Grant Permission** | `ManageUsers` | `POST /auth/users/{user_id}/permissions/{permission}` | Give users specific permissions |
+| **Revoke Permission** | `ManageUsers` | `DELETE /auth/users/{user_id}/permissions/{permission}` | Remove specific permissions |
+| **Check Permission** | `ManageUsers` | `GET /auth/users/{user_id}/permissions/{permission}` | Verify user permissions |
+| **Grant Multiple Permissions** | `ManageUsers` | `POST /auth/users/{user_id}/permissions` | Grant multiple permissions at once |
+| **Revoke Multiple Permissions** | `ManageUsers` | `DELETE /auth/users/{user_id}/permissions` | Revoke multiple permissions at once |
+| **Replace Permissions** | `ManageUsers` | `PUT /auth/users/{user_id}/permissions` | Set complete permission set |
+| **Get User Permissions** | `ManageUsers` | `GET /auth/users/{user_id}/permissions` | Retrieve all user permissions |
 
 ### **Cryptographic Operations**
 | **Operation** | **Required Permission** | **API Endpoint** | **Description** |
@@ -226,6 +229,7 @@ For first-time users or comprehensive testing:
 - **Flow**: Admin creates → User receives → Group operations
 - **Use Case**: Group and delegated operations
 - **Security**: Scope limitation and time expiration
+- **🔧 Enhanced**: Robust JWT parsing with base64 padding handling for reliable token extraction
 
 ## 🎫 **JWT Token Types and Usage Patterns**
 
@@ -331,6 +335,10 @@ For first-time users or comprehensive testing:
 - **🔄 Flow Testing**: Complete authentication workflows
 - **📊 Management Testing**: Administrative operations
 - **🔗 Integration Testing**: Systems working together
+- **🎫 Permission Management**: Complete permission lifecycle testing (grant, verify, revoke, replace)
+- **🔑 JWT Token Validation**: Comprehensive JWT parsing and validation testing
+- **🔐 Multi-Authentication**: JWT, API Key, and Signature authentication testing
+- **👥 Delegation System**: Limited-scope token testing and validation
 
 ### **Production Readiness Validation**
 - **🔄 Idempotent Operations**: Safe to run multiple times
@@ -340,6 +348,9 @@ For first-time users or comprehensive testing:
 - **🔍 Error Handling**: Robust error detection and reporting
 - **📝 Audit Trail**: Logs all operations for debugging
 - **🧹 Resource Management**: Proper cleanup and verification
+- **🔑 JWT Token Robustness**: Handles base64 padding issues and token parsing edge cases
+- **🎯 Permission System Validation**: Complete testing of permission management operations
+- **🔐 Authentication Integration**: Validates all authentication methods working together
 
 ## 🚀 **Getting Started**
 
@@ -391,6 +402,33 @@ For first-time users or comprehensive testing:
 - `curl` for HTTP requests
 - Bash shell
 - YieldFabric services running (auth, vault, payments)
+
+## 🔧 **Recent System Improvements & Fixes**
+
+> **🎯 Summary**: This update resolves critical JWT token parsing issues and corrects permission management API endpoints, ensuring all test scripts work correctly and provide comprehensive system validation.
+
+### **✅ JWT Token Parsing Fixes (Latest Update)**
+- **Base64 Padding Issues Resolved**: Fixed JWT payload extraction problems that prevented user ID and delegation scope parsing
+- **Improved Token Extraction**: Enhanced scripts now properly handle JWT token structure and extract user IDs correctly
+- **Delegation Scope Parsing**: Fixed delegation JWT scope extraction for comprehensive permission validation
+
+### **✅ Permission Management API Endpoints (Latest Update)**
+- **Corrected API Paths**: Updated all permission management endpoints to use proper `/auth/users/{user_id}/permissions` paths
+- **HTTP Method Corrections**: Fixed HTTP methods for different operations (POST for grant, DELETE for revoke, PUT for replace)
+- **JSON Payload Format**: Corrected request payloads to use proper `{"permissions": [...]}` format instead of raw arrays
+- **Response Field Mapping**: Fixed response parsing to use correct field names (`.success` instead of `.has_permission`)
+
+### **✅ Comprehensive Testing Improvements**
+- **Permission Management Testing**: Added complete permission lifecycle testing (grant, verify, revoke, replace)
+- **Error Handling**: Enhanced error detection and reporting for better debugging
+- **Resource Cleanup**: Improved test cleanup and verification processes
+- **Integration Validation**: Better testing of systems working together
+
+### **🔍 What Was Fixed**
+1. **JWT Token Parsing**: Scripts now successfully extract user IDs and delegation scopes from JWT tokens
+2. **Permission Operations**: All permission management operations now work correctly with proper API endpoints
+3. **Test Coverage**: Comprehensive testing now covers permission management, delegation systems, and API key authentication
+4. **Error Reporting**: Better error messages and debugging information for troubleshooting
 
 ## 🚨 **Troubleshooting**
 
@@ -481,6 +519,10 @@ scripts/
 - 50+ individual tests covering all system components
 - Real-world scenarios and edge cases
 - Production-ready validation and verification
+- **Complete Permission Lifecycle Testing**: Grant, verify, revoke, and replace operations
+- **JWT Token Parsing Validation**: Robust handling of token extraction and parsing
+- **Multi-Authentication System Testing**: JWT, API Key, and Signature authentication flows
+- **Delegation System Validation**: Limited-scope token testing and permission enforcement
 
 ## 🔮 **Currently Implemented Features**
 
@@ -507,3 +549,9 @@ scripts/
 - **Multiple authentication methods** support modern enterprise requirements
 - **Advanced cryptography** provides enterprise-grade security
 - **Granular permissions** enable fine-grained access control
+
+### **🔧 Recent System Improvements (Latest Update)**
+- **JWT Token Parsing**: Fixed base64 padding issues for reliable token extraction
+- **Permission Management**: Corrected API endpoints and request/response handling
+- **Test Coverage**: Enhanced testing for permission lifecycle and delegation systems
+- **Error Handling**: Improved debugging and troubleshooting capabilities
