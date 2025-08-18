@@ -157,7 +157,7 @@ echo -e "\n7. Testing Delegation JWT Read Operation..."
 echo "   Testing if delegation JWT can read group information"
 echo "   Endpoint: $BASE_URL/auth/groups/$GROUP_ID"
 echo "   Using delegation JWT for authentication"
-echo "   Note: Delegation JWT has CryptoOperations scope, may not have group read permissions"
+echo "   Note: Delegation JWT now has comprehensive scope including group management permissions"
 
 READ_GROUP_RESPONSE=$(curl -s -X GET "$BASE_URL/auth/groups/$GROUP_ID" \
   -H "Authorization: Bearer $DELEGATION_TOKEN")
@@ -180,7 +180,7 @@ echo "   Testing if delegation JWT can update group information"
 echo "   Endpoint: $BASE_URL/auth/groups/$GROUP_ID"
 echo "   Using delegation JWT for authentication"
 echo "   New Description: Updated via delegation JWT test"
-echo "   Note: Delegation JWT has CryptoOperations scope, may not have group update permissions"
+echo "   Note: Delegation JWT now has comprehensive scope including UpdateGroup permission"
 
 UPDATE_GROUP_RESPONSE=$(curl -s -X PUT "$BASE_URL/auth/groups/$GROUP_ID" \
   -H "Content-Type: application/json" \
@@ -196,12 +196,12 @@ if [ $? -eq 0 ] && echo "$UPDATE_GROUP_RESPONSE" | jq -e '.description' >/dev/nu
     echo "   New Description: $UPDATED_DESCRIPTION"
     echo "   Updated At: $UPDATED_AT"
 else
-    echo "   Delegation JWT update operation failed (expected for CryptoOperations scope)"
+    echo "   Delegation JWT update operation failed (unexpected with comprehensive scope)"
     echo "   Response: $UPDATE_GROUP_RESPONSE"
-    echo "   This is expected - delegation JWT has CryptoOperations scope, not group permissions"
+    echo "   This should work now - delegation JWT has comprehensive scope including UpdateGroup"
     
-    # Use test token instead for group operations
-    echo "   Using test token for group update operation instead..."
+    # Use test token as fallback for group operations
+    echo "   Using test token as fallback for group update operation..."
     UPDATE_GROUP_RESPONSE=$(curl -s -X PUT "$BASE_URL/auth/groups/$GROUP_ID" \
       -H "Content-Type: application/json" \
       -H "Authorization: Bearer $TEST_TOKEN" \
@@ -237,15 +237,20 @@ if [ $? -eq 0 ] && echo "$VERIFY_UPDATE_RESPONSE" | jq -e '.id' >/dev/null 2>&1;
     
     echo "   Update verification successful!"
     echo "   Current Description: $VERIFIED_DESCRIPTION"
-    echo "   Last Updated: $VERIFIED_UPDATED_AT"
-    
-    if [[ "$VERIFIED_DESCRIPTION" == *"Updated via"* ]]; then
-        echo "   Description update persisted correctly"
+echo "   Last Updated: $VERIFIED_UPDATED_AT"
+
+if [[ "$VERIFIED_DESCRIPTION" == *"Updated via"* ]]; then
+    echo "   Description update persisted correctly"
+    if [[ "$VERIFIED_DESCRIPTION" == *"delegation JWT"* ]]; then
+        echo "   ✅ Delegation JWT successfully updated group description"
     else
-        echo "   Description update did not persist correctly"
-        echo "   Expected: Contains 'Updated via'"
-        echo "   Got: '$VERIFIED_DESCRIPTION'"
+        echo "   ℹ️  Group updated via fallback token"
     fi
+else
+    echo "   Description update did not persist correctly"
+    echo "   Expected: Contains 'Updated via'"
+    echo "   Got: '$VERIFIED_DESCRIPTION'"
+fi
 else
     echo "   Update verification failed"
     echo "   Response: $VERIFY_UPDATE_RESPONSE"
@@ -256,7 +261,7 @@ echo -e "\n10. Testing Delegation JWT Member Access..."
 echo "   Testing if delegation JWT can access group member information"
 echo "   Endpoint: $BASE_URL/auth/groups/$GROUP_ID/members"
 echo "   Using delegation JWT for authentication"
-echo "   Note: Delegation JWT has CryptoOperations scope, may not have group member access permissions"
+echo "   Note: Delegation JWT now has comprehensive scope including ManageGroupMembers permission"
 
 READ_MEMBERS_RESPONSE=$(curl -s -X GET "$BASE_URL/auth/groups/$GROUP_ID/members" \
   -H "Authorization: Bearer $DELEGATION_TOKEN")
@@ -271,12 +276,12 @@ if [ $? -eq 0 ] && echo "$READ_MEMBERS_RESPONSE" | jq -e '.[]' >/dev/null 2>&1; 
         echo "$READ_MEMBERS_RESPONSE" | jq -r '.[] | "      👤 \(.user_id) | 👑 \(.member_role) | ✅ \(.is_active)"'
     fi
 else
-    echo "   Delegation JWT member access failed (expected for CryptoOperations scope)"
+    echo "   Delegation JWT member access failed (unexpected with comprehensive scope)"
     echo "   Response: $READ_MEMBERS_RESPONSE"
-    echo "   This is expected - delegation JWT has CryptoOperations scope, not group member permissions"
+    echo "   This should work now - delegation JWT has comprehensive scope including ManageGroupMembers"
     
-    # Use test token instead for member access
-    echo "   Using test token for member access instead..."
+    # Use test token as fallback for member access
+    echo "   Using test token as fallback for member access..."
     READ_MEMBERS_RESPONSE=$(curl -s -X GET "$BASE_URL/auth/groups/$GROUP_ID/members" \
       -H "Authorization: Bearer $TEST_TOKEN")
     
@@ -298,7 +303,7 @@ fi
 # Test 11: Test Delegation JWT Permission Enforcement
 echo -e "\n11. Testing Delegation JWT Permission Enforcement..."
 echo "   Testing that delegation JWT respects permission boundaries"
-echo "   Delegation scope: [\"CryptoOperations\"] (from yieldfabric-auth.sh)"
+echo "   Delegation scope: [\"CryptoOperations\", \"ReadGroup\", \"UpdateGroup\", \"ManageGroupMembers\"] (from yieldfabric-auth.sh)"
 echo "   Attempting operation not in scope: DeleteGroup"
 
 # Try to delete the group (should fail - not in delegation scope)
@@ -320,18 +325,31 @@ else
     echo "   DeleteGroup should have been denied (not in delegation scope)"
 fi
 
-# Test 11.5: Testing Delegation JWT CryptoOperations Scope
-echo -e "\n11.5. Testing Delegation JWT CryptoOperations Scope..."
-echo "   Verifying delegation JWT has correct scope for crypto operations"
+# Test 11.5: Testing Delegation JWT Comprehensive Scope
+echo -e "\n11.5. Testing Delegation JWT Comprehensive Scope..."
+echo "   Verifying delegation JWT has correct scope for comprehensive operations"
 
 # Extract delegation scope from JWT payload
-DELEGATION_SCOPE=$(echo "$DELEGATION_TOKEN" | cut -d'.' -f2 | base64 -d 2>/dev/null | jq -r '.delegation_scope[]' 2>/dev/null || echo "unknown")
-echo "   Delegation Scope: $DELEGATION_SCOPE"
+DELEGATION_SCOPES=$(echo "$DELEGATION_TOKEN" | cut -d'.' -f2 | base64 -d 2>/dev/null | jq -r '.delegation_scope[]' 2>/dev/null | tr '\n' ' ' || echo "unknown")
+echo "   Delegation Scopes: $DELEGATION_SCOPES"
 
-if [ "$DELEGATION_SCOPE" = "CryptoOperations" ]; then
-    echo "   Delegation JWT has correct CryptoOperations scope"
+# Check if all expected scopes are present
+EXPECTED_SCOPES=("CryptoOperations" "ReadGroup" "UpdateGroup" "ManageGroupMembers")
+MISSING_SCOPES=()
+
+for scope in "${EXPECTED_SCOPES[@]}"; do
+    if echo "$DELEGATION_SCOPES" | grep -q "$scope"; then
+        echo "   ✅ Found scope: $scope"
+    else
+        echo "   ❌ Missing scope: $scope"
+        MISSING_SCOPES+=("$scope")
+    fi
+done
+
+if [ ${#MISSING_SCOPES[@]} -eq 0 ]; then
+    echo "   🎯 All expected scopes present - delegation JWT has comprehensive scope"
 else
-    echo "   Delegation JWT scope mismatch: expected CryptoOperations, got $DELEGATION_SCOPE"
+    echo "   ⚠️  Missing scopes: ${MISSING_SCOPES[*]}"
 fi
 
 # Test 12: Permission Management Operations
@@ -339,15 +357,31 @@ echo -e "\n12. Testing Permission Management Operations..."
 echo "   Testing comprehensive permission management system"
 echo "   This test covers single permission operations, multiple permissions, and permission validation"
 
-# Test 12.1: Single Permission Grant
-echo "   🔑 Test 12.1: Single Permission Grant..."
-echo "   📋 Granting ManageUsers permission to test user"
+# Extract user ID from the test token for permission management tests
+echo "   🔍 Extracting user ID from test token for permission management tests..."
+USER_ID=$(echo "$TEST_TOKEN" | cut -d'.' -f2 | base64 -d 2>/dev/null | jq -r '.sub' 2>/dev/null || echo "")
+if [ -n "$USER_ID" ] && [ "$USER_ID" != "null" ]; then
+    echo "   ✅ User ID extracted: $USER_ID"
+else
+    echo "   ❌ Failed to extract user ID from test token"
+    echo "   Skipping permission management tests..."
+    USER_ID=""
+fi
 
-SINGLE_GRANT_RESPONSE=$(curl -s -X POST "$BASE_URL/auth/permissions/$USER_ID/ManageUsers/grant" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $ADMIN_TOKEN")
+# Use test token as admin token for permission management (since test user has admin role)
+ADMIN_TOKEN="$TEST_TOKEN"
+echo "   🔑 Using test token as admin token for permission management"
 
-if [ -n "$SINGLE_GRANT_RESPONSE" ]; then
+if [ -n "$USER_ID" ]; then
+    # Test 12.1: Single Permission Grant
+    echo "   🔑 Test 12.1: Single Permission Grant..."
+    echo "   📋 Granting ManageUsers permission to test user"
+
+    SINGLE_GRANT_RESPONSE=$(curl -s -X POST "$BASE_URL/auth/permissions/$USER_ID/ManageUsers/grant" \
+      -H "Content-Type: application/json" \
+      -H "Authorization: Bearer $ADMIN_TOKEN")
+
+    if [ -n "$SINGLE_GRANT_RESPONSE" ]; then
     echo "   ✅ Single permission grant successful"
     echo "   📄 Response: $SINGLE_GRANT_RESPONSE"
 else
@@ -479,16 +513,19 @@ else
     echo "   ❌ Final permission verification failed"
 fi
 
-echo "   🎯 Permission management testing completed"
+    echo "   🎯 Permission management testing completed"
+else
+    echo "   ⚠️  Permission management tests skipped (no valid user ID)"
+fi
 
 # Test 13: Cleanup - Delete Test Group
 echo -e "\n13. Cleaning Up - Deleting Test Group..."
 echo "   Endpoint: $BASE_URL/auth/groups/$GROUP_ID"
-echo "   Using cleanup delegation JWT for authentication"
+echo "   Using delegation JWT for authentication"
 echo "   Group ID: $GROUP_ID"
 
 DELETE_GROUP_RESPONSE=$(curl -s -X DELETE "$BASE_URL/auth/groups/$GROUP_ID" \
-  -H "Authorization: Bearer $CLEANUP_DELEGATION_JWT")
+  -H "Authorization: Bearer $DELEGATION_TOKEN")
 
 if [ $? -eq 0 ]; then
     echo "   ✅ Test group deleted successfully!"
@@ -503,10 +540,10 @@ fi
 echo -e "\n14. Verifying Cleanup..."
 echo "   Verifying that the group was actually deleted"
 echo "   Endpoint: $BASE_URL/auth/groups/$GROUP_ID"
-echo "   Using cleanup delegation JWT for authentication"
+echo "   Using delegation JWT for authentication"
 
 VERIFY_DELETE_RESPONSE=$(curl -s -X GET "$BASE_URL/auth/groups/$GROUP_ID" \
-  -H "Authorization: Bearer $CLEANUP_DELEGATION_JWT" \
+  -H "Authorization: Bearer $DELEGATION_TOKEN" \
   -w "HTTP Status: %{http_code}")
 
 HTTP_STATUS=$(echo "$VERIFY_DELETE_RESPONSE" | tail -n1 | grep -o '[0-9]*$')
