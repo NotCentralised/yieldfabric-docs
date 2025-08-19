@@ -170,7 +170,7 @@ create_user() {
     local role="$3"
     local admin_token="$4"
     
-    echo_with_color $BLUE "Creating user: $email with role: $role"
+    echo_with_color $BLUE "  📧 $email ($role)"
     
     local user_payload="{\"email\": \"$email\", \"password\": \"$password\", \"role\": \"$role\"}"
     
@@ -186,19 +186,17 @@ create_user() {
     if [[ "$http_status" == "200" ]]; then
         local user_id=$(echo "$response_body" | jq -r '.user.id // .id // empty' 2>/dev/null)
         if [[ -n "$user_id" && "$user_id" != "null" ]]; then
-            echo_with_color $GREEN "User created successfully: $email (ID: $user_id)"
+            echo_with_color $GREEN "    ✅ Created (ID: ${user_id:0:8}...)"
             return 0
         else
-            echo_with_color $RED "User creation failed: invalid response format"
-            echo_with_color $YELLOW "Response: $response_body"
+            echo_with_color $RED "    ❌ Failed: invalid response"
             return 1
         fi
     elif [[ "$http_status" == "409" ]]; then
-        echo_with_color $YELLOW "User already exists: $email"
+        echo_with_color $YELLOW "    ⚠️  Already exists"
         return 0
     else
-        echo_with_color $RED "Failed to create user: $email (HTTP $http_status)"
-        echo_with_color $YELLOW "Response: $response_body"
+        echo_with_color $RED "    ❌ Failed (HTTP $http_status)"
         return 1
     fi
 }
@@ -226,7 +224,7 @@ check_user_exists() {
 
 # Function to create initial users (without admin token)
 create_initial_users() {
-    echo_with_color $CYAN "Creating initial users from setup.yaml..."
+    echo_with_color $CYAN "👥 Creating initial users from setup.yaml..."
     
     local success_count=0
     local total_count=0
@@ -245,14 +243,12 @@ create_initial_users() {
             # Check if user already exists
             local existing_user_id=$(check_user_exists "$email")
             if [[ -n "$existing_user_id" ]]; then
-                echo_with_color $YELLOW "User already exists: $email (ID: $existing_user_id) - skipping creation"
+                echo_with_color $YELLOW "  📧 $email - ⚠️  Already exists (ID: ${existing_user_id:0:8}...)"
                 # Store user ID for later use
                 eval "USER_ID_${i}=\"$existing_user_id\""
                 success_count=$((success_count + 1))
                 continue
             fi
-            
-            echo_with_color $BLUE "Creating user: $email with role: $role"
             
             # Create user without admin token (direct API call)
             local user_payload="{\"email\": \"$email\", \"password\": \"$password\", \"role\": \"$role\"}"
@@ -271,29 +267,27 @@ create_initial_users() {
             if [[ "$http_status" == "200" ]]; then
                 local user_id=$(echo "$response_body" | jq -r '.user.id // .id // empty' 2>/dev/null)
                 if [[ -n "$user_id" && "$user_id" != "null" ]]; then
-                    echo_with_color $GREEN "User created successfully: $email (ID: $user_id)"
+                    echo_with_color $GREEN "  📧 $email - ✅ Created (ID: ${user_id:0:8}...)"
                     # Store user ID for later use
                     eval "USER_ID_${i}=\"$user_id\""
                     success_count=$((success_count + 1))
                     # Wait a moment for the user to be fully registered
                     sleep 2
                 else
-                    echo_with_color $RED "User creation failed: invalid response format"
-                    echo_with_color $YELLOW "Response: $response_body"
+                    echo_with_color $RED "  📧 $email - ❌ Failed: invalid response"
                 fi
             elif [[ "$http_status" == "409" ]]; then
-                echo_with_color $YELLOW "User already exists: $email"
+                echo_with_color $YELLOW "  📧 $email - ⚠️  Already exists"
                 success_count=$((success_count + 1))
             else
-                echo_with_color $RED "Failed to create user: $email (HTTP $http_status)"
-                echo_with_color $YELLOW "Response: $response_body"
+                echo_with_color $RED "  📧 $email - ❌ Failed (HTTP $http_status)"
             fi
         else
-            echo_with_color $RED "Invalid user data at index $i"
+            echo_with_color $RED "  ❌ Invalid user data at index $i"
         fi
     done
     
-    echo_with_color $GREEN "Initial users setup completed: $success_count/$total_count successful"
+    echo_with_color $GREEN "✅ Users setup completed: $success_count/$total_count successful"
     return $((success_count == total_count ? 0 : 1))
 }
 
@@ -305,7 +299,7 @@ create_group() {
     local group_type="$4"
     local admin_token="$5"
     
-    echo_with_color $BLUE "Creating group: $name ($group_type)"
+    echo_with_color $BLUE "  🏢 $name ($group_type)"
     
     local group_payload="{\"name\": \"$name\", \"description\": \"$description\", \"group_type\": \"$group_type\"}"
     
@@ -321,54 +315,82 @@ create_group() {
     if [[ "$http_status" == "200" ]]; then
         local created_group_id=$(echo "$response_body" | jq -r '.id // empty' 2>/dev/null)
         if [[ -n "$created_group_id" && "$created_group_id" != "null" ]]; then
-            echo_with_color $GREEN "Group created successfully: $name (ID: $created_group_id)"
+            echo_with_color $GREEN "    ✅ Created (ID: ${created_group_id:0:8}...)"
             return 0
         else
-            echo_with_color $RED "Group creation failed: invalid response format"
-            echo_with_color $YELLOW "Response: $response_body"
+            echo_with_color $RED "    ❌ Failed: invalid response"
             return 1
         fi
     elif [[ "$http_status" == "409" ]]; then
-        echo_with_color $YELLOW "Group already exists: $name"
+        echo_with_color $YELLOW "    ⚠️  Already exists"
         return 0
     else
-        echo_with_color $RED "Failed to create group: $name (HTTP $http_status)"
-        echo_with_color $YELLOW "Response: $response_body"
+        echo_with_color $RED "    ❌ Failed (HTTP $http_status)"
         return 1
     fi
 }
 
-# Function to add user to group as member
+# Function to check if user is already a member of a group
+check_user_in_group() {
+    local group_id="$1"
+    local user_email="$2"
+    local admin_token="$3"
+    
+    # Get the user ID
+    local user_id
+    user_id=$(get_user_id_by_email "$user_email")
+    
+    if [[ -z "$user_id" ]]; then
+        return 1
+    fi
+    
+    # Check if user is already a member
+    local members_response=$(curl -s -X GET "http://localhost:3000/auth/groups/$group_id/members" \
+        -H "Authorization: Bearer $admin_token")
+    
+    if [[ -n "$members_response" ]]; then
+        local is_member=$(echo "$members_response" | jq -r ".[] | select(.user_id == \"$user_id\") | .user_id" 2>/dev/null)
+        if [[ -n "$is_member" && "$is_member" != "null" ]]; then
+            return 0  # User is already a member
+        fi
+    fi
+    
+    return 1  # User is not a member
+}
+
+# Function to add user to group with specified role
 add_user_to_group() {
     local group_id="$1"
     local user_email="$2"
     local role="$3"
     local admin_token="$4"
     
-    echo_with_color $BLUE "Adding user $user_email to group as $role"
+    # Validate role
+    case "$role" in
+        "owner"|"admin"|"member"|"viewer")
+            ;;
+        *)
+            echo_with_color $RED "❌ Invalid role: '$role'. Must be one of: owner, admin, member, viewer"
+            return 1
+            ;;
+    esac
+    
+    # Check if user is already a member
+    if check_user_in_group "$group_id" "$user_email" "$admin_token"; then
+        echo_with_color $YELLOW "    ⚠️  Already a member"
+        return 0
+    fi
     
     # Get the user ID from stored user IDs (since there's no GET /auth/users endpoint)
     local user_id
     user_id=$(get_user_id_by_email "$user_email")
     
     if [[ -z "$user_id" ]]; then
-        echo_with_color $RED "User not found in stored user IDs: $user_email"
-        echo_with_color $BLUE "Available stored users:"
-        local user_count=$(parse_yaml "$SETUP_FILE" '.users | length')
-        for ((i=0; i<$user_count; i++)); do
-            local stored_email=$(parse_yaml "$SETUP_FILE" ".users[$i].id")
-            local user_id_var="USER_ID_${i}"
-            local stored_user_id="${!user_id_var}"
-            if [[ -n "$stored_user_id" ]]; then
-                echo_with_color $BLUE "   $stored_email (ID: $stored_user_id)"
-            fi
-        done
+        echo_with_color $RED "    ❌ User not found in stored user IDs: $user_email"
         return 1
     fi
     
-    echo_with_color $BLUE "Found user: $user_email (ID: $user_id)"
-    
-    # Add user to group
+    # Add user to group with the specified role
     local member_payload="{\"user_id\": \"$user_id\", \"role\": \"$role\"}"
     
     local response=$(curl -s -X POST "http://localhost:3000/auth/groups/$group_id/members" \
@@ -377,27 +399,17 @@ add_user_to_group() {
         -d "$member_payload")
     
     if [[ -n "$response" ]]; then
-        echo_with_color $GREEN "User $user_email added to group as $role"
+        echo_with_color $GREEN "    ✅ Added as $role"
         return 0
     else
-        echo_with_color $RED "Failed to add user $user_email to group"
+        echo_with_color $RED "    ❌ Failed to add"
         return 1
     fi
 }
 
-# Function to set group owner (if API supports it)
-set_group_owner() {
-    local group_id="$1"
-    local owner_email="$2"
-    local admin_token="$3"
-    
-    echo_with_color $BLUE "Setting group owner: $owner_email"
-    
-    # This is a placeholder - need to verify if the API supports setting owners
-    # For now, we'll add the owner as an admin member
-    echo_with_color $YELLOW "Note: Setting group owner - adding as admin member instead"
-    add_user_to_group "$group_id" "$owner_email" "admin" "$admin_token"
-}
+
+
+
 
 # Function to setup users (requires admin token)
 setup_users() {
@@ -431,18 +443,18 @@ setup_users() {
 
 # Function to setup groups
 setup_groups() {
-    echo_with_color $CYAN "Setting up groups from setup.yaml..."
+    echo_with_color $CYAN "🏢 Setting up groups from setup.yaml..."
     
     # Always use a fresh token from the first user (which has SuperAdmin role)
-    echo_with_color $BLUE "Getting fresh token from first user for group operations..."
+    echo_with_color $BLUE "🔑 Getting fresh token for group operations..."
     local effective_token
     effective_token=$(ensure_auth_token)
     if [[ -z "$effective_token" ]]; then
-        echo_with_color $RED "Failed to obtain a valid token for group operations"
+        echo_with_color $RED "❌ Failed to obtain a valid token for group operations"
         return 1
     fi
     
-    echo_with_color $GREEN "Using fresh token for group operations"
+    echo_with_color $GREEN "✅ Using fresh token for group operations"
     
     local success_count=0
     local total_count=0
@@ -462,28 +474,28 @@ setup_groups() {
                 success_count=$((success_count + 1))
             fi
         else
-            echo_with_color $RED "Invalid group data at index $i"
+            echo_with_color $RED "  ❌ Invalid group data at index $i"
         fi
     done
     
-    echo_with_color $GREEN "Groups setup completed: $success_count/$total_count successful"
+    echo_with_color $GREEN "✅ Groups setup completed: $success_count/$total_count successful"
     return $((success_count == total_count ? 0 : 1))
 }
 
 # Function to setup group relationships
 setup_group_relationships() {
-    echo_with_color $CYAN "Setting up group relationships from setup.yaml..."
+    echo_with_color $CYAN "🔗 Setting up group relationships from setup.yaml..."
     
     # Always use a fresh token from the first user (which has SuperAdmin role)
-    echo_with_color $BLUE "Getting fresh token from first user for group operations..."
+    echo_with_color $BLUE "🔑 Getting fresh token for group operations..."
     local effective_token
     effective_token=$(ensure_auth_token)
     if [[ -z "$effective_token" ]]; then
-        echo_with_color $RED "Failed to obtain a valid token for group operations"
+        echo_with_color $RED "❌ Failed to obtain a valid token for group operations"
         return 1
     fi
     
-    echo_with_color $GREEN "Using fresh token for group operations"
+    echo_with_color $GREEN "✅ Using fresh token for group operations"
     
     local success_count=0
     local total_count=0
@@ -495,7 +507,7 @@ setup_group_relationships() {
         local group_id=$(parse_yaml "$SETUP_FILE" ".groups[$i].id")
         local group_name=$(parse_yaml "$SETUP_FILE" ".groups[$i].name")
         
-        echo_with_color $BLUE "Setting up relationships for group: $group_name"
+        echo_with_color $BLUE "🏢 Setting up relationships for: $group_name"
         # Resolve group id by name if provided id does not work
         local resolved_group_id="$group_id"
         if [[ -z "$resolved_group_id" || "$resolved_group_id" == "null" ]]; then
@@ -510,34 +522,31 @@ setup_group_relationships() {
             fi
         fi
         if [[ -z "$resolved_group_id" || "$resolved_group_id" == "null" ]]; then
-            echo_with_color $RED "Could not resolve group id for: $group_name"
+            echo_with_color $RED "❌ Could not resolve group id for: $group_name"
             continue
         fi
         
-        # Handle owners
-        local owners=$(parse_yaml "$SETUP_FILE" ".groups[$i].owners[]" 2>/dev/null)
-        if [[ -n "$owners" ]]; then
-            for owner in $owners; do
-                total_count=$((total_count + 1))
-                if set_group_owner "$resolved_group_id" "$owner" "$effective_token"; then
-                    success_count=$((success_count + 1))
-                fi
-            done
-        fi
-        
-        # Handle members
-        local members=$(parse_yaml "$SETUP_FILE" ".groups[$i].members[]" 2>/dev/null)
-        if [[ -n "$members" ]]; then
-            for member in $members; do
-                total_count=$((total_count + 1))
-                if add_user_to_group "$resolved_group_id" "$member" "member" "$effective_token"; then
-                    success_count=$((success_count + 1))
+        # Handle members with their specific roles
+        local member_count=$(parse_yaml "$SETUP_FILE" ".groups[$i].members | length" 2>/dev/null)
+        if [[ -n "$member_count" && "$member_count" != "0" ]]; then
+            for ((j=0; j<$member_count; j++)); do
+                local member_email=$(parse_yaml "$SETUP_FILE" ".groups[$i].members[$j].id" 2>/dev/null)
+                local member_role=$(parse_yaml "$SETUP_FILE" ".groups[$i].members[$j].role" 2>/dev/null)
+                
+                if [[ -n "$member_email" && -n "$member_role" ]]; then
+                    total_count=$((total_count + 1))
+                    echo_with_color $BLUE "    👤 $member_email ($member_role)"
+                    if add_user_to_group "$resolved_group_id" "$member_email" "$member_role" "$effective_token"; then
+                        success_count=$((success_count + 1))
+                    fi
+                else
+                    echo_with_color $RED "    ❌ Invalid member data at index $j"
                 fi
             done
         fi
     done
     
-    echo_with_color $GREEN "Group relationships setup completed: $success_count/$total_count successful"
+    echo_with_color $GREEN "✅ Group relationships setup completed: $success_count/$total_count successful"
     return $((success_count == total_count ? 0 : 1))
 }
 
@@ -569,6 +578,44 @@ validate_setup_file() {
         return 1
     fi
     
+    # Validate group member structure
+    local group_count=$(parse_yaml "$SETUP_FILE" '.groups | length')
+    for ((i=0; i<$group_count; i++)); do
+        local group_name=$(parse_yaml "$SETUP_FILE" ".groups[$i].name")
+        local member_count=$(parse_yaml "$SETUP_FILE" ".groups[$i].members | length" 2>/dev/null)
+        
+        if [[ -z "$member_count" || "$member_count" == "0" ]]; then
+            echo_with_color $YELLOW "Warning: Group '$group_name' has no members defined"
+        else
+            # Validate each member has required fields
+            for ((j=0; j<$member_count; j++)); do
+                local member_id=$(parse_yaml "$SETUP_FILE" ".groups[$i].members[$j].id" 2>/dev/null)
+                local member_role=$(parse_yaml "$SETUP_FILE" ".groups[$i].members[$j].role" 2>/dev/null)
+                
+                if [[ -z "$member_id" ]]; then
+                    echo_with_color $RED "Error: Group '$group_name' member $j missing 'id' field"
+                    return 1
+                fi
+                
+                if [[ -z "$member_role" ]]; then
+                    echo_with_color $RED "Error: Group '$group_name' member $j missing 'role' field"
+                    return 1
+                fi
+                
+                # Validate role values
+                case "$member_role" in
+                    "owner"|"admin"|"member"|"viewer")
+                        ;;
+                    *)
+                        echo_with_color $RED "Error: Group '$group_name' member '$member_id' has invalid role: '$member_role'"
+                        echo_with_color $YELLOW "Valid roles are: owner, admin, member, viewer"
+                        return 1
+                        ;;
+                esac
+            done
+        fi
+    done
+    
     echo_with_color $GREEN "Setup file validation passed"
     return 0
 }
@@ -598,6 +645,13 @@ show_setup_status() {
             local group_count=$(parse_yaml "$SETUP_FILE" '.groups | length')
             echo_with_color $BLUE "   Users defined: $user_count"
             echo_with_color $BLUE "   Groups defined: $group_count"
+            
+            # Show group member details
+            for ((i=0; i<$group_count; i++)); do
+                local group_name=$(parse_yaml "$SETUP_FILE" ".groups[$i].name")
+                local member_count=$(parse_yaml "$SETUP_FILE" ".groups[$i].members | length" 2>/dev/null)
+                echo_with_color $BLUE "   Group '$group_name': $member_count members"
+            done
         else
             echo_with_color $YELLOW "   yq not available - cannot parse YAML"
         fi
@@ -619,58 +673,56 @@ show_setup_status() {
 
 # Function to run complete setup
 run_setup() {
-    echo_with_color $CYAN "Running YieldFabric System Setup..."
+    echo_with_color $CYAN "🚀 Running YieldFabric System Setup..."
     echo ""
     
     # Validate setup file
     if ! validate_setup_file; then
-        echo_with_color $RED "Setup file validation failed"
+        echo_with_color $RED "❌ Setup file validation failed"
         return 1
     fi
     
     # Check service status
     if ! check_service_running "Auth Service" "3000"; then
-        echo_with_color $RED "Auth service is not running on port 3000"
+        echo_with_color $RED "❌ Auth service is not running on port 3000"
         echo_with_color $YELLOW "Please start the auth service first:"
-        echo "   cd ../yieldfabric.sh"
+        echo "   cd ../yieldfabric-auth && cargo run"
         return 1
     fi
     
     # Create initial users first (without admin token)
-    echo_with_color $BLUE "Creating initial users..."
     if ! create_initial_users; then
-        echo_with_color $RED "Failed to create initial users"
+        echo_with_color $RED "❌ Failed to create initial users"
         return 1
     fi
     
-    echo_with_color $GREEN "Initial users created successfully"
     echo ""
     
     # Now setup authentication using yieldfabric-auth.sh
-    echo_with_color $BLUE "Setting up authentication..."
+    echo_with_color $BLUE "🔐 Setting up authentication..."
     local admin_token=$($AUTH_SCRIPT admin 2>/dev/null)
     if [[ $? -ne 0 || -z "$admin_token" ]]; then
-        echo_with_color $RED "Failed to get admin token"
+        echo_with_color $RED "❌ Failed to get admin token"
         return 1
     fi
     
-    echo_with_color $GREEN "Authentication setup completed"
+    echo_with_color $GREEN "✅ Authentication setup completed"
     echo ""
     
     # Setup groups
     if ! setup_groups "$admin_token"; then
-        echo_with_color $YELLOW "Group setup had some issues, continuing with relationships..."
+        echo_with_color $YELLOW "⚠️  Group setup had some issues, continuing with relationships..."
     fi
     
     echo ""
     
     # Setup group relationships
     if ! setup_group_relationships "$admin_token"; then
-        echo_with_color $YELLOW "Group relationship setup had some issues"
+        echo_with_color $YELLOW "⚠️  Group relationship setup had some issues"
     fi
     
     echo ""
-    echo_with_color $GREEN "System setup completed!"
+    echo_with_color $GREEN "🎉 System setup completed!"
     echo ""
     
     # Show final status
@@ -697,6 +749,11 @@ show_help() {
     echo "  • yieldfabric-auth.sh script available"
     echo "  • yq YAML parser installed"
     echo "  • setup.yaml file with users and groups configuration"
+    echo ""
+    echo "Setup.yaml Structure:"
+    echo "  • users: array of users with id, password, and role"
+    echo "  • groups: array of groups with members array containing id and role"
+    echo "  • Member roles: owner, admin, member, viewer"
     echo ""
     echo "Examples:"
     echo "  $0 setup     # Complete system setup"

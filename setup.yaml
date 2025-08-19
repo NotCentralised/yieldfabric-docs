@@ -16,24 +16,34 @@ groups:
     name: Admin Group
     description: Administrative group for system management
     group_type: project
-    owners:
-      - admin2@yieldfabric.com
+    members:
+      - id: admin2@yieldfabric.com
+        role: owner
 
   - id: issuer-group
     name: Issuer Group
     description: Issuer Group Description
     group_type: project
-    owners:
-      - issuer@yieldfabric.com
     members:
-      - counterpart@yieldfabric.com
+      - id: issuer@yieldfabric.com
+        role: owner
+      - id: counterpart@yieldfabric.com
+        role: member
     
   - id: counterpart-group
     name: Counterpart Group
     description: Counterpart Group Description
     group_type: project
-    owners:
-      - counterpart@yieldfabric.com
     members:
-      - issuer@yieldfabric.com
+      - id: counterpart@yieldfabric.com
+        role: owner
+      - id: issuer@yieldfabric.com
+        role: member
     
+tokens:
+  - id: AUD
+    name: AUD Token
+    description: AUD Token Description
+    token_id: AUD
+    chain_id: 33117
+    address: 0x3Aa5ebB10DC797CAC828524e59A333d0A371443c
