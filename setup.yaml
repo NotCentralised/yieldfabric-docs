@@ -1,0 +1,39 @@
+users:
+  - id: admin2@yieldfabric.com
+    password: testpass123
+    role: SuperAdmin
+
+  - id: issuer@yieldfabric.com
+    password: issuerpass456
+    role: Admin
+
+  - id: counterpart@yieldfabric.com
+    password: counterpass789
+    role: Admin
+
+groups:
+  - id: admin-group
+    name: Admin Group
+    description: Administrative group for system management
+    group_type: project
+    owners:
+      - admin2@yieldfabric.com
+
+  - id: issuer-group
+    name: Issuer Group
+    description: Issuer Group Description
+    group_type: project
+    owners:
+      - issuer@yieldfabric.com
+    members:
+      - counterpart@yieldfabric.com
+    
+  - id: counterpart-group
+    name: Counterpart Group
+    description: Counterpart Group Description
+    group_type: project
+    owners:
+      - counterpart@yieldfabric.com
+    members:
+      - issuer@yieldfabric.com
+    
