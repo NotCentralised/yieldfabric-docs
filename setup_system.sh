@@ -40,6 +40,15 @@ check_service_running() {
     fi
 }
 
+# Function to check if token service is running
+check_token_service_running() {
+    if check_service_running "Token Service" "3002"; then
+        return 0
+    else
+        return 1
+    fi
+}
+
 # Function to check if yq is available for YAML parsing
 check_yq_available() {
     if command -v yq &> /dev/null; then
@@ -407,6 +416,49 @@ add_user_to_group() {
     fi
 }
 
+# Function to create token
+create_token() {
+    local token_id="$1"
+    local name="$2"
+    local description="$3"
+    local token_id_param="$4"
+    local chain_id="$5"
+    local address="$6"
+    local admin_token="$7"
+    
+    echo_with_color $BLUE "  🪙 $name ($token_id)"
+    
+    # Create token using GraphQL API
+    local create_token_query="{\"query\": \"mutation { tokenFlow { createToken(chainId: \\\"$chain_id\\\", address: \\\"$address\\\", tokenId: \\\"$token_id_param\\\", name: \\\"$name\\\", description: \\\"$description\\\") { id chainId address } } }\"}"
+    
+    local response=$(curl -s -X POST "http://localhost:3002/graphql" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $admin_token" \
+        -d "$create_token_query")
+    
+    if [[ -n "$response" ]]; then
+        # Check if token was created successfully
+        local created_token_id=$(echo "$response" | jq -r '.data.tokenFlow.createToken.id // empty' 2>/dev/null)
+        if [[ -n "$created_token_id" && "$created_token_id" != "null" ]]; then
+            echo_with_color $GREEN "    ✅ Created (ID: ${created_token_id:0:8}...)"
+            return 0
+        else
+            # Check if token already exists (might be a different error)
+            local error_msg=$(echo "$response" | jq -r '.errors[0].message // empty' 2>/dev/null)
+            if [[ -n "$error_msg" && "$error_msg" == *"already exists"* ]]; then
+                echo_with_color $YELLOW "    ⚠️  Already exists"
+                return 0
+            else
+                echo_with_color $RED "    ❌ Failed: $(echo "$error_msg" | head -c 50)..."
+                return 1
+            fi
+        fi
+    else
+        echo_with_color $RED "    ❌ Failed: no response"
+        return 1
+    fi
+}
+
 
 
 
@@ -550,6 +602,60 @@ setup_group_relationships() {
     return $((success_count == total_count ? 0 : 1))
 }
 
+# Function to setup tokens
+setup_tokens() {
+    echo_with_color $CYAN "🪙 Setting up tokens from setup.yaml..."
+    
+    # Check if token service is running
+    if ! check_token_service_running; then
+        echo_with_color $YELLOW "⚠️  Token service not running on port 3002, skipping token setup"
+        echo_with_color $BLUE "   Start the token service first: cd ../yieldfabric-services && cargo run"
+        return 0
+    fi
+    
+    # Get admin token for token operations
+    echo_with_color $BLUE "🔑 Getting admin token for token operations..."
+    local admin_token
+    admin_token=$(ensure_auth_token)
+    if [[ -z "$admin_token" ]]; then
+        echo_with_color $RED "❌ Failed to obtain a valid token for token operations"
+        return 1
+    fi
+    
+    echo_with_color $GREEN "✅ Using admin token for token operations"
+    
+    local success_count=0
+    local total_count=0
+    
+    # Get token count
+    local token_count=$(parse_yaml "$SETUP_FILE" '.tokens | length' 2>/dev/null)
+    
+    if [[ -z "$token_count" || "$token_count" == "0" ]]; then
+        echo_with_color $YELLOW "⚠️  No tokens defined in setup.yaml, skipping token setup"
+        return 0
+    fi
+    
+            for ((i=0; i<$token_count; i++)); do
+            local token_id=$(parse_yaml "$SETUP_FILE" ".tokens[$i].id" 2>/dev/null)
+            local name=$(parse_yaml "$SETUP_FILE" ".tokens[$i].name" 2>/dev/null)
+            local description=$(parse_yaml "$SETUP_FILE" ".tokens[$i].description" 2>/dev/null)
+            local chain_id=$(parse_yaml "$SETUP_FILE" ".tokens[$i].chain_id" 2>/dev/null)
+            local address=$(parse_yaml "$SETUP_FILE" ".tokens[$i].address" 2>/dev/null)
+            
+            if [[ -n "$token_id" && -n "$name" && -n "$description" && -n "$chain_id" && -n "$address" ]]; then
+                total_count=$((total_count + 1))
+                if create_token "$token_id" "$name" "$description" "$token_id" "$chain_id" "$address" "$admin_token"; then
+                    success_count=$((success_count + 1))
+                fi
+            else
+                echo_with_color $RED "  ❌ Invalid token data at index $i"
+            fi
+        done
+    
+    echo_with_color $GREEN "✅ Tokens setup completed: $success_count/$total_count successful"
+    return $((success_count == total_count ? 0 : 1))
+}
+
 # Function to validate setup.yaml
 validate_setup_file() {
     echo_with_color $CYAN "Validating setup.yaml..."
@@ -616,6 +722,50 @@ validate_setup_file() {
         fi
     done
     
+    # Validate token structure
+    local token_count=$(parse_yaml "$SETUP_FILE" '.tokens | length' 2>/dev/null)
+    if [[ -n "$token_count" && "$token_count" != "0" ]]; then
+        for ((i=0; i<$token_count; i++)); do
+            local token_id=$(parse_yaml "$SETUP_FILE" ".tokens[$i].id" 2>/dev/null)
+            local name=$(parse_yaml "$SETUP_FILE" ".tokens[$i].name" 2>/dev/null)
+            local description=$(parse_yaml "$SETUP_FILE" ".tokens[$i].description" 2>/dev/null)
+            local chain_id=$(parse_yaml "$SETUP_FILE" ".tokens[$i].chain_id" 2>/dev/null)
+            local address=$(parse_yaml "$SETUP_FILE" ".tokens[$i].address" 2>/dev/null)
+            
+            if [[ -z "$token_id" ]]; then
+                echo_with_color $RED "Error: Token $i missing 'id' field"
+                return 1
+            fi
+            
+            if [[ -z "$name" ]]; then
+                echo_with_color $RED "Error: Token '$token_id' missing 'name' field"
+                return 1
+            fi
+            
+            if [[ -z "$description" ]]; then
+                echo_with_color $RED "Error: Token '$token_id' missing 'description' field"
+                return 1
+            fi
+            
+            if [[ -z "$chain_id" ]]; then
+                echo_with_color $RED "Error: Token '$token_id' missing 'chain_id' field"
+                return 1
+            fi
+            
+            if [[ -z "$address" ]]; then
+                echo_with_color $RED "Error: Token '$token_id' missing 'address' field"
+                return 1
+            fi
+            
+            # Validate address format (basic Ethereum address check)
+            if [[ ! "$address" =~ ^0x[a-fA-F0-9]{40}$ ]]; then
+                echo_with_color $RED "Error: Token '$token_id' has invalid address format: '$address'"
+                echo_with_color $YELLOW "Address must be a valid Ethereum address (0x followed by 40 hex characters)"
+                return 1
+            fi
+        done
+    fi
+    
     echo_with_color $GREEN "Setup file validation passed"
     return 0
 }
@@ -635,6 +785,13 @@ show_setup_status() {
         return 1
     fi
     
+    if check_token_service_running; then
+        echo_with_color $GREEN "   Token Service (port 3002) - Running"
+    else
+        echo_with_color $YELLOW "   Token Service (port 3002) - Not running"
+        echo_with_color $BLUE "   Start the token service first: cd ../yieldfabric-services && cargo run"
+    fi
+    
     # Check setup file
     echo_with_color $BLUE "Setup File:"
     if [[ -f "$SETUP_FILE" ]]; then
@@ -652,6 +809,20 @@ show_setup_status() {
                 local member_count=$(parse_yaml "$SETUP_FILE" ".groups[$i].members | length" 2>/dev/null)
                 echo_with_color $BLUE "   Group '$group_name': $member_count members"
             done
+            
+            # Show token details
+            local token_count=$(parse_yaml "$SETUP_FILE" '.tokens | length' 2>/dev/null)
+            if [[ -n "$token_count" && "$token_count" != "0" ]]; then
+                echo_with_color $BLUE "   Tokens defined: $token_count"
+                for ((i=0; i<$token_count; i++)); do
+                    local token_id=$(parse_yaml "$SETUP_FILE" ".tokens[$i].id" 2>/dev/null)
+                    local token_name=$(parse_yaml "$SETUP_FILE" ".tokens[$i].name" 2>/dev/null)
+                    local chain_id=$(parse_yaml "$SETUP_FILE" ".tokens[$i].chain_id" 2>/dev/null)
+                    echo_with_color $BLUE "   Token '$token_name' ($token_id): Chain $chain_id"
+                done
+            else
+                echo_with_color $BLUE "   Tokens defined: 0"
+            fi
         else
             echo_with_color $YELLOW "   yq not available - cannot parse YAML"
         fi
@@ -722,6 +893,13 @@ run_setup() {
     fi
     
     echo ""
+    
+    # Setup tokens
+    if ! setup_tokens; then
+        echo_with_color $YELLOW "⚠️  Token setup had some issues"
+    fi
+    
+    echo ""
     echo_with_color $GREEN "🎉 System setup completed!"
     echo ""
     
@@ -742,6 +920,7 @@ show_help() {
     echo_with_color $GREEN "  validate" "  - Validate setup.yaml file structure"
     echo_with_color $GREEN "  users" "     - Setup only users from setup.yaml"
     echo_with_color $GREEN "  groups" "    - Setup only groups from setup.yaml"
+    echo_with_color $GREEN "  tokens" "    - Setup only tokens from setup.yaml"
     echo_with_color $GREEN "  help" "      - Show this help message"
     echo ""
     echo "Requirements:"
@@ -812,6 +991,21 @@ case "${1:-setup}" in
                 echo_with_color $RED "Failed to get admin token"
                 exit 1
             fi
+        else
+            echo_with_color $RED "Auth service not running"
+            exit 1
+        fi
+        ;;
+    "tokens")
+        if check_service_running "Auth Service" "3000"; then
+            # Create users first if they don't exist
+            if ! create_initial_users; then
+                echo_with_color $RED "Failed to create users"
+                exit 1
+            fi
+            
+            # Setup tokens
+            setup_tokens
         else
             echo_with_color $RED "Auth service not running"
             exit 1
