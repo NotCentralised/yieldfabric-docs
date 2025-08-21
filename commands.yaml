@@ -1,0 +1,10 @@
+commands:
+  - name: issuer deposit
+    type: deposit
+    user: 
+      id: issuer@yieldfabric.com
+      password: issuerpass456
+    parameters:
+      token_id: token-AUD
+      amount: 10
+      idempotency_key: 1234567890
