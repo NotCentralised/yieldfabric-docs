@@ -13,6 +13,11 @@ TOKENS_DIR="$SCRIPT_DIR/tokens"
 # Ensure tokens directory exists
 mkdir -p "$TOKENS_DIR"
 
+# Global arrays to store command outputs for variable substitution
+# Using regular arrays instead of associative arrays for compatibility
+COMMAND_OUTPUT_KEYS=()
+COMMAND_OUTPUT_VALUES=()
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -47,6 +52,88 @@ check_yq_available() {
     else
         return 1
     fi
+}
+
+# Function to store a command output value
+store_command_output() {
+    local command_name="$1"
+    local field_name="$2"
+    local value="$3"
+    
+    local key="${command_name}_${field_name}"
+    
+    # Check if key already exists
+    for idx in "${!COMMAND_OUTPUT_KEYS[@]}"; do
+        if [[ "${COMMAND_OUTPUT_KEYS[$idx]}" == "$key" ]]; then
+            # Update existing value
+            COMMAND_OUTPUT_VALUES[$idx]="$value"
+            return 0
+        fi
+    done
+    
+    # Add new key-value pair
+    COMMAND_OUTPUT_KEYS+=("$key")
+    COMMAND_OUTPUT_VALUES+=("$value")
+}
+
+# Function to retrieve a stored command output value
+get_command_output() {
+    local command_name="$1"
+    local field_name="$2"
+    
+    local key="${command_name}_${field_name}"
+    
+    # Look up the value in our stored outputs
+    for idx in "${!COMMAND_OUTPUT_KEYS[@]}"; do
+        if [[ "${COMMAND_OUTPUT_KEYS[$idx]}" == "$key" ]]; then
+            echo "${COMMAND_OUTPUT_VALUES[$idx]}"
+            return 0
+        fi
+    done
+    
+    # Not found
+    echo ""
+    return 1
+}
+
+# Function to substitute variables in command parameters
+# Supports format: $command_name.field_name
+substitute_variables() {
+    local value="$1"
+    
+    # Check if the value contains variable references
+    if [[ "$value" =~ \$[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]* ]]; then
+        # Extract command name and field name
+        local command_name=$(echo "$value" | sed -n 's/.*\$\([a-zA-Z_][a-zA-Z0-9_]*\)\.[a-zA-Z0-9_]*.*/\1/p')
+        local field_name=$(echo "$value" | sed -n 's/.*\$[a-zA-Z_][a-zA-Z0-9_]*\.\([a-zA-Z0-9_]*\).*/\1/p')
+        
+        if [[ -n "$command_name" && -n "$field_name" ]]; then
+            # Look up the value in our stored outputs
+            local stored_value=$(get_command_output "$command_name" "$field_name")
+            if [[ -n "$stored_value" ]]; then
+                echo_with_color $CYAN "    🔄 Substituting $value -> $stored_value" >&2
+                echo "$stored_value"
+                return 0
+            else
+                echo_with_color $YELLOW "    ⚠️  Variable $value not found in stored outputs" >&2
+                echo "$value"
+                return 1
+            fi
+        fi
+    fi
+    
+    # No substitution needed
+    echo "$value"
+}
+
+# Debug function to show all stored variables
+debug_show_variables() {
+    echo_with_color $PURPLE "🔍 Debug: All stored variables:"
+    for idx in "${!COMMAND_OUTPUT_KEYS[@]}"; do
+        local key="${COMMAND_OUTPUT_KEYS[$idx]}"
+        local value="${COMMAND_OUTPUT_VALUES[$idx]}"
+        echo_with_color $BLUE "  $key = $value"
+    done
 }
 
 # Function to parse YAML using yq
@@ -140,9 +227,19 @@ execute_deposit() {
         if [[ "$success" == "true" ]]; then
             local account_address=$(echo "$response_body" | jq -r '.account_address // empty')
             local message=$(echo "$response_body" | jq -r '.message // empty')
+            local message_id=$(echo "$response_body" | jq -r '.message_id // empty')
+            
+            # Store outputs for variable substitution in future commands
+            store_command_output "$command_name" "account_address" "$account_address"
+            store_command_output "$command_name" "message" "$message"
+            store_command_output "$command_name" "message_id" "$message_id"
+            
             echo_with_color $GREEN "    ✅ Deposit successful!"
             echo_with_color $BLUE "      Account: $account_address"
             echo_with_color $BLUE "      Message: $message"
+            echo_with_color $BLUE "      Message ID: $message_id"
+            echo_with_color $CYAN "      📝 Stored outputs for variable substitution:"
+            echo_with_color $CYAN "        ${command_name}_account_address, ${command_name}_message, ${command_name}_message_id"
             return 0
         else
             echo_with_color $RED "    ❌ Deposit failed: success=false"
@@ -151,6 +248,161 @@ execute_deposit() {
         fi
     else
         echo_with_color $RED "    ❌ Deposit request failed (HTTP $http_status)"
+        echo_with_color $BLUE "      Response: $response_body"
+        return 1
+    fi
+}
+
+# Function to execute instant command
+execute_instant() {
+    local command_name="$1"
+    local user_email="$2"
+    local user_password="$3"
+    local token_id="$4"
+    local amount="$5"
+    local destination_id="$6"
+    local idempotency_key="$7"
+    
+    echo_with_color $CYAN "⚡ Executing instant command: $command_name"
+    
+    # Login to get JWT token
+    local jwt_token=$(login_user "$user_email" "$user_password")
+    if [[ -z "$jwt_token" ]]; then
+        echo_with_color $RED "❌ Failed to get JWT token for user: $user_email"
+        return 1
+    fi
+    
+    echo_with_color $BLUE "  📤 Sending instant payment request..."
+    
+    # Prepare instant payment request payload
+    local instant_payload="{\"token_id\": \"$token_id\", \"amount\": \"$amount\", \"destination_id\": \"$destination_id\"}"
+    if [[ -n "$idempotency_key" ]]; then
+        instant_payload="{\"token_id\": \"$token_id\", \"amount\": \"$amount\", \"destination_id\": \"$destination_id\", \"idempotency_key\": \"$idempotency_key\"}"
+    fi
+    
+    echo_with_color $BLUE "  📋 Request payload: $instant_payload"
+    
+    # Send instant payment request to payments service
+    echo_with_color $BLUE "  🌐 Making curl request to: http://localhost:3002/instant"
+    local http_response=$(curl -s -X POST "http://localhost:3002/instant" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $jwt_token" \
+        -d "$instant_payload")
+    
+    echo_with_color $BLUE "  📡 Raw curl response: '$http_response'"
+    
+    local http_status="200"  # Since curl -s doesn't show status, assume success if we get response
+    local response_body="$http_response"
+    
+    if [[ "$http_status" == "200" ]]; then
+        echo_with_color $BLUE "  📥 Response received: $response_body"
+        local success=$(echo "$response_body" | jq -r '.success // empty')
+        if [[ "$success" == "true" ]]; then
+            local account_address=$(echo "$response_body" | jq -r '.account_address // empty')
+            local destination_address=$(echo "$response_body" | jq -r '.destination_id // empty')
+            local message=$(echo "$response_body" | jq -r '.message // empty')
+            local id_hash=$(echo "$response_body" | jq -r '.id_hash // empty')
+            local message_id=$(echo "$response_body" | jq -r '.message_id // empty')
+            
+            # Store outputs for variable substitution in future commands
+            store_command_output "$command_name" "account_address" "$account_address"
+            store_command_output "$command_name" "destination_id" "$destination_address"
+            store_command_output "$command_name" "message" "$message"
+            store_command_output "$command_name" "id_hash" "$id_hash"
+            store_command_output "$command_name" "message_id" "$message_id"
+            
+            echo_with_color $GREEN "    ✅ Instant payment successful!"
+            echo_with_color $BLUE "      From Account: $account_address"
+            echo_with_color $BLUE "      To Address: $destination_address"
+            echo_with_color $BLUE "      Message: $message"
+            echo_with_color $BLUE "      Message ID: $message_id"
+            if [[ -n "$id_hash" ]]; then
+                echo_with_color $CYAN "      ID Hash: $id_hash"
+            fi
+            echo_with_color $CYAN "      📝 Stored outputs for variable substitution:"
+            echo_with_color $CYAN "        ${command_name}_account_address, ${command_name}_destination_id, ${command_name}_message, ${command_name}_id_hash, ${command_name}_message_id"
+            return 0
+        else
+            echo_with_color $RED "    ❌ Instant payment failed: success=false"
+            echo_with_color $BLUE "      Full response: $response_body"
+            return 1
+        fi
+    else
+        echo_with_color $RED "    ❌ Instant payment request failed (HTTP $http_status)"
+        echo_with_color $BLUE "      Response: $response_body"
+        return 1
+    fi
+}
+
+# Function to execute accept command
+execute_accept() {
+    local command_name="$1"
+    local user_email="$2"
+    local user_password="$3"
+    local id_hash="$4"
+    local idempotency_key="$5"
+    
+    echo_with_color $CYAN "✅ Executing accept command: $command_name"
+    
+    # Login to get JWT token
+    local jwt_token=$(login_user "$user_email" "$user_password")
+    if [[ -z "$jwt_token" ]]; then
+        echo_with_color $RED "❌ Failed to get JWT token for user: $user_email"
+        return 1
+    fi
+    
+    echo_with_color $BLUE "  📤 Sending accept request..."
+    
+    # Prepare accept request payload
+    local accept_payload="{\"id_hash\": \"$id_hash\"}"
+    if [[ -n "$idempotency_key" ]]; then
+        accept_payload="{\"id_hash\": \"$id_hash\", \"idempotency_key\": \"$idempotency_key\"}"
+    fi
+    
+    echo_with_color $BLUE "  📋 Request payload: $accept_payload"
+    
+    # Send accept request to payments service
+    echo_with_color $BLUE "  🌐 Making curl request to: http://localhost:3002/accept"
+    local http_response=$(curl -s -X POST "http://localhost:3002/accept" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $jwt_token" \
+        -d "$accept_payload")
+    
+    echo_with_color $BLUE "  📡 Raw curl response: '$http_response'"
+    
+    local http_status="200"  # Since curl -s doesn't show status, assume success if we get response
+    local response_body="$http_response"
+    
+    if [[ "$http_status" == "200" ]]; then
+        echo_with_color $BLUE "  📥 Response received: $response_body"
+        local success=$(echo "$response_body" | jq -r '.success // empty')
+        if [[ "$success" == "true" ]]; then
+            local account_address=$(echo "$response_body" | jq -r '.account_address // empty')
+            local message=$(echo "$response_body" | jq -r '.message // empty')
+            local id_hash=$(echo "$response_body" | jq -r '.id_hash // empty')
+            local message_id=$(echo "$response_body" | jq -r '.message_id // empty')
+            
+            # Store outputs for variable substitution in future commands
+            store_command_output "$command_name" "account_address" "$account_address"
+            store_command_output "$command_name" "message" "$message"
+            store_command_output "$command_name" "id_hash" "$id_hash"
+            store_command_output "$command_name" "message_id" "$message_id"
+            
+            echo_with_color $GREEN "    ✅ Accept successful!"
+            echo_with_color $BLUE "      Account: $account_address"
+            echo_with_color $BLUE "      ID Hash: $id_hash"
+            echo_with_color $BLUE "      Message: $message"
+            echo_with_color $BLUE "      Message ID: $message_id"
+            echo_with_color $CYAN "      📝 Stored outputs for variable substitution:"
+            echo_with_color $CYAN "        ${command_name}_account_address, ${command_name}_message, ${command_name}_id_hash, ${command_name}_message_id"
+            return 0
+        else
+            echo_with_color $RED "    ❌ Accept failed: success=false"
+            echo_with_color $BLUE "      Full response: $response_body"
+            return 1
+        fi
+    else
+        echo_with_color $RED "    ❌ Accept request failed (HTTP $http_status)"
         echo_with_color $BLUE "      Response: $response_body"
         return 1
     fi
@@ -203,7 +455,10 @@ execute_hello_world() {
 execute_command() {
     local command_index="$1"
     
-    # Parse command details
+            echo_with_color $PURPLE "🔍 DEBUG: execute_command called with index $command_index"
+        echo_with_color $PURPLE "🔍 DEBUG: Starting to parse command at index $command_index"
+        
+        # Parse command details
     local command_name=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].name")
     local command_type=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].type")
     local user_email=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].user.id")
@@ -212,19 +467,42 @@ execute_command() {
     # Parse command parameters
     local token_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.token_id")
     local amount=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.amount")
+    local destination_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.destination_id")
+    local id_hash=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.id_hash")
     local idempotency_key=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.idempotency_key")
+    
+    # Apply variable substitution to parameters
+    echo_with_color $CYAN "  🔄 Applying variable substitution to parameters..."
+    token_id=$(substitute_variables "$token_id")
+    amount=$(substitute_variables "$amount")
+    destination_id=$(substitute_variables "$destination_id")
+    id_hash=$(substitute_variables "$id_hash")
+    idempotency_key=$(substitute_variables "$idempotency_key")
     
     echo_with_color $PURPLE "🚀 Executing command $((command_index + 1)): $command_name"
     echo_with_color $BLUE "  Type: $command_type"
     echo_with_color $BLUE "  User: $user_email"
+    echo_with_color $BLUE "  Parameters after substitution:"
+    if [[ -n "$token_id" ]]; then echo_with_color $BLUE "    token_id: $token_id"; fi
+    if [[ -n "$amount" ]]; then echo_with_color $BLUE "    amount: $amount"; fi
+    if [[ -n "$destination_id" ]]; then echo_with_color $BLUE "    destination_id: $destination_id"; fi
+    if [[ -n "$id_hash" ]]; then echo_with_color $BLUE "    id_hash: $id_hash"; fi
+    if [[ -n "$idempotency_key" ]]; then echo_with_color $BLUE "    idempotency_key: $idempotency_key"; fi
     
     # Execute command based on type
     case "$command_type" in
         "deposit")
             execute_deposit "$command_name" "$user_email" "$user_password" "$token_id" "$amount" "$idempotency_key"
             ;;
+        "instant")
+            execute_instant "$command_name" "$user_email" "$user_password" "$token_id" "$amount" "$destination_id" "$idempotency_key"
+            ;;
+        "accept")
+            execute_accept "$command_name" "$user_email" "$user_password" "$id_hash" "$idempotency_key"
+            ;;
         "hello_world")
             local message=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.message")
+            message=$(substitute_variables "$message")
             execute_hello_world "$command_name" "$user_email" "$user_password" "$message"
             ;;
         *)
@@ -300,6 +578,34 @@ validate_commands_file() {
                     return 1
                 fi
                 ;;
+            "instant")
+                local token_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.token_id")
+                local amount=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.amount")
+                local destination_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.destination_id")
+                
+                if [[ -z "$token_id" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.token_id' field"
+                    return 1
+                fi
+                
+                if [[ -z "$amount" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.amount' field"
+                    return 1
+                fi
+                
+                if [[ -z "$destination_id" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.destination_id' field"
+                    return 1
+                fi
+                ;;
+            "accept")
+                local id_hash=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.id_hash")
+                
+                if [[ -z "$id_hash" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.id_hash' field"
+                    return 1
+                fi
+                ;;
             "hello_world")
                 local message=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.message")
                 
@@ -310,7 +616,7 @@ validate_commands_file() {
                 ;;
             *)
                 echo_with_color $RED "Error: Command '$command_name' has unsupported type: '$command_type'"
-                echo_with_color $YELLOW "Supported types: deposit, hello_world"
+                echo_with_color $YELLOW "Supported types: deposit, instant, accept, hello_world"
                 return 1
                 ;;
         esac
@@ -413,18 +719,26 @@ execute_all_commands() {
     echo ""
     
     # Execute each command sequentially
+    echo_with_color $PURPLE "🔍 DEBUG: Starting loop with command_count=$command_count"
     for ((i=0; i<$command_count; i++)); do
-        echo_with_color $PURPLE "=" | tr '=' '=' | head -c 80
+        echo_with_color $PURPLE "================================================" | tr '=' '=' | head -c 80
         echo ""
-        
+        echo_with_color $CYAN "🔍 DEBUG: About to execute command $((i+1)) (index $i)"
+        echo_with_color $PURPLE "🔍 DEBUG: Loop iteration $i, command_count=$command_count"
+        echo_with_color $PURPLE "🔍 DEBUG: Loop condition: i=$i < command_count=$command_count = $((i < command_count))"
+        echo_with_color $PURPLE "🔍 DEBUG: About to call execute_command with index $i"
         if execute_command "$i"; then
+            echo_with_color $PURPLE "🔍 DEBUG: execute_command $i returned SUCCESS"
             success_count=$((success_count + 1))
             echo_with_color $GREEN "✅ Command $((i+1)) completed successfully"
         else
+            echo_with_color $PURPLE "🔍 DEBUG: execute_command $i returned FAILURE"
             echo_with_color $RED "❌ Command $((i+1)) failed"
             echo_with_color $YELLOW "Continuing with next command..."
         fi
         
+        echo_with_color $PURPLE "🔍 DEBUG: After execute_command $i, success_count=$success_count"
+        echo_with_color $PURPLE "🔍 DEBUG: Next iteration will be i=$((i+1))"
         echo ""
         
         # Add delay between commands
@@ -448,6 +762,31 @@ execute_all_commands() {
     fi
 }
 
+# Function to show current stored variables
+show_stored_variables() {
+    echo_with_color $CYAN "Currently Stored Variables for Command Chaining"
+    echo "========================================================"
+    
+    if [[ ${#COMMAND_OUTPUT_KEYS[@]} -eq 0 ]]; then
+        echo_with_color $YELLOW "No variables stored yet. Run some commands first to see stored outputs."
+        return 0
+    fi
+    
+    echo_with_color $BLUE "Available variables for substitution:"
+    for idx in "${!COMMAND_OUTPUT_KEYS[@]}"; do
+        local key="${COMMAND_OUTPUT_KEYS[$idx]}"
+        local value="${COMMAND_OUTPUT_VALUES[$idx]}"
+        echo_with_color $GREEN "  $key = $value"
+    done
+    
+    echo ""
+    echo_with_color $CYAN "Usage in commands.yaml:"
+    echo "  parameters:"
+    echo "    id_hash: \$issuer_send_1.id_hash    # Use id_hash from 'issuer_send_1' command"
+    echo "    amount: \$previous_deposit.amount   # Use amount from 'previous_deposit' command"
+    echo ""
+}
+
 # Function to show help
 show_help() {
     echo_with_color $CYAN "YieldFabric Commands Execution Script"
@@ -459,6 +798,7 @@ show_help() {
     echo_with_color $GREEN "  execute" "  - Execute all commands from commands.yaml"
     echo_with_color $GREEN "  status" "   - Show current status and requirements"
     echo_with_color $GREEN "  validate" " - Validate commands.yaml file structure"
+    echo_with_color $GREEN "  variables" " - Show currently stored variables for command chaining"
     echo_with_color $GREEN "  help" "     - Show this help message"
     echo ""
     echo "Requirements:"
@@ -469,13 +809,20 @@ show_help() {
     echo ""
     echo "Commands.yaml Structure:"
     echo "  • commands: array of commands with type, user, and parameters"
-    echo "  • Supported command types: deposit, hello_world"
+    echo "  • Supported command types: deposit, instant, accept, hello_world"
     echo "  • Each command must have user.id, user.password, and parameters"
+    echo "  • Variables can be referenced using: \$command_name.field_name"
+    echo ""
+    echo "Variable Substitution Examples:"
+    echo "  • id_hash: \$issuer_send_1.id_hash    # Use id_hash from 'issuer_send_1' command"
+    echo "  • amount: \$previous_deposit.amount   # Use amount from 'previous_deposit' command"
+    echo "  • message_id: \$instant_pay.message_id # Use message_id from 'instant_pay' command"
     echo ""
     echo "Examples:"
-    echo "  $0 execute   # Execute all commands"
-    echo "  $0 status    # Check requirements"
-    echo "  $0 validate  # Validate commands.yaml structure"
+    echo "  $0 execute    # Execute all commands"
+    echo "  $0 status     # Check requirements"
+    echo "  $0 validate   # Validate commands.yaml structure"
+    echo "  $0 variables  # Show stored variables"
     echo ""
     echo_with_color $YELLOW "For first-time users, run: $0 execute"
 }
@@ -490,6 +837,9 @@ case "${1:-execute}" in
         ;;
     "validate")
         validate_commands_file
+        ;;
+    "variables")
+        show_stored_variables
         ;;
     "help"|"-h"|"--help")
         show_help
