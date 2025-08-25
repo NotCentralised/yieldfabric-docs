@@ -1,50 +1,51 @@
-# YieldFabric Comprehensive Testing Suite
+# YieldFabric System Operations Manual
 
-This folder contains a comprehensive testing suite for the entire YieldFabric ecosystem. The scripts test all major system components working together, demonstrating that the platform is **production-ready** for enterprise use.
+This manual provides practical instructions for using the YieldFabric ecosystem. Learn how to authenticate, manage users and groups, perform cryptographic operations, and integrate with payment systems.
 
-## 🎯 **What This Testing Suite Covers**
+## 📖 **About YieldFabric**
 
-### **🔐 Complete Authentication System**
-- **User-Password Authentication**: Traditional username/password login with JWT tokens
-- **API Key Authentication**: Service-to-service authentication for microservices
-- **Signature Authentication**: Cryptographic signature-based authentication framework
-- **Delegation JWT System**: Limited-scope tokens for group operations
-- **Multi-Factor Security**: Role-based access control with granular permissions
+YieldFabric is a comprehensive enterprise platform that provides secure authentication, advanced cryptography, and integrated payment processing capabilities. The system is designed for production use with enterprise-grade security, role-based access control, and seamless service integration.
 
-### **👥 Advanced Group Management**
-- **Flat Group Structure**: Independent groups with no hierarchical relationships (flat structure)
-- **Member Management**: Add/remove users with role-based permissions (Owner, Admin, Member, Viewer)
-- **Permission Scoping**: Group-level access control and restrictions
-- **Entity Isolation**: Secure separation between different group contexts
-- **Group Types**: Organization, Team, Project, and Custom group classifications
+### **Core Services**
+- **🔐 Authentication & Authorization**: Multi-method authentication with JWT tokens, API keys, and cryptographic signatures
+- **🔑 Cryptographic Infrastructure**: Full encryption, decryption, and digital signature capabilities with secure key management
+- **👥 Group Management**: Advanced permission systems with delegation and role-based access control
+- **💰 Payment Processing**: Integrated payment operations with command chaining and variable substitution
+- **🏦 Banking Integration**: Hutly Monoova payment system integration for enterprise banking operations
 
-### **🔑 Cryptographic Infrastructure**
-- **Key Management**: User and group-specific cryptographic keypairs
-- **Encryption/Decryption**: Asymmetric encryption with public/private keys
-- **Digital Signatures**: Signing and verification of data integrity
-- **Key Storage**: Secure centralized keystore with polymorphic entity support
+### **Specialized Documentation**
+- **[PAYMENTS.md](./PAYMENTS.md)**: Complete payment system operations with command execution and flow management
+- **[BANKING.md](./BANKING.md)**: Banking system integration and Hutly Monoova API documentation
 
-### **🔒 Permission & Access Control**
-- **Granular Permissions**: 20+ permission types for fine-grained control
-- **Role-Based Access**: SuperAdmin, Operator, and Viewer roles
-- **Delegation Scopes**: Limited-scope tokens for specific operations
-- **Security Boundaries**: Proper isolation between users and groups
+## 🚀 **Quick Start Guide**
 
-## 🚀 **Quick Start (Recommended)**
-
-For first-time users or comprehensive testing:
-
+### **1. Initial System Setup**
 ```bash
-# One command sets up everything automatically
+# Set up the complete authentication system
 ./yieldfabric-auth.sh setup
 
-# Check comprehensive system status
+# Verify everything is working
 ./yieldfabric-auth.sh status
+```
 
-# Run the complete crypto system test
+### **2. Get Your Access Tokens**
+```bash
+# Get admin token for system administration
+./yieldfabric-auth.sh admin
+
+# Get test token for regular operations
+./yieldfabric-auth.sh test
+
+# Create delegation token for group operations
+./yieldfabric-auth.sh delegate
+```
+
+### **3. Run Your First Operations**
+```bash
+# Test the complete system
 ./test_crypto_system.sh
 
-# Run the complete API key and signature test
+# Test authentication methods
 ./test_api_key_unified.sh
 ```
 
@@ -204,7 +205,7 @@ For first-time users or comprehensive testing:
 - **Capabilities**: View group information and members
 - **Use Case**: Group monitoring and information access
 
-## 🔐 **Authentication Methods Supported**
+## 🔐 **Authentication Methods**
 
 ### **1. User-Password Authentication**
 - **Purpose**: Traditional user authentication
@@ -212,17 +213,59 @@ For first-time users or comprehensive testing:
 - **Use Case**: Regular user access to services
 - **Security**: Password hashing and JWT expiration
 
+```bash
+# Login with username/password
+curl -X POST http://localhost:8080/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "admin", "password": "password"}'
+
+# Response includes JWT token
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "expires_at": "2024-12-31T23:59:59Z"
+}
+```
+
 ### **2. API Key Authentication**
 - **Purpose**: Service-to-service authentication
 - **Flow**: API key → JWT token → Resource access
 - **Use Case**: Microservice communication
 - **Security**: Unique key generation and revocation
 
+```bash
+# Generate API key for a service
+curl -X POST http://localhost:8080/auth/api-keys \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "payment-service", "permissions": ["CryptoOperations"]}'
+
+# Use API key for authentication
+curl -X POST http://localhost:8080/api/v1/crypto/encrypt \
+  -H "X-API-Key: $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"data": "sensitive information", "public_key": "..."}'
+```
+
 ### **3. Signature Authentication**
 - **Purpose**: Cryptographic verification
 - **Flow**: Public key registration → Signature verification
 - **Use Case**: High-security operations
 - **Security**: Asymmetric cryptography
+
+```bash
+# Register your public key
+curl -X POST http://localhost:8080/auth/signature-keys \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"public_key": "04a1b2c3d4e5f6...", "user_id": "user123"}'
+
+# Authenticate using signature
+curl -X POST http://localhost:8080/api/v1/crypto/sign \
+  -H "X-Signature: $SIGNATURE" \
+  -H "X-Public-Key: $PUBLIC_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"data": "data to sign"}'
+```
 
 ### **4. Delegation JWT System**
 - **Purpose**: Limited-scope access control
@@ -231,327 +274,392 @@ For first-time users or comprehensive testing:
 - **Security**: Scope limitation and time expiration
 - **🔧 Enhanced**: Robust JWT parsing with base64 padding handling for reliable token extraction
 
-## 🎫 **JWT Token Types and Usage Patterns**
+## 👥 **User and Group Management**
 
-### **Token Hierarchy and Capabilities**
-| **Token Type** | **Role** | **Permissions** | **Use Case** | **Lifetime** |
-|----------------|----------|-----------------|--------------|--------------|
-| **`ADMIN_TOKEN`** | SuperAdmin | All permissions | System administration, user management | Long-lived |
-| **`TEST_TOKEN`** | Operator | Limited permissions | Service operations, group management | Long-lived |
-| **`DELEGATION_TOKEN`** | Limited scope | Specific scope only | Group crypto operations | Short-lived (1 hour) |
+### **Creating Users**
+```bash
+# Create a new user
+curl -X POST http://localhost:8080/auth/users \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "john.doe",
+    "email": "john@company.com",
+    "password": "securepassword123",
+    "role": "Operator"
+  }'
 
-### **JWT Usage by Operation Type**
+# Response
+{
+  "user_id": "user_abc123",
+  "username": "john.doe",
+  "email": "john@company.com",
+  "role": "Operator",
+  "created_at": "2024-01-15T10:30:00Z"
+}
+```
 
-#### **🔐 Authentication & Setup**
-- **Health Check**: No authentication required
-- **Token Setup**: Managed by `yieldfabric-auth.sh` automatically
-- **Status Check**: No authentication required
+### **Managing Groups**
+```bash
+# Create a new group
+curl -X POST http://localhost:8080/auth/groups \
+  -H "Authorization: Bearer $TEST_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Engineering Team",
+    "description": "Software development team",
+    "group_type": "Team"
+  }'
 
-#### **👥 Group Management**
-- **Create/Read/Update/Delete Groups**: `TEST_TOKEN` with group permissions
-- **Member Management**: `TEST_TOKEN` with `ManageGroupMembers` permission
-- **Group Operations**: `TEST_TOKEN` with appropriate group permissions
+# Add member to group
+curl -X POST http://localhost:8080/auth/groups/group_xyz789/members \
+  -H "Authorization: Bearer $TEST_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_id": "user_abc123",
+    "role": "Member"
+  }'
+```
 
-#### **🔑 Cryptographic Operations**
-- **User Crypto Operations**: `TEST_TOKEN` with `CryptoOperations` permission
-- **Group Crypto Operations**: `DELEGATION_TOKEN` with `CryptoOperations` scope
-- **Key Management**: `TEST_TOKEN` with `CryptoOperations` permission
-
-#### **🎫 Delegation System**
-- **Create Delegation JWT**: `TEST_TOKEN` with `ManageGroupPermissions` permission
-- **Use Delegation JWT**: `DELEGATION_TOKEN` for group-specific operations
-- **Validate Delegation**: `DELEGATION_TOKEN` scope verification
-
-#### **🔑 API Key & Signature**
-- **Generate API Key**: `TEST_TOKEN` with `CryptoOperations` permission
-- **Authenticate API Key**: API key directly (converts to JWT)
-- **Register Signature Key**: `TEST_TOKEN` with `CryptoOperations` permission
-- **Use Signature Auth**: Signature directly (no JWT required)
-
-#### **⚙️ Permission Management**
-- **Grant/Revoke Permissions**: `ADMIN_TOKEN` with `ManageUsers` permission
-- **Check Permissions**: `ADMIN_TOKEN` with `ManageUsers` permission
-- **Permission Operations**: `ADMIN_TOKEN` for all permission management
-
-### **Security Boundaries and Isolation**
-- **Regular JWT** cannot access group keys (proper isolation enforced)
-- **Delegation JWT** limited to specified scope (e.g., `CryptoOperations` only)
-- **Permission boundaries** enforced at API level with proper HTTP status codes
-- **Token scope validation** prevents privilege escalation
-
-### **Token Lifecycle Management**
-- **Admin/Test tokens**: Long-lived, automatically managed by `yieldfabric-auth.sh`
-- **Delegation tokens**: Short-lived (1 hour), limited scope, for specific group operations
-- **Automatic cleanup**: Scripts preserve tokens for reuse, manual cleanup available via `clean` command
+### **Group Member Roles**
+- **Owner**: Full control, can delete the group
+- **Admin**: Manage members and group operations
+- **Member**: Participate in group activities
+- **Viewer**: Read-only access to group information
 
 ## 🔑 **Cryptographic Operations**
 
 ### **Key Management**
-- **User Keypairs**: Individual cryptographic keys for users
-- **Group Keypairs**: Shared cryptographic keys for groups
-- **Polymorphic Storage**: Secure keystore supporting multiple entity types
-- **Key Rotation**: Support for key lifecycle management
-
-### **Encryption Operations**
-- **Asymmetric Encryption**: Public key encryption for data security
-- **Local Encryption**: Fast encryption using public keys
-- **Remote Decryption**: Secure decryption through centralized service
-- **Data Integrity**: Verification that decrypted data matches original
-
-### **Signature Operations**
-- **Digital Signatures**: Cryptographic proof of data authenticity
-- **Remote Signing**: Secure signing using centralized private keys
-- **Local Verification**: Fast signature verification using public keys
-- **Non-repudiation**: Proof that data came from specific source
-
-## 🧪 **Comprehensive Testing Scripts**
-
-### **1. `yieldfabric-auth.sh` - Main Authentication Manager**
-- **Purpose**: One-stop solution for all authentication needs
-- **Commands**: `setup`, `status`, `admin`, `test`, `delegate`, `clean`, `help`
-- **Features**: Automatic token creation, permission management, group setup
-
-### **2. `test_crypto_system.sh` - Complete Crypto System Test**
-- **Purpose**: Validates entire cryptographic infrastructure
-- **Tests**: 19 comprehensive tests covering all crypto operations
-- **Coverage**: Authentication, encryption, signing, group operations, security
-
-### **3. `test_api_key_unified.sh` - Multi-Authentication Test**
-- **Purpose**: Tests all authentication methods working together
-- **Tests**: 17 tests covering JWT, API keys, and signatures
-- **Coverage**: Service-to-service authentication, security enforcement
-
-### **4. `test_delegation_system.sh` - Permission System Test**
-- **Purpose**: Comprehensive permission management testing
-- **Tests**: Complete permission lifecycle and delegation
-- **Coverage**: Grant, verify, revoke, and scope enforcement
-
-## 🔍 **Testing Methodology**
-
-### **Comprehensive Coverage**
-- **✅ Positive Testing**: Valid operations that should succeed
-- **❌ Negative Testing**: Invalid operations that should fail
-- **🔒 Security Testing**: Unauthorized access attempts
-- **🔄 Flow Testing**: Complete authentication workflows
-- **📊 Management Testing**: Administrative operations
-- **🔗 Integration Testing**: Systems working together
-- **🎫 Permission Management**: Complete permission lifecycle testing (grant, verify, revoke, replace)
-- **🔑 JWT Token Validation**: Comprehensive JWT parsing and validation testing
-- **🔐 Multi-Authentication**: JWT, API Key, and Signature authentication testing
-- **👥 Delegation System**: Limited-scope token testing and validation
-
-### **Production Readiness Validation**
-- **🔄 Idempotent Operations**: Safe to run multiple times
-- **🔒 Security Validation**: Tests access control and permission boundaries
-- **📊 Comprehensive Coverage**: Tests all major system components
-- **🧪 Real-World Scenarios**: Uses actual API endpoints and data flows
-- **🔍 Error Handling**: Robust error detection and reporting
-- **📝 Audit Trail**: Logs all operations for debugging
-- **🧹 Resource Management**: Proper cleanup and verification
-- **🔑 JWT Token Robustness**: Handles base64 padding issues and token parsing edge cases
-- **🎯 Permission System Validation**: Complete testing of permission management operations
-- **🔐 Authentication Integration**: Validates all authentication methods working together
-
-## 🚀 **Getting Started**
-
-### **First-Time Setup**
 ```bash
-# 1. Set up authentication system
-./yieldfabric-auth.sh setup
+# Generate user keypair
+curl -X POST http://localhost:8080/api/v1/crypto/keypairs \
+  -H "Authorization: Bearer $TEST_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"entity_type": "user", "entity_id": "user_abc123"}'
 
-# 2. Check comprehensive system status
+# Generate group keypair
+curl -X POST http://localhost:8080/api/v1/crypto/keypairs \
+  -H "Authorization: Bearer $DELEGATION_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"entity_type": "group", "entity_id": "group_xyz789"}'
+```
+
+### **Encryption and Decryption**
+```bash
+# Encrypt data using public key
+curl -X POST http://localhost:8080/api/v1/crypto/encrypt \
+  -H "Authorization: Bearer $TEST_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "data": "Confidential business data",
+    "public_key": "04a1b2c3d4e5f6..."
+  }'
+
+# Decrypt data using private key (handled by service)
+curl -X POST http://localhost:8080/api/v1/crypto/decrypt \
+  -H "Authorization: Bearer $TEST_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "encrypted_data": "encrypted_base64_string",
+    "entity_type": "user",
+    "entity_id": "user_abc123"
+  }'
+```
+
+### **Digital Signatures**
+```bash
+# Sign data
+curl -X POST http://localhost:8080/api/v1/crypto/sign \
+  -H "Authorization: Bearer $TEST_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "data": "Contract terms to sign",
+    "entity_type": "user",
+    "entity_id": "user_abc123"
+  }'
+
+# Verify signature
+curl -X POST http://localhost:8080/api/v1/crypto/verify \
+  -H "Authorization: Bearer $TEST_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "data": "Contract terms to sign",
+    "signature": "signature_base64_string",
+    "public_key": "04a1b2c3d4e5f6..."
+  }'
+```
+
+## 🎫 **Delegation System**
+
+### **Creating Delegation Tokens**
+```bash
+# Create limited-scope token for group operations
+curl -X POST http://localhost:8080/auth/delegation/jwt \
+  -H "Authorization: Bearer $TEST_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_id": "user_abc123",
+    "scope": ["CryptoOperations"],
+    "group_id": "group_xyz789",
+    "expires_in": 3600
+  }'
+
+# Response
+{
+  "delegation_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "expires_at": "2024-01-15T11:30:00Z",
+  "scope": ["CryptoOperations"],
+  "group_id": "group_xyz789"
+}
+```
+
+### **Using Delegation Tokens**
+```bash
+# Use delegation token for group crypto operations
+curl -X POST http://localhost:8080/api/v1/crypto/encrypt \
+  -H "Authorization: Bearer $DELEGATION_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "data": "Group-shared data",
+    "public_key": "group_public_key_here"
+  }'
+```
+
+## 🔐 **Permission Management**
+
+### **Granting Permissions**
+```bash
+# Grant single permission
+curl -X POST http://localhost:8080/auth/users/user_abc123/permissions/CryptoOperations \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+
+# Grant multiple permissions
+curl -X POST http://localhost:8080/auth/users/user_abc123/permissions \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "permissions": ["CryptoOperations", "CreateGroup", "ManageGroupMembers"]
+  }'
+```
+
+### **Checking Permissions**
+```bash
+# Check if user has specific permission
+curl -X GET http://localhost:8080/auth/users/user_abc123/permissions/CryptoOperations \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+
+# Get all user permissions
+curl -X GET http://localhost:8080/auth/users/user_abc123/permissions \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+### **Revoking Permissions**
+```bash
+# Revoke single permission
+curl -X DELETE http://localhost:8080/auth/users/user_abc123/permissions/CryptoOperations \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+
+# Revoke multiple permissions
+curl -X DELETE http://localhost:8080/auth/users/user_abc123/permissions \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "permissions": ["CryptoOperations", "CreateGroup"]
+  }'
+```
+
+## 💰 **Payment System Integration**
+
+### **Monoova Payment Operations**
+```bash
+# Create payment agreement
+curl -X POST http://localhost:8080/api/v1/payments/monoova/agreements \
+  -H "Authorization: Bearer $TEST_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "amount": 1000.00,
+    "currency": "AUD",
+    "description": "Service payment",
+    "recipient": "recipient@company.com"
+  }'
+
+# Get payment agreement details
+curl -X GET http://localhost:8080/api/v1/payments/monoova/agreements/agreement_123 \
+  -H "Authorization: Bearer $TEST_TOKEN"
+
+# Instruct payment
+curl -X POST http://localhost:8080/api/v1/payments/monoova/agreements/agreement_123/instruct \
+  -H "Authorization: Bearer $TEST_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "payment_date": "2024-01-20",
+    "reference": "INV-2024-001"
+  }'
+```
+
+## 🛠️ **Daily Operations**
+
+### **Check System Status**
+```bash
+# View current system status
 ./yieldfabric-auth.sh status
 
-# 3. Run complete crypto system test
-./test_crypto_system.sh
-
-# 4. Run multi-authentication test
-./test_api_key_unified.sh
-
-# 5. Verify everything is working
+# Check token validity
 ./yieldfabric-auth.sh test
 ```
 
-### **Daily Development**
+### **Token Management**
 ```bash
-# Check current status
-./yieldfabric-auth.sh status
-
-# Get admin token for administrative tasks
+# Get fresh admin token
 ./yieldfabric-auth.sh admin
 
-# Get test token for service operations
+# Get fresh test token
 ./yieldfabric-auth.sh test
 
-# Create delegation token for group operations
+# Create new delegation token
 ./yieldfabric-auth.sh delegate
 ```
 
-### **Comprehensive Testing**
+### **Cleanup Operations**
 ```bash
-# Run all tests to validate system
-./test_crypto_system.sh
-./test_api_key_unified.sh
-./test_delegation_system.sh
-```
+# Clean up expired tokens
+./yieldfabric-auth.sh clean
 
-## 📋 **Prerequisites**
-
-- Docker services running (use the docker-compose setup)
-- `jq` command-line JSON processor installed
-- `curl` for HTTP requests
-- Bash shell
-- YieldFabric services running (auth, vault, payments)
-
-## 🔧 **Recent System Improvements & Fixes**
-
-> **🎯 Summary**: This update resolves critical JWT token parsing issues and corrects permission management API endpoints, ensuring all test scripts work correctly and provide comprehensive system validation.
-
-### **✅ JWT Token Parsing Fixes (Latest Update)**
-- **Base64 Padding Issues Resolved**: Fixed JWT payload extraction problems that prevented user ID and delegation scope parsing
-- **Improved Token Extraction**: Enhanced scripts now properly handle JWT token structure and extract user IDs correctly
-- **Delegation Scope Parsing**: Fixed delegation JWT scope extraction for comprehensive permission validation
-
-### **✅ Permission Management API Endpoints (Latest Update)**
-- **Corrected API Paths**: Updated all permission management endpoints to use proper `/auth/users/{user_id}/permissions` paths
-- **HTTP Method Corrections**: Fixed HTTP methods for different operations (POST for grant, DELETE for revoke, PUT for replace)
-- **JSON Payload Format**: Corrected request payloads to use proper `{"permissions": [...]}` format instead of raw arrays
-- **Response Field Mapping**: Fixed response parsing to use correct field names (`.success` instead of `.has_permission`)
-
-### **✅ Comprehensive Testing Improvements**
-- **Permission Management Testing**: Added complete permission lifecycle testing (grant, verify, revoke, replace)
-- **Error Handling**: Enhanced error detection and reporting for better debugging
-- **Resource Cleanup**: Improved test cleanup and verification processes
-- **Integration Validation**: Better testing of systems working together
-
-### **🔍 What Was Fixed**
-1. **JWT Token Parsing**: Scripts now successfully extract user IDs and delegation scopes from JWT tokens
-2. **Permission Operations**: All permission management operations now work correctly with proper API endpoints
-3. **Test Coverage**: Comprehensive testing now covers permission management, delegation systems, and API key authentication
-4. **Error Reporting**: Better error messages and debugging information for troubleshooting
-
-## 🚨 **Troubleshooting**
-
-### **Common Issues**
-1. **Service not running**: Ensure Docker services are started
-2. **Permission denied**: The script automatically handles permission granting
-3. **Token expired**: Run `./yieldfabric-auth.sh setup` to refresh all tokens
-4. **Group creation fails**: Check if user has necessary permissions
-
-### **Debug Mode**
-All scripts provide detailed logging for troubleshooting:
-- Shows JWT payloads and permissions
-- Logs API responses and errors
-- Provides step-by-step progress information
-
-### **Getting Help**
-```bash
-# Show all available commands
-./yieldfabric-auth.sh help
-
-# Check current status
-./yieldfabric-auth.sh status
-
-# Clean start if something goes wrong
+# Reset system (use with caution)
 ./yieldfabric-auth.sh clean
 ./yieldfabric-auth.sh setup
+```
+
+## 📋 **Required Permissions Reference**
+
+### **User Management**
+| Operation | Permission | Endpoint |
+|-----------|------------|----------|
+| Create User | `CreateUser` | `POST /auth/users` |
+| Read User | `ReadUser` | `GET /auth/users/{id}` |
+| Update User | `UpdateUser` | `PUT /auth/users/{id}` |
+| Delete User | `DeleteUser` | `DELETE /auth/users/{id}` |
+
+### **Group Management**
+| Operation | Permission | Endpoint |
+|-----------|------------|----------|
+| Create Group | `CreateGroup` | `POST /auth/groups` |
+| Read Group | `ReadGroup` | `GET /auth/groups/{id}` |
+| Update Group | `UpdateGroup` | `PUT /auth/groups/{id}` |
+| Delete Group | `DeleteGroup` | `DELETE /auth/groups/{id}` |
+
+### **Cryptographic Operations**
+| Operation | Permission | Endpoint |
+|-----------|------------|----------|
+| Encrypt/Decrypt | `CryptoOperations` | `POST /api/v1/crypto/encrypt` |
+| Sign/Verify | `CryptoOperations` | `POST /api/v1/crypto/sign` |
+| Key Management | `CryptoOperations` | `POST /api/v1/crypto/keypairs` |
+
+## 🔧 **Troubleshooting**
+
+### **Common Issues and Solutions**
+
+#### **Token Expired**
+```bash
+# Refresh all tokens
+./yieldfabric-auth.sh setup
+
+# Or refresh specific token
+./yieldfabric-auth.sh admin
+```
+
+#### **Permission Denied**
+```bash
+# Check current permissions
+./yieldfabric-auth.sh status
+
+# Grant necessary permissions (requires admin)
+curl -X POST http://localhost:8080/auth/users/your_user_id/permissions/RequiredPermission \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+#### **Service Not Responding**
+```bash
+# Check if Docker services are running
+docker ps
+
+# Restart services if needed
+docker-compose restart
+```
+
+### **Debug Mode**
+All scripts provide detailed logging:
+```bash
+# Enable verbose logging
+export DEBUG=1
+./yieldfabric-auth.sh status
 ```
 
 ## 📁 **File Structure**
 
 ```
 scripts/
-├── auth.sh                     # 🔗 Short alias for yieldfabric-auth.sh
-├── yieldfabric-auth.sh         # ⭐ Main authentication manager (RECOMMENDED)
-├── test_crypto_system.sh       # 🧪 Complete crypto system validation
-├── test_api_key_unified.sh     # 🔑 Multi-authentication testing
-├── test_delegation_system.sh   # 🎫 Permission system testing
-├── README.md                   # This comprehensive guide
-└── tokens/                     # Token storage directory
+├── yieldfabric-auth.sh         # Main authentication manager
+├── test_crypto_system.sh       # System validation tests
+├── test_api_key_unified.sh     # Authentication method tests
+├── test_delegation_system.sh   # Permission system tests
+└── tokens/                     # Token storage
     ├── .jwt_token             # Admin JWT token
-    ├── .jwt_expiry            # Admin JWT expiry
     ├── .jwt_token_test        # Test JWT token
-    ├── .jwt_expiry_test       # Test JWT expiry
-    ├── .jwt_token_delegate    # Delegation JWT token
-    └── .jwt_expiry_delegate   # Delegation JWT expiry
+    └── .jwt_token_delegate    # Delegation JWT token
 ```
 
 ## 💡 **Best Practices**
 
-### **For First-Time Users**
-1. **Start with `./yieldfabric-auth.sh setup`** - This handles everything automatically
-2. **Check status regularly** - Use `./yieldfabric-auth.sh status` to monitor your system
-3. **Run comprehensive tests** - Use the test scripts to verify everything works
+### **Security**
+- Use delegation tokens for group operations
+- Regularly rotate API keys
+- Grant minimal required permissions
+- Monitor token expiration
 
-### **For Daily Development**
-1. **Reuse tokens** - The system automatically manages token expiration
-2. **Check permissions** - Use the status command to see what permissions you have
-3. **Use delegation tokens** - For group operations, use delegation JWTs
+### **Performance**
+- Reuse tokens when possible
+- Use appropriate authentication method for each operation
+- Cache frequently accessed data
 
-### **For Production**
-1. **Review permissions** - Ensure users only have necessary permissions
-2. **Monitor usage** - Track delegation token creation and usage
-3. **Regular testing** - Periodically run test scripts to validate system health
+### **Maintenance**
+- Run status checks regularly
+- Monitor system logs
+- Test critical operations periodically
+- Keep tokens organized and secure
 
-## 🎯 **What Makes This System Production-Ready**
+## 🎯 **Production Deployment**
 
-### **🔐 Complete Authentication Coverage**
-- Multiple authentication methods working seamlessly together
-- Comprehensive permission system with granular control
-- Secure token management with proper expiration
+### **Environment Setup**
+```bash
+# Set production environment
+export YIELDFABRIC_ENV=production
 
-### **🔑 Enterprise-Grade Cryptography**
-- Full cryptographic infrastructure for encryption and signing
-- Secure key management with polymorphic entity support
-- Group-level cryptographic operations with delegation
+# Configure production endpoints
+export AUTH_SERVICE_URL=https://auth.yieldfabric.com
+export VAULT_SERVICE_URL=https://vault.yieldfabric.com
+export PAYMENTS_SERVICE_URL=https://payments.yieldfabric.com
+```
 
-### **👥 Advanced Access Control**
-- Flat group management with role-based access
-- Delegation system for limited-scope operations
-- Proper security boundaries and isolation
+### **Monitoring**
+- Set up alerts for token expiration
+- Monitor API usage and rate limits
+- Track permission changes and delegation token creation
+- Log all cryptographic operations for audit
 
-### **🔗 Seamless Integration**
-- All components working together seamlessly
-- Comprehensive testing covering all major scenarios
-- Robust error handling and debugging capabilities
+### **Backup and Recovery**
+- Regularly backup user and group data
+- Document permission configurations
+- Test recovery procedures
+- Maintain secure key backup procedures
 
-### **📊 Comprehensive Testing**
-- 50+ individual tests covering all system components
-- Real-world scenarios and edge cases
-- Production-ready validation and verification
-- **Complete Permission Lifecycle Testing**: Grant, verify, revoke, and replace operations
-- **JWT Token Parsing Validation**: Robust handling of token extraction and parsing
-- **Multi-Authentication System Testing**: JWT, API Key, and Signature authentication flows
-- **Delegation System Validation**: Limited-scope token testing and permission enforcement
+## 📚 **Additional Resources**
 
-## 🔮 **Currently Implemented Features**
+- **Banking System**: See [BANKING.md](./BANKING.md) for comprehensive payment system documentation
+- **API Documentation**: Available at `/docs` endpoint when services are running
+- **Source Code**: Available in the respective service repositories
+- **Support**: Check service logs and use debug mode for troubleshooting
 
-### **✅ Production Ready Components**
-- **Flat Group Structure**: Independent groups with no nesting
-- **Role-Based Access**: Owner, Admin, Member, Viewer roles
-- **Permission Management**: Granular permissions for all operations
-- **Delegation System**: Limited-scope JWT tokens for groups
-- **Cryptographic Operations**: Full encryption/signing infrastructure
-- **Audit Logging**: Comprehensive operation tracking
+---
 
-## 📝 **Notes**
-
-- **Start with `yieldfabric-auth.sh setup`** for the best experience
-- All scripts use `SCRIPT_DIR` to ensure they work from any location
-- Token files are stored in the `tokens/` subdirectory for better organization
-- The `tokens/` directory is automatically created if it doesn't exist
-- Token files have restrictive permissions (600) for security
-- Scripts automatically handle token expiration and renewal
-- Error handling includes helpful debugging information and next steps
-- The script is designed to be idempotent - safe to run multiple times
-- **The system is production-ready** and handles all edge cases automatically
-- **Comprehensive testing** validates all major system components
-- **Multiple authentication methods** support modern enterprise requirements
-- **Advanced cryptography** provides enterprise-grade security
-- **Granular permissions** enable fine-grained access control
-
-### **🔧 Recent System Improvements (Latest Update)**
-- **JWT Token Parsing**: Fixed base64 padding issues for reliable token extraction
-- **Permission Management**: Corrected API endpoints and request/response handling
-- **Test Coverage**: Enhanced testing for permission lifecycle and delegation systems
-- **Error Handling**: Improved debugging and troubleshooting capabilities
+**Ready to get started?** Run `./yieldfabric-auth.sh setup` to begin using the YieldFabric system!
