@@ -3,7 +3,8 @@
 # YieldFabric Test Hutly Monoova Handler Test
 # Test script for the test_hutly_monoova_handler endpoint (no JWT auth required)
 
-BASE_URL="http://localhost:3002"
+# BASE_URL="http://localhost:3002"
+BASE_URL="http://68.218.101.81:3002"
 
 # Function to show usage
 show_usage() {
@@ -44,10 +45,10 @@ pretty_print_json() {
 AGREEMENT_ID="test_agreement_$(date +%s)"
 REFERENCE="TEST_REF_$(date +%s)"
 NAME="Test Payment Agreement"
-BSB="000"
-ACCOUNT="000"
-START_DATE="2025-08-25"
-END_DATE="2025-09-25"
+BSB="0000"
+ACCOUNT="0000"
+START_DATE="2025-08-26"
+END_DATE="2025-09-26"
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
