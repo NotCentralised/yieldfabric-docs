@@ -46,3 +46,11 @@ tokens:
     description: AUD Token Description
     chain_id: 33117
     address: 0x3Aa5ebB10DC797CAC828524e59A333d0A371443c
+
+assets:
+  - id: AUD
+    name: AUD Token
+    type: Cash
+    currency: AUD
+    description: AUD Token Description
+    token_id: AUD-token

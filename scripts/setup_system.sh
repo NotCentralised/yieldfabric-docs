@@ -459,6 +459,49 @@ create_token() {
     fi
 }
 
+# Function to create asset
+create_asset() {
+    local asset_id="$1"
+    local name="$2"
+    local asset_type="$3"
+    local currency="$4"
+    local description="$5"
+    local token_id="$6"
+    local admin_token="$7"
+    
+    echo_with_color $BLUE "  💎 $name ($asset_id)"
+    
+    # Create asset using GraphQL API with assetFlow resolver
+    local create_asset_query="{\"query\": \"mutation { assetFlow { createAsset(name: \\\"$name\\\", description: \\\"$description\\\", assetType: \\\"$asset_type\\\", currency: \\\"$currency\\\", tokenId: \\\"$token_id\\\") { id name assetType status } } }\"}"
+    
+    local response=$(curl -s -X POST "http://localhost:3002/graphql" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $admin_token" \
+        -d "$create_asset_query")
+    
+    if [[ -n "$response" ]]; then
+        # Check if asset was created successfully
+        local created_asset_id=$(echo "$response" | jq -r '.data.assetFlow.createAsset.id // empty' 2>/dev/null)
+        if [[ -n "$created_asset_id" && "$created_asset_id" != "null" ]]; then
+            echo_with_color $GREEN "    ✅ Created (ID: ${created_asset_id:0:8}...)"
+            return 0
+        else
+            # Check if asset already exists or other errors
+            local error_msg=$(echo "$response" | jq -r '.errors[0].message // empty' 2>/dev/null)
+            if [[ -n "$error_msg" && "$error_msg" == *"already exists"* ]]; then
+                echo_with_color $YELLOW "    ⚠️  Already exists"
+                return 0
+            else
+                echo_with_color $RED "    ❌ Failed: $(echo "$error_msg" | head -c 50)..."
+                return 1
+            fi
+        fi
+    else
+        echo_with_color $RED "    ❌ Failed: no response"
+        return 1
+    fi
+}
+
 
 
 
@@ -656,6 +699,65 @@ setup_tokens() {
     return $((success_count == total_count ? 0 : 1))
 }
 
+# Function to setup assets
+setup_assets() {
+    echo_with_color $CYAN "💎 Setting up assets from setup.yaml..."
+    
+    # Check if payment service is running (where asset GraphQL is available)
+    if ! check_token_service_running; then
+        echo_with_color $YELLOW "⚠️  Payment service not running on port 3002, skipping asset setup"
+        echo_with_color $BLUE "   Start the payment service first: cd ../yieldfabric-payments && cargo run"
+        return 0
+    fi
+    
+    # Get admin token for asset operations
+    echo_with_color $BLUE "🔑 Getting admin token for asset operations..."
+    local admin_token
+    admin_token=$(ensure_auth_token)
+    if [[ -z "$admin_token" ]]; then
+        echo_with_color $RED "❌ Failed to obtain a valid token for asset operations"
+        return 1
+    fi
+    
+    echo_with_color $GREEN "✅ Using admin token for asset operations"
+    
+    local success_count=0
+    local total_count=0
+    
+    # Get asset count
+    local asset_count=$(parse_yaml "$SETUP_FILE" '.assets | length' 2>/dev/null)
+    
+    if [[ -z "$asset_count" || "$asset_count" == "0" ]]; then
+        echo_with_color $YELLOW "⚠️  No assets defined in setup.yaml, skipping asset setup"
+        return 0
+    fi
+    
+    for ((i=0; i<$asset_count; i++)); do
+        local asset_id=$(parse_yaml "$SETUP_FILE" ".assets[$i].id" 2>/dev/null)
+        local name=$(parse_yaml "$SETUP_FILE" ".assets[$i].name" 2>/dev/null)
+        local asset_type=$(parse_yaml "$SETUP_FILE" ".assets[$i].type" 2>/dev/null)
+        local currency=$(parse_yaml "$SETUP_FILE" ".assets[$i].currency" 2>/dev/null)
+        local description=$(parse_yaml "$SETUP_FILE" ".assets[$i].description" 2>/dev/null)
+        local token_id=$(parse_yaml "$SETUP_FILE" ".assets[$i].token_id" 2>/dev/null)
+        
+        # Convert asset type to uppercase as expected by the GraphQL API
+        asset_type=$(echo "$asset_type" | tr '[:lower:]' '[:upper:]')
+        
+        if [[ -n "$asset_id" && -n "$name" && -n "$asset_type" && -n "$currency" && -n "$description" && -n "$token_id" ]]; then
+            total_count=$((total_count + 1))
+            if create_asset "$asset_id" "$name" "$asset_type" "$currency" "$description" "$token_id" "$admin_token"; then
+                success_count=$((success_count + 1))
+            fi
+        else
+            echo_with_color $RED "  ❌ Invalid asset data at index $i"
+            echo_with_color $YELLOW "     Required: id, name, type, currency, description, token_id"
+        fi
+    done
+    
+    echo_with_color $GREEN "✅ Assets setup completed: $success_count/$total_count successful"
+    return $((success_count == total_count ? 0 : 1))
+}
+
 # Function to validate setup.yaml
 validate_setup_file() {
     echo_with_color $CYAN "Validating setup.yaml..."
@@ -679,10 +781,10 @@ validate_setup_file() {
         return 1
     fi
     
-    if [[ "$has_groups" != "true" ]]; then
-        echo_with_color $RED "No groups defined in setup.yaml"
-        return 1
-    fi
+    # if [[ "$has_groups" != "true" ]]; then
+    #     echo_with_color $RED "No groups defined in setup.yaml"
+    #     return 1
+    # fi
     
     # Validate group member structure
     local group_count=$(parse_yaml "$SETUP_FILE" '.groups | length')
@@ -766,6 +868,66 @@ validate_setup_file() {
         done
     fi
     
+    # Validate asset structure
+    local asset_count=$(parse_yaml "$SETUP_FILE" '.assets | length' 2>/dev/null)
+    if [[ -n "$asset_count" && "$asset_count" != "0" ]]; then
+        for ((i=0; i<$asset_count; i++)); do
+            local asset_id=$(parse_yaml "$SETUP_FILE" ".assets[$i].id" 2>/dev/null)
+            local name=$(parse_yaml "$SETUP_FILE" ".assets[$i].name" 2>/dev/null)
+            local asset_type=$(parse_yaml "$SETUP_FILE" ".assets[$i].type" 2>/dev/null)
+            local currency=$(parse_yaml "$SETUP_FILE" ".assets[$i].currency" 2>/dev/null)
+            local description=$(parse_yaml "$SETUP_FILE" ".assets[$i].description" 2>/dev/null)
+            local token_id=$(parse_yaml "$SETUP_FILE" ".assets[$i].token_id" 2>/dev/null)
+            
+            if [[ -z "$asset_id" ]]; then
+                echo_with_color $RED "Error: Asset $i missing 'id' field"
+                return 1
+            fi
+            
+            if [[ -z "$name" ]]; then
+                echo_with_color $RED "Error: Asset '$asset_id' missing 'name' field"
+                return 1
+            fi
+            
+            if [[ -z "$asset_type" ]]; then
+                echo_with_color $RED "Error: Asset '$asset_id' missing 'type' field"
+                return 1
+            fi
+            
+            if [[ -z "$currency" ]]; then
+                echo_with_color $RED "Error: Asset '$asset_id' missing 'currency' field"
+                return 1
+            fi
+            
+            if [[ -z "$description" ]]; then
+                echo_with_color $RED "Error: Asset '$asset_id' missing 'description' field"
+                return 1
+            fi
+            
+            if [[ -z "$token_id" ]]; then
+                echo_with_color $RED "Error: Asset '$asset_id' missing 'token_id' field"
+                return 1
+            fi
+            
+            # Validate asset type against known types (case-insensitive)
+            asset_type_upper=$(echo "$asset_type" | tr '[:lower:]' '[:upper:]')
+            case "$asset_type_upper" in
+                "CASH"|"TOKEN"|"INVOICE"|"FACTORING_AGREEMENT"|"ESCROW_ACCOUNT"|"PAYABLE"|"RECEIVABLE")
+                    ;;
+                *)
+                    echo_with_color $RED "Error: Asset '$asset_id' has invalid type: '$asset_type'"
+                    echo_with_color $YELLOW "Valid types are: Cash, Token, Invoice, Factoring_Agreement, Escrow_Account, Payable, Receivable"
+                    return 1
+                    ;;
+            esac
+            
+            # Validate currency format (basic check for 3-letter currency codes)
+            if [[ ! "$currency" =~ ^[A-Z]{3}$ ]]; then
+                echo_with_color $YELLOW "Warning: Asset '$asset_id' currency '$currency' should be a 3-letter code (e.g., USD, EUR, AUD)"
+            fi
+        done
+    fi
+    
     echo_with_color $GREEN "Setup file validation passed"
     return 0
 }
@@ -822,6 +984,21 @@ show_setup_status() {
                 done
             else
                 echo_with_color $BLUE "   Tokens defined: 0"
+            fi
+            
+            # Show asset details
+            local asset_count=$(parse_yaml "$SETUP_FILE" '.assets | length' 2>/dev/null)
+            if [[ -n "$asset_count" && "$asset_count" != "0" ]]; then
+                echo_with_color $BLUE "   Assets defined: $asset_count"
+                for ((i=0; i<$asset_count; i++)); do
+                    local asset_id=$(parse_yaml "$SETUP_FILE" ".assets[$i].id" 2>/dev/null)
+                    local asset_name=$(parse_yaml "$SETUP_FILE" ".assets[$i].name" 2>/dev/null)
+                    local asset_type=$(parse_yaml "$SETUP_FILE" ".assets[$i].type" 2>/dev/null)
+                    local currency=$(parse_yaml "$SETUP_FILE" ".assets[$i].currency" 2>/dev/null)
+                    echo_with_color $BLUE "   Asset '$asset_name' ($asset_id): Type $asset_type, Currency $currency"
+                done
+            else
+                echo_with_color $BLUE "   Assets defined: 0"
             fi
         else
             echo_with_color $YELLOW "   yq not available - cannot parse YAML"
@@ -900,6 +1077,13 @@ run_setup() {
     fi
     
     echo ""
+    
+    # Setup assets
+    if ! setup_assets; then
+        echo_with_color $YELLOW "⚠️  Asset setup had some issues"
+    fi
+    
+    echo ""
     echo_with_color $GREEN "🎉 System setup completed!"
     echo ""
     
@@ -921,6 +1105,7 @@ show_help() {
     echo_with_color $GREEN "  users" "     - Setup only users from setup.yaml"
     echo_with_color $GREEN "  groups" "    - Setup only groups from setup.yaml"
     echo_with_color $GREEN "  tokens" "    - Setup only tokens from setup.yaml"
+    echo_with_color $GREEN "  assets" "    - Setup only assets from setup.yaml"
     echo_with_color $GREEN "  help" "      - Show this help message"
     echo ""
     echo "Requirements:"
@@ -932,7 +1117,10 @@ show_help() {
     echo "Setup.yaml Structure:"
     echo "  • users: array of users with id, password, and role"
     echo "  • groups: array of groups with members array containing id and role"
+    echo "  • tokens: array of tokens with id, name, description, chain_id, and address"
+    echo "  • assets: array of assets with id, name, type, currency, description, and token_id"
     echo "  • Member roles: owner, admin, member, viewer"
+    echo "  • Asset types: Cash, Token, Invoice, Factoring_Agreement, Escrow_Account, Payable, Receivable"
     echo ""
     echo "Examples:"
     echo "  $0 setup     # Complete system setup"
@@ -1006,6 +1194,21 @@ case "${1:-setup}" in
             
             # Setup tokens
             setup_tokens
+        else
+            echo_with_color $RED "Auth service not running"
+            exit 1
+        fi
+        ;;
+    "assets")
+        if check_service_running "Auth Service" "3000"; then
+            # Create users first if they don't exist
+            if ! create_initial_users; then
+                echo_with_color $RED "Failed to create users"
+                exit 1
+            fi
+            
+            # Setup assets
+            setup_assets
         else
             echo_with_color $RED "Auth service not running"
             exit 1

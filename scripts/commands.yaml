@@ -5,7 +5,7 @@ commands:
       id: issuer@yieldfabric.com
       password: issuerpass456
     parameters:
-      token_id: token-AUD
+      token_id: aud-token-asset
       amount: 10
       idempotency_key: deposit-1
 
@@ -15,7 +15,7 @@ commands:
       id: issuer@yieldfabric.com
       password: issuerpass456
     parameters:
-      token_id: token-AUD
+      token_id: aud-token-asset
       amount: 5
       idempotency_key: instant-1
       destination_id: counterpart@yieldfabric.com
@@ -26,7 +26,7 @@ commands:
       id: issuer@yieldfabric.com
       password: issuerpass456
     parameters:
-      token_id: token-AUD
+      token_id: aud-token-asset
       amount: 5
       idempotency_key: instant-2
       destination_id: admin2@yieldfabric.com
@@ -39,3 +39,12 @@ commands:
     parameters:
       idempotency_key: accept-1
       id_hash: $issuer_send_1.id_hash
+
+  - name: admin2_accept
+    type: accept
+    user: 
+      id: admin2@yieldfabric.com
+      password: testpass123
+    parameters:
+      idempotency_key: accept-2
+      id_hash: $issuer_send_2.id_hash
