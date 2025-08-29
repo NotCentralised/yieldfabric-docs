@@ -483,8 +483,8 @@ create_asset() {
     
     echo_with_color $BLUE "  💎 $name ($asset_id)"
     
-    # Create asset using GraphQL API with assetFlow resolver
-    local create_asset_query="{\"query\": \"mutation { assetFlow { createAsset(name: \\\"$name\\\", description: \\\"$description\\\", assetType: \\\"$asset_type\\\", currency: \\\"$currency\\\", tokenId: \\\"$token_id\\\") { id name assetType status } } }\"}"
+    # Create asset using GraphQL API with input object
+    local create_asset_query="{\"query\": \"mutation { assetFlow { createAsset(input: { name: \\\"$name\\\", description: \\\"$description\\\", assetType: \\\"$asset_type\\\", currency: \\\"$currency\\\", tokenId: \\\"$token_id\\\" }) { success message asset { id name assetType status } transactionId signature timestamp } } }\"}"
     
     local response=$(curl -s -X POST "http://localhost:3002/graphql" \
         -H "Content-Type: application/json" \
@@ -493,18 +493,30 @@ create_asset() {
     
     if [[ -n "$response" ]]; then
         # Check if asset was created successfully
-        local created_asset_id=$(echo "$response" | jq -r '.data.assetFlow.createAsset.id // empty' 2>/dev/null)
-        if [[ -n "$created_asset_id" && "$created_asset_id" != "null" ]]; then
-            echo_with_color $GREEN "    ✅ Created (ID: ${created_asset_id:0:8}...)"
-            return 0
-        else
-            # Check if asset already exists or other errors
-            local error_msg=$(echo "$response" | jq -r '.errors[0].message // empty' 2>/dev/null)
-            if [[ -n "$error_msg" && "$error_msg" == *"already exists"* ]]; then
-                echo_with_color $YELLOW "    ⚠️  Already exists"
+        local success=$(echo "$response" | jq -r '.data.assetFlow.createAsset.success // false' 2>/dev/null)
+        if [[ "$success" == "true" ]]; then
+            local created_asset_id=$(echo "$response" | jq -r '.data.assetFlow.createAsset.asset.id // empty' 2>/dev/null)
+            local message=$(echo "$response" | jq -r '.data.assetFlow.createAsset.message // empty' 2>/dev/null)
+            if [[ -n "$created_asset_id" && "$created_asset_id" != "null" ]]; then
+                echo_with_color $GREEN "    ✅ Created (ID: ${created_asset_id:0:8}...) - $message"
                 return 0
             else
-                echo_with_color $RED "    ❌ Failed: $(echo "$error_msg" | head -c 50)..."
+                echo_with_color $GREEN "    ✅ Created - $message"
+                return 0
+            fi
+        else
+            # Check for errors
+            local error_msg=$(echo "$response" | jq -r '.errors[0].message // empty' 2>/dev/null)
+            if [[ -n "$error_msg" ]]; then
+                if [[ "$error_msg" == *"already exists"* ]]; then
+                    echo_with_color $YELLOW "    ⚠️  Already exists"
+                    return 0
+                else
+                    echo_with_color $RED "    ❌ Failed: $(echo "$error_msg" | head -c 50)..."
+                    return 1
+                fi
+            else
+                echo_with_color $RED "    ❌ Failed: unknown error"
                 return 1
             fi
         fi
