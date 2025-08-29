@@ -428,8 +428,8 @@ create_token() {
     
     echo_with_color $BLUE "  🪙 $name ($token_id)"
     
-    # Create token using GraphQL API
-    local create_token_query="{\"query\": \"mutation { tokenFlow { createToken(chainId: \\\"$chain_id\\\", address: \\\"$address\\\", tokenId: \\\"$token_id_param\\\", name: \\\"$name\\\", description: \\\"$description\\\") { id chainId address } } }\"}"
+    # Create token using GraphQL API with input object
+    local create_token_query="{\"query\": \"mutation { tokenFlow { createToken(input: { chainId: \\\"$chain_id\\\", address: \\\"$address\\\", tokenId: \\\"$token_id_param\\\", name: \\\"$name\\\", description: \\\"$description\\\" }) { success message token { id chainId address } transactionId signature timestamp } } }\"}"
     
     local response=$(curl -s -X POST "http://localhost:3002/graphql" \
         -H "Content-Type: application/json" \
@@ -438,18 +438,30 @@ create_token() {
     
     if [[ -n "$response" ]]; then
         # Check if token was created successfully
-        local created_token_id=$(echo "$response" | jq -r '.data.tokenFlow.createToken.id // empty' 2>/dev/null)
-        if [[ -n "$created_token_id" && "$created_token_id" != "null" ]]; then
-            echo_with_color $GREEN "    ✅ Created (ID: ${created_token_id:0:8}...)"
-            return 0
-        else
-            # Check if token already exists (might be a different error)
-            local error_msg=$(echo "$response" | jq -r '.errors[0].message // empty' 2>/dev/null)
-            if [[ -n "$error_msg" && "$error_msg" == *"already exists"* ]]; then
-                echo_with_color $YELLOW "    ⚠️  Already exists"
+        local success=$(echo "$response" | jq -r '.data.tokenFlow.createToken.success // false' 2>/dev/null)
+        if [[ "$success" == "true" ]]; then
+            local created_token_id=$(echo "$response" | jq -r '.data.tokenFlow.createToken.token.id // empty' 2>/dev/null)
+            local message=$(echo "$response" | jq -r '.data.tokenFlow.createToken.message // empty' 2>/dev/null)
+            if [[ -n "$created_token_id" && "$created_token_id" != "null" ]]; then
+                echo_with_color $GREEN "    ✅ Created (ID: ${created_token_id:0:8}...) - $message"
                 return 0
             else
-                echo_with_color $RED "    ❌ Failed: $(echo "$error_msg" | head -c 50)..."
+                echo_with_color $GREEN "    ✅ Created - $message"
+                return 0
+            fi
+        else
+            # Check for errors
+            local error_msg=$(echo "$response" | jq -r '.errors[0].message // empty' 2>/dev/null)
+            if [[ -n "$error_msg" ]]; then
+                if [[ "$error_msg" == *"already exists"* ]]; then
+                    echo_with_color $YELLOW "    ⚠️  Already exists"
+                    return 0
+                else
+                    echo_with_color $RED "    ❌ Failed: $(echo "$error_msg" | head -c 50)..."
+                    return 1
+                fi
+            else
+                echo_with_color $RED "    ❌ Failed: unknown error"
                 return 1
             fi
         fi
