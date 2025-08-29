@@ -277,9 +277,9 @@ execute_instant() {
     # Prepare GraphQL mutation
     local graphql_mutation
     if [[ -n "$idempotency_key" ]]; then
-        graphql_mutation="mutation { instantSend(input: { tokenId: \\\"$token_id\\\", amount: \\\"$amount\\\", destinationId: \\\"$destination_id\\\", idempotencyKey: \\\"$idempotency_key\\\" }) { success message accountAddress destinationId idHash messageId sendResult timestamp } }"
+        graphql_mutation="mutation { instant(input: { tokenId: \\\"$token_id\\\", amount: \\\"$amount\\\", destinationId: \\\"$destination_id\\\", idempotencyKey: \\\"$idempotency_key\\\" }) { success message accountAddress destinationId idHash messageId sendResult timestamp } }"
     else
-        graphql_mutation="mutation { instantSend(input: { tokenId: \\\"$token_id\\\", amount: \\\"$amount\\\", destinationId: \\\"$destination_id\\\" }) { success message accountAddress destinationId idHash messageId sendResult timestamp } }"
+        graphql_mutation="mutation { instant(input: { tokenId: \\\"$token_id\\\", amount: \\\"$amount\\\", destinationId: \\\"$destination_id\\\" }) { success message accountAddress destinationId idHash messageId sendResult timestamp } }"
     fi
     
     local graphql_payload="{\"query\": \"$graphql_mutation\"}"
@@ -297,14 +297,14 @@ execute_instant() {
     echo_with_color $BLUE "  📡 Raw GraphQL response: '$http_response'"
     
     # Parse GraphQL response
-    local success=$(echo "$http_response" | jq -r '.data.instantSend.success // empty')
+    local success=$(echo "$http_response" | jq -r '.data.instant.success // empty')
     if [[ "$success" == "true" ]]; then
-        local account_address=$(echo "$http_response" | jq -r '.data.instantSend.accountAddress // empty')
-        local destination_address=$(echo "$http_response" | jq -r '.data.instantSend.destinationId // empty')
-        local message=$(echo "$http_response" | jq -r '.data.instantSend.message // empty')
-        local id_hash=$(echo "$http_response" | jq -r '.data.instantSend.idHash // empty')
-        local message_id=$(echo "$http_response" | jq -r '.data.instantSend.messageId // empty')
-        local send_result=$(echo "$http_response" | jq -r '.data.instantSend.sendResult // empty')
+        local account_address=$(echo "$http_response" | jq -r '.data.instant.accountAddress // empty')
+        local destination_address=$(echo "$http_response" | jq -r '.data.instant.destinationId // empty')
+        local message=$(echo "$http_response" | jq -r '.data.instant.message // empty')
+        local id_hash=$(echo "$http_response" | jq -r '.data.instant.idHash // empty')
+        local message_id=$(echo "$http_response" | jq -r '.data.instant.messageId // empty')
+        local send_result=$(echo "$http_response" | jq -r '.data.instant.sendResult // empty')
         
         # Store outputs for variable substitution in future commands
         store_command_output "$command_name" "account_address" "$account_address"
