@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# YieldFabric Commands Execution Script
-# Reads commands.yaml and executes each command sequentially
-# Gets JWT tokens for users and makes REST API calls based on command type
+# YieldFabric GraphQL Commands Execution Script
+# Reads commands.yaml and executes each command sequentially using GraphQL mutations
+# Gets JWT tokens for users and makes GraphQL API calls based on command type
 
 # Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -180,7 +180,7 @@ login_user() {
     fi
 }
 
-# Function to execute deposit command
+# Function to execute deposit command using GraphQL
 execute_deposit() {
     local command_name="$1"
     local user_email="$2"
@@ -189,7 +189,7 @@ execute_deposit() {
     local amount="$5"
     local idempotency_key="$6"
     
-    echo_with_color $CYAN "🏦 Executing deposit command: $command_name"
+    echo_with_color $CYAN "🏦 Executing deposit command via GraphQL: $command_name"
     
     # Login to get JWT token
     local jwt_token=$(login_user "$user_email" "$user_password")
@@ -199,61 +199,61 @@ execute_deposit() {
     fi
     
     echo_with_color $BLUE "  🔑 JWT token obtained (first 50 chars): ${jwt_token:0:50}..."
-    echo_with_color $BLUE "  📤 Sending deposit request..."
+    echo_with_color $BLUE "  📤 Sending GraphQL deposit mutation..."
     
-    # Prepare deposit request payload
-    local deposit_payload="{\"token_id\": \"$token_id\", \"amount\": \"$amount\"}"
+    # Prepare GraphQL mutation
+    local graphql_mutation
     if [[ -n "$idempotency_key" ]]; then
-        deposit_payload="{\"token_id\": \"$token_id\", \"amount\": \"$amount\", \"idempotency_key\": \"$idempotency_key\"}"
+        graphql_mutation="mutation { deposit(input: { tokenId: \\\"$token_id\\\", amount: \\\"$amount\\\", idempotencyKey: \\\"$idempotency_key\\\" }) { success message accountAddress depositResult messageId timestamp } }"
+    else
+        graphql_mutation="mutation { deposit(input: { tokenId: \\\"$token_id\\\", amount: \\\"$amount\\\" }) { success message accountAddress depositResult messageId timestamp } }"
     fi
     
-    echo_with_color $BLUE "  📋 Request payload: $deposit_payload"
+    local graphql_payload="{\"query\": \"$graphql_mutation\"}"
     
-    # Send deposit request to payments service
-    echo_with_color $BLUE "  🌐 Making curl request to: http://localhost:3002/deposit"
-    local http_response=$(curl -s -X POST "http://localhost:3002/deposit" \
+    echo_with_color $BLUE "  📋 GraphQL mutation:"
+    echo_with_color $BLUE "    $graphql_mutation"
+    
+    # Send GraphQL request to payments service
+    echo_with_color $BLUE "  🌐 Making GraphQL request to: http://localhost:3002/graphql"
+    local http_response=$(curl -s -X POST "http://localhost:3002/graphql" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $jwt_token" \
-        -d "$deposit_payload")
+        -d "$graphql_payload")
     
-    echo_with_color $BLUE "  📡 Raw curl response: '$http_response'"
+    echo_with_color $BLUE "  📡 Raw GraphQL response: '$http_response'"
     
-    local http_status="200"  # Since curl -s doesn't show status, assume success if we get response
-    local response_body="$http_response"
-    
-    if [[ "$http_status" == "200" ]]; then
-        echo_with_color $BLUE "  📥 Response received: $response_body"
-        local success=$(echo "$response_body" | jq -r '.success // empty')
-        if [[ "$success" == "true" ]]; then
-            local account_address=$(echo "$response_body" | jq -r '.account_address // empty')
-            local message=$(echo "$response_body" | jq -r '.message // empty')
-            local message_id=$(echo "$response_body" | jq -r '.message_id // empty')
-            
-            # Store outputs for variable substitution in future commands
-            store_command_output "$command_name" "account_address" "$account_address"
-            store_command_output "$command_name" "message" "$message"
-            store_command_output "$command_name" "message_id" "$message_id"
-            
-            echo_with_color $GREEN "    ✅ Deposit successful!"
-            echo_with_color $BLUE "      Account: $account_address"
-            echo_with_color $BLUE "      Message: $message"
-            echo_with_color $BLUE "      Message ID: $message_id"
-            echo_with_color $CYAN "      📝 Stored outputs for variable substitution:"
-            echo_with_color $CYAN "        ${command_name}_account_address, ${command_name}_message, ${command_name}_message_id"
-            return 0
-        else
-            echo_with_color $RED "    ❌ Deposit failed: success=false"
-            echo_with_color $BLUE "      Full response: $response_body"
-            return 1
-        fi
+    # Parse GraphQL response
+    local success=$(echo "$http_response" | jq -r '.data.deposit.success // empty')
+    if [[ "$success" == "true" ]]; then
+        local account_address=$(echo "$http_response" | jq -r '.data.deposit.accountAddress // empty')
+        local message=$(echo "$http_response" | jq -r '.data.deposit.message // empty')
+        local message_id=$(echo "$http_response" | jq -r '.data.deposit.messageId // empty')
+        local deposit_result=$(echo "$http_response" | jq -r '.data.deposit.depositResult // empty')
+        
+        # Store outputs for variable substitution in future commands
+        store_command_output "$command_name" "account_address" "$account_address"
+        store_command_output "$command_name" "message" "$message"
+        store_command_output "$command_name" "message_id" "$message_id"
+        store_command_output "$command_name" "deposit_result" "$deposit_result"
+        
+        echo_with_color $GREEN "    ✅ Deposit successful!"
+        echo_with_color $BLUE "      Account: $account_address"
+        echo_with_color $BLUE "      Message: $message"
+        echo_with_color $BLUE "      Message ID: $message_id"
+        echo_with_color $BLUE "      Deposit Result: $deposit_result"
+        echo_with_color $CYAN "      📝 Stored outputs for variable substitution:"
+        echo_with_color $CYAN "        ${command_name}_account_address, ${command_name}_message, ${command_name}_message_id, ${command_name}_deposit_result"
+        return 0
     else
-        echo_with_color $RED "    ❌ Deposit request failed (HTTP $http_status)"
-        echo_with_color $BLUE "      Response: $response_body"
+        local error_message=$(echo "$http_response" | jq -r '.errors[0].message // "Unknown error"')
+        echo_with_color $RED "    ❌ Deposit failed: $error_message"
+        echo_with_color $BLUE "      Full response: $http_response"
         return 1
     fi
 }
 
-# Function to execute instant command
+# Function to execute instant command using GraphQL
 execute_instant() {
     local command_name="$1"
     local user_email="$2"
@@ -263,7 +263,7 @@ execute_instant() {
     local destination_id="$6"
     local idempotency_key="$7"
     
-    echo_with_color $CYAN "⚡ Executing instant command: $command_name"
+    echo_with_color $CYAN "⚡ Executing instant command via GraphQL: $command_name"
     
     # Login to get JWT token
     local jwt_token=$(login_user "$user_email" "$user_password")
@@ -272,69 +272,69 @@ execute_instant() {
         return 1
     fi
     
-    echo_with_color $BLUE "  📤 Sending instant payment request..."
+    echo_with_color $BLUE "  📤 Sending GraphQL instant send mutation..."
     
-    # Prepare instant payment request payload
-    local instant_payload="{\"token_id\": \"$token_id\", \"amount\": \"$amount\", \"destination_id\": \"$destination_id\"}"
+    # Prepare GraphQL mutation
+    local graphql_mutation
     if [[ -n "$idempotency_key" ]]; then
-        instant_payload="{\"token_id\": \"$token_id\", \"amount\": \"$amount\", \"destination_id\": \"$destination_id\", \"idempotency_key\": \"$idempotency_key\"}"
+        graphql_mutation="mutation { instantSend(input: { tokenId: \\\"$token_id\\\", amount: \\\"$amount\\\", destinationId: \\\"$destination_id\\\", idempotencyKey: \\\"$idempotency_key\\\" }) { success message accountAddress destinationId idHash messageId sendResult timestamp } }"
+    else
+        graphql_mutation="mutation { instantSend(input: { tokenId: \\\"$token_id\\\", amount: \\\"$amount\\\", destinationId: \\\"$destination_id\\\" }) { success message accountAddress destinationId idHash messageId sendResult timestamp } }"
     fi
     
-    echo_with_color $BLUE "  📋 Request payload: $instant_payload"
+    local graphql_payload="{\"query\": \"$graphql_mutation\"}"
     
-    # Send instant payment request to payments service
-    echo_with_color $BLUE "  🌐 Making curl request to: http://localhost:3002/instant"
-    local http_response=$(curl -s -X POST "http://localhost:3002/instant" \
+    echo_with_color $BLUE "  📋 GraphQL mutation:"
+    echo_with_color $BLUE "    $graphql_mutation"
+    
+    # Send GraphQL request to payments service
+    echo_with_color $BLUE "  🌐 Making GraphQL request to: http://localhost:3002/graphql"
+    local http_response=$(curl -s -X POST "http://localhost:3002/graphql" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $jwt_token" \
-        -d "$instant_payload")
+        -d "$graphql_payload")
     
-    echo_with_color $BLUE "  📡 Raw curl response: '$http_response'"
+    echo_with_color $BLUE "  📡 Raw GraphQL response: '$http_response'"
     
-    local http_status="200"  # Since curl -s doesn't show status, assume success if we get response
-    local response_body="$http_response"
-    
-    if [[ "$http_status" == "200" ]]; then
-        echo_with_color $BLUE "  📥 Response received: $response_body"
-        local success=$(echo "$response_body" | jq -r '.success // empty')
-        if [[ "$success" == "true" ]]; then
-            local account_address=$(echo "$response_body" | jq -r '.account_address // empty')
-            local destination_address=$(echo "$response_body" | jq -r '.destination_id // empty')
-            local message=$(echo "$response_body" | jq -r '.message // empty')
-            local id_hash=$(echo "$response_body" | jq -r '.id_hash // empty')
-            local message_id=$(echo "$response_body" | jq -r '.message_id // empty')
-            
-            # Store outputs for variable substitution in future commands
-            store_command_output "$command_name" "account_address" "$account_address"
-            store_command_output "$command_name" "destination_id" "$destination_address"
-            store_command_output "$command_name" "message" "$message"
-            store_command_output "$command_name" "id_hash" "$id_hash"
-            store_command_output "$command_name" "message_id" "$message_id"
-            
-            echo_with_color $GREEN "    ✅ Instant payment successful!"
-            echo_with_color $BLUE "      From Account: $account_address"
-            echo_with_color $BLUE "      To Address: $destination_address"
-            echo_with_color $BLUE "      Message: $message"
-            echo_with_color $BLUE "      Message ID: $message_id"
-            if [[ -n "$id_hash" ]]; then
-                echo_with_color $CYAN "      ID Hash: $id_hash"
-            fi
-            echo_with_color $CYAN "      📝 Stored outputs for variable substitution:"
-            echo_with_color $CYAN "        ${command_name}_account_address, ${command_name}_destination_id, ${command_name}_message, ${command_name}_id_hash, ${command_name}_message_id"
-            return 0
-        else
-            echo_with_color $RED "    ❌ Instant payment failed: success=false"
-            echo_with_color $BLUE "      Full response: $response_body"
-            return 1
+    # Parse GraphQL response
+    local success=$(echo "$http_response" | jq -r '.data.instantSend.success // empty')
+    if [[ "$success" == "true" ]]; then
+        local account_address=$(echo "$http_response" | jq -r '.data.instantSend.accountAddress // empty')
+        local destination_address=$(echo "$http_response" | jq -r '.data.instantSend.destinationId // empty')
+        local message=$(echo "$http_response" | jq -r '.data.instantSend.message // empty')
+        local id_hash=$(echo "$http_response" | jq -r '.data.instantSend.idHash // empty')
+        local message_id=$(echo "$http_response" | jq -r '.data.instantSend.messageId // empty')
+        local send_result=$(echo "$http_response" | jq -r '.data.instantSend.sendResult // empty')
+        
+        # Store outputs for variable substitution in future commands
+        store_command_output "$command_name" "account_address" "$account_address"
+        store_command_output "$command_name" "destination_id" "$destination_address"
+        store_command_output "$command_name" "message" "$message"
+        store_command_output "$command_name" "id_hash" "$id_hash"
+        store_command_output "$command_name" "message_id" "$message_id"
+        store_command_output "$command_name" "send_result" "$send_result"
+        
+        echo_with_color $GREEN "    ✅ Instant payment successful!"
+        echo_with_color $BLUE "      From Account: $account_address"
+        echo_with_color $BLUE "      To Address: $destination_address"
+        echo_with_color $BLUE "      Message: $message"
+        echo_with_color $BLUE "      Message ID: $message_id"
+        echo_with_color $BLUE "      Send Result: $send_result"
+        if [[ -n "$id_hash" ]]; then
+            echo_with_color $CYAN "      ID Hash: $id_hash"
         fi
+        echo_with_color $CYAN "      📝 Stored outputs for variable substitution:"
+        echo_with_color $CYAN "        ${command_name}_account_address, ${command_name}_destination_id, ${command_name}_message, ${command_name}_id_hash, ${command_name}_message_id, ${command_name}_send_result"
+        return 0
     else
-        echo_with_color $RED "    ❌ Instant payment request failed (HTTP $http_status)"
-        echo_with_color $BLUE "      Response: $response_body"
+        local error_message=$(echo "$http_response" | jq -r '.errors[0].message // "Unknown error"')
+        echo_with_color $RED "    ❌ Instant payment failed: $error_message"
+        echo_with_color $BLUE "      Full response: $http_response"
         return 1
     fi
 }
 
-# Function to execute accept command
+# Function to execute accept command using GraphQL
 execute_accept() {
     local command_name="$1"
     local user_email="$2"
@@ -342,7 +342,7 @@ execute_accept() {
     local id_hash="$4"
     local idempotency_key="$5"
     
-    echo_with_color $CYAN "✅ Executing accept command: $command_name"
+    echo_with_color $CYAN "✅ Executing accept command via GraphQL: $command_name"
     
     # Login to get JWT token
     local jwt_token=$(login_user "$user_email" "$user_password")
@@ -351,102 +351,59 @@ execute_accept() {
         return 1
     fi
     
-    echo_with_color $BLUE "  📤 Sending accept request..."
+    echo_with_color $BLUE "  📤 Sending GraphQL accept mutation..."
     
-    # Prepare accept request payload
-    local accept_payload="{\"id_hash\": \"$id_hash\"}"
+    # Prepare GraphQL mutation
+    local graphql_mutation
     if [[ -n "$idempotency_key" ]]; then
-        accept_payload="{\"id_hash\": \"$id_hash\", \"idempotency_key\": \"$idempotency_key\"}"
-    fi
-    
-    echo_with_color $BLUE "  📋 Request payload: $accept_payload"
-    
-    # Send accept request to payments service
-    echo_with_color $BLUE "  🌐 Making curl request to: http://localhost:3002/accept"
-    local http_response=$(curl -s -X POST "http://localhost:3002/accept" \
-        -H "Content-Type: application/json" \
-        -H "Authorization: Bearer $jwt_token" \
-        -d "$accept_payload")
-    
-    echo_with_color $BLUE "  📡 Raw curl response: '$http_response'"
-    
-    local http_status="200"  # Since curl -s doesn't show status, assume success if we get response
-    local response_body="$http_response"
-    
-    if [[ "$http_status" == "200" ]]; then
-        echo_with_color $BLUE "  📥 Response received: $response_body"
-        local success=$(echo "$response_body" | jq -r '.success // empty')
-        if [[ "$success" == "true" ]]; then
-            local account_address=$(echo "$response_body" | jq -r '.account_address // empty')
-            local message=$(echo "$response_body" | jq -r '.message // empty')
-            local id_hash=$(echo "$response_body" | jq -r '.id_hash // empty')
-            local message_id=$(echo "$response_body" | jq -r '.message_id // empty')
-            
-            # Store outputs for variable substitution in future commands
-            store_command_output "$command_name" "account_address" "$account_address"
-            store_command_output "$command_name" "message" "$message"
-            store_command_output "$command_name" "id_hash" "$id_hash"
-            store_command_output "$command_name" "message_id" "$message_id"
-            
-            echo_with_color $GREEN "    ✅ Accept successful!"
-            echo_with_color $BLUE "      Account: $account_address"
-            echo_with_color $BLUE "      ID Hash: $id_hash"
-            echo_with_color $BLUE "      Message: $message"
-            echo_with_color $BLUE "      Message ID: $message_id"
-            echo_with_color $CYAN "      📝 Stored outputs for variable substitution:"
-            echo_with_color $CYAN "        ${command_name}_account_address, ${command_name}_message, ${command_name}_id_hash, ${command_name}_message_id"
-            return 0
-        else
-            echo_with_color $RED "    ❌ Accept failed: success=false"
-            echo_with_color $BLUE "      Full response: $response_body"
-            return 1
-        fi
+        graphql_mutation="mutation { accept(input: { idHash: \\\"$id_hash\\\", idempotencyKey: \\\"$idempotency_key\\\" }) { success message accountAddress idHash acceptResult messageId timestamp } }"
     else
-        echo_with_color $RED "    ❌ Accept request failed (HTTP $http_status)"
-        echo_with_color $BLUE "      Response: $response_body"
-        return 1
-    fi
-}
-
-# Function to execute hello world command (example for future use)
-execute_hello_world() {
-    local command_name="$1"
-    local user_email="$2"
-    local user_password="$3"
-    local message="$4"
-    
-    echo_with_color $CYAN "🌍 Executing hello world command: $command_name"
-    
-    # Login to get JWT token
-    local jwt_token=$(login_user "$user_email" "$user_password")
-    if [[ -z "$jwt_token" ]]; then
-        echo_with_color $RED "❌ Failed to get JWT token for user: $user_email"
-        return 1
+        graphql_mutation="mutation { accept(input: { idHash: \\\"$id_hash\\\" }) { success message accountAddress idHash acceptResult messageId timestamp } }"
     fi
     
-    echo_with_color $BLUE "  📤 Sending hello world request..."
+    local graphql_payload="{\"query\": \"$graphql_mutation\"}"
     
-    # Prepare hello world request payload
-    local hello_payload="{\"message\": \"$message\"}"
+    echo_with_color $BLUE "  📋 GraphQL mutation:"
+    echo_with_color $BLUE "    $graphql_mutation"
     
-    echo_with_color $BLUE "  📋 Request payload: $hello_payload"
-    
-    # Send hello world request (assuming there's a /hello endpoint that accepts POST)
-    local http_response=$(curl -s -X POST "http://localhost:3002/hello" \
+    # Send GraphQL request to payments service
+    echo_with_color $BLUE "  🌐 Making GraphQL request to: http://localhost:3002/graphql"
+    local http_response=$(curl -s -X POST "http://localhost:3002/graphql" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $jwt_token" \
-        -d "$hello_payload")
+        -d "$graphql_payload")
     
-    local http_status="200"  # Since curl -s doesn't show status, assume success if we get response
-    local response_body="$http_response"
+    echo_with_color $BLUE "  📡 Raw GraphQL response: '$http_response'"
     
-    if [[ "$http_status" == "200" ]]; then
-        echo_with_color $GREEN "    ✅ Hello world successful!"
-        echo_with_color $BLUE "      Response: $response_body"
+    # Parse GraphQL response
+    local success=$(echo "$http_response" | jq -r '.data.accept.success // empty')
+    if [[ "$success" == "true" ]]; then
+        local account_address=$(echo "$http_response" | jq -r '.data.accept.accountAddress // empty')
+        local message=$(echo "$http_response" | jq -r '.data.accept.message // empty')
+        local id_hash=$(echo "$http_response" | jq -r '.data.accept.idHash // empty')
+        local message_id=$(echo "$http_response" | jq -r '.data.accept.messageId // empty')
+        local accept_result=$(echo "$http_response" | jq -r '.data.accept.acceptResult // empty')
+        
+        # Store outputs for variable substitution in future commands
+        store_command_output "$command_name" "account_address" "$account_address"
+        store_command_output "$command_name" "message" "$message"
+        store_command_output "$command_name" "id_hash" "$id_hash"
+        store_command_output "$command_name" "message_id" "$message_id"
+        store_command_output "$command_name" "accept_result" "$accept_result"
+        
+        echo_with_color $GREEN "    ✅ Accept successful!"
+        echo_with_color $BLUE "      Account: $account_address"
+        echo_with_color $BLUE "      ID Hash: $id_hash"
+        echo_with_color $BLUE "      Message: $message"
+        echo_with_color $BLUE "      Message ID: $message_id"
+        echo_with_color $BLUE "      Accept Result: $accept_result"
+        echo_with_color $CYAN "      📝 Stored outputs for variable substitution:"
+        echo_with_color $CYAN "        ${command_name}_account_address, ${command_name}_message, ${command_name}_id_hash, ${command_name}_message_id, ${command_name}_accept_result"
         return 0
     else
-        echo_with_color $RED "    ❌ Hello world request failed (HTTP $http_status)"
-        echo_with_color $BLUE "      Response: $response_body"
+        local error_message=$(echo "$http_response" | jq -r '.errors[0].message // "Unknown error"')
+        echo_with_color $RED "    ❌ Accept failed: $error_message"
+        echo_with_color $BLUE "      Full response: $http_response"
         return 1
     fi
 }
@@ -499,11 +456,6 @@ execute_command() {
             ;;
         "accept")
             execute_accept "$command_name" "$user_email" "$user_password" "$id_hash" "$idempotency_key"
-            ;;
-        "hello_world")
-            local message=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.message")
-            message=$(substitute_variables "$message")
-            execute_hello_world "$command_name" "$user_email" "$user_password" "$message"
             ;;
         *)
             echo_with_color $RED "❌ Unknown command type: $command_type"
@@ -606,17 +558,10 @@ validate_commands_file() {
                     return 1
                 fi
                 ;;
-            "hello_world")
-                local message=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.message")
-                
-                if [[ -z "$message" ]]; then
-                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.message' field"
-                    return 1
-                fi
-                ;;
+
             *)
                 echo_with_color $RED "Error: Command '$command_name' has unsupported type: '$command_type'"
-                echo_with_color $YELLOW "Supported types: deposit, instant, accept, hello_world"
+                echo_with_color $YELLOW "Supported types: deposit, instant, accept"
                 return 1
                 ;;
         esac
@@ -628,8 +573,8 @@ validate_commands_file() {
 
 # Function to show commands status
 show_commands_status() {
-    echo_with_color $CYAN "YieldFabric Commands Execution Status"
-    echo "============================================="
+    echo_with_color $CYAN "YieldFabric GraphQL Commands Execution Status"
+    echo "====================================================="
     
     # Check services
     echo_with_color $BLUE "Service Status:"
@@ -643,6 +588,7 @@ show_commands_status() {
     
     if check_service_running "Payments Service" "3002"; then
         echo_with_color $GREEN "   Payments Service (port 3002) - Running"
+        echo_with_color $BLUE "   GraphQL endpoint available at: http://localhost:3002/graphql"
     else
         echo_with_color $RED "   Payments Service (port 3002) - Not running"
         echo_with_color $YELLOW "   Start the payments service first: cd ../yieldfabric-payments && cargo run"
@@ -686,7 +632,7 @@ show_commands_status() {
 
 # Function to execute all commands
 execute_all_commands() {
-    echo_with_color $CYAN "🚀 Executing all commands from commands.yaml..."
+    echo_with_color $CYAN "🚀 Executing all commands from commands.yaml using GraphQL mutations..."
     echo ""
     
     # Validate commands file
@@ -707,6 +653,7 @@ execute_all_commands() {
         echo_with_color $RED "❌ Payments service is not running on port 3002"
         echo_with_color $YELLOW "Please start the payments service first:"
         echo "   cd ../yieldfabric-payments && cargo run"
+        echo_with_color $BLUE "   GraphQL endpoint will be available at: http://localhost:3002/graphql"
         return 1
     fi
     
@@ -789,13 +736,13 @@ show_stored_variables() {
 
 # Function to show help
 show_help() {
-    echo_with_color $CYAN "YieldFabric Commands Execution Script"
-    echo "============================================="
+    echo_with_color $CYAN "YieldFabric GraphQL Commands Execution Script"
+    echo "====================================================="
     echo ""
     echo "Usage: $0 [command]"
     echo ""
     echo "Commands:"
-    echo_with_color $GREEN "  execute" "  - Execute all commands from commands.yaml"
+    echo_with_color $GREEN "  execute" "  - Execute all commands from commands.yaml using GraphQL mutations"
     echo_with_color $GREEN "  status" "   - Show current status and requirements"
     echo_with_color $GREEN "  validate" " - Validate commands.yaml file structure"
     echo_with_color $GREEN "  variables" " - Show currently stored variables for command chaining"
@@ -803,9 +750,14 @@ show_help() {
     echo ""
     echo "Requirements:"
     echo "  • yieldfabric-auth service running on port 3000"
-    echo "  • yieldfabric-payments service running on port 3002"
+    echo "  • yieldfabric-payments service running on port 3002 with GraphQL endpoint"
     echo "  • yq YAML parser installed"
     echo "  • commands.yaml file with commands configuration"
+    echo ""
+    echo "GraphQL Mutations Used:"
+    echo "  • deposit: Creates token deposits via GraphQL"
+    echo "  • instantSend: Sends instant payments via GraphQL"
+    echo "  • accept: Accepts payments using id_hash via GraphQL"
     echo ""
     echo "Commands.yaml Structure:"
     echo "  • commands: array of commands with type, user, and parameters"
@@ -819,7 +771,7 @@ show_help() {
     echo "  • message_id: \$instant_pay.message_id # Use message_id from 'instant_pay' command"
     echo ""
     echo "Examples:"
-    echo "  $0 execute    # Execute all commands"
+    echo "  $0 execute    # Execute all commands via GraphQL"
     echo "  $0 status     # Check requirements"
     echo "  $0 validate   # Validate commands.yaml structure"
     echo "  $0 variables  # Show stored variables"
