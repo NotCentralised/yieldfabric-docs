@@ -38,7 +38,7 @@ commands:
       password: counterpass789
     parameters:
       idempotency_key: accept-1
-      id_hash: $issuer_send_1.id_hash
+      payment_id: $issuer_send_1.payment_id
 
   - name: admin2_accept
     type: accept
@@ -47,4 +47,4 @@ commands:
       password: testpass123
     parameters:
       idempotency_key: accept-2
-      id_hash: $issuer_send_2.id_hash
+      payment_id: $issuer_send_2.payment_id

@@ -277,9 +277,9 @@ execute_instant() {
     # Prepare GraphQL mutation
     local graphql_mutation
     if [[ -n "$idempotency_key" ]]; then
-        graphql_mutation="mutation { instant(input: { tokenId: \\\"$token_id\\\", amount: \\\"$amount\\\", destinationId: \\\"$destination_id\\\", idempotencyKey: \\\"$idempotency_key\\\" }) { success message accountAddress destinationId idHash messageId sendResult timestamp } }"
+        graphql_mutation="mutation { instant(input: { tokenId: \\\"$token_id\\\", amount: \\\"$amount\\\", destinationId: \\\"$destination_id\\\", idempotencyKey: \\\"$idempotency_key\\\" }) { success message accountAddress destinationId idHash messageId paymentId sendResult timestamp } }"
     else
-        graphql_mutation="mutation { instant(input: { tokenId: \\\"$token_id\\\", amount: \\\"$amount\\\", destinationId: \\\"$destination_id\\\" }) { success message accountAddress destinationId idHash messageId sendResult timestamp } }"
+        graphql_mutation="mutation { instant(input: { tokenId: \\\"$token_id\\\", amount: \\\"$amount\\\", destinationId: \\\"$destination_id\\\" }) { success message accountAddress destinationId idHash messageId paymentId sendResult timestamp } }"
     fi
     
     local graphql_payload="{\"query\": \"$graphql_mutation\"}"
@@ -304,6 +304,7 @@ execute_instant() {
         local message=$(echo "$http_response" | jq -r '.data.instant.message // empty')
         local id_hash=$(echo "$http_response" | jq -r '.data.instant.idHash // empty')
         local message_id=$(echo "$http_response" | jq -r '.data.instant.messageId // empty')
+        local payment_id=$(echo "$http_response" | jq -r '.data.instant.paymentId // empty')
         local send_result=$(echo "$http_response" | jq -r '.data.instant.sendResult // empty')
         
         # Store outputs for variable substitution in future commands
@@ -312,6 +313,7 @@ execute_instant() {
         store_command_output "$command_name" "message" "$message"
         store_command_output "$command_name" "id_hash" "$id_hash"
         store_command_output "$command_name" "message_id" "$message_id"
+        store_command_output "$command_name" "payment_id" "$payment_id"
         store_command_output "$command_name" "send_result" "$send_result"
         
         echo_with_color $GREEN "    ✅ Instant payment successful!"
@@ -319,12 +321,13 @@ execute_instant() {
         echo_with_color $BLUE "      To Address: $destination_address"
         echo_with_color $BLUE "      Message: $message"
         echo_with_color $BLUE "      Message ID: $message_id"
+        echo_with_color $BLUE "      Payment ID: $payment_id"
         echo_with_color $BLUE "      Send Result: $send_result"
         if [[ -n "$id_hash" ]]; then
             echo_with_color $CYAN "      ID Hash: $id_hash"
         fi
         echo_with_color $CYAN "      📝 Stored outputs for variable substitution:"
-        echo_with_color $CYAN "        ${command_name}_account_address, ${command_name}_destination_id, ${command_name}_message, ${command_name}_id_hash, ${command_name}_message_id, ${command_name}_send_result"
+        echo_with_color $CYAN "        ${command_name}_account_address, ${command_name}_destination_id, ${command_name}_message, ${command_name}_id_hash, ${command_name}_message_id, ${command_name}_payment_id, ${command_name}_send_result"
         return 0
     else
         local error_message=$(echo "$http_response" | jq -r '.errors[0].message // "Unknown error"')
@@ -339,7 +342,7 @@ execute_accept() {
     local command_name="$1"
     local user_email="$2"
     local user_password="$3"
-    local id_hash="$4"
+    local payment_id="$4"
     local idempotency_key="$5"
     
     echo_with_color $CYAN "✅ Executing accept command via GraphQL: $command_name"
@@ -355,11 +358,14 @@ execute_accept() {
     
     # Prepare GraphQL mutation
     local graphql_mutation
+    local input_params="paymentId: \\\"$payment_id\\\""
+    
+    # Add idempotency_key if provided
     if [[ -n "$idempotency_key" ]]; then
-        graphql_mutation="mutation { accept(input: { idHash: \\\"$id_hash\\\", idempotencyKey: \\\"$idempotency_key\\\" }) { success message accountAddress idHash acceptResult messageId timestamp } }"
-    else
-        graphql_mutation="mutation { accept(input: { idHash: \\\"$id_hash\\\" }) { success message accountAddress idHash acceptResult messageId timestamp } }"
+        input_params="$input_params, idempotencyKey: \\\"$idempotency_key\\\""
     fi
+    
+    graphql_mutation="mutation { accept(input: { $input_params }) { success message accountAddress idHash acceptResult messageId timestamp } }"
     
     local graphql_payload="{\"query\": \"$graphql_mutation\"}"
     
@@ -425,7 +431,7 @@ execute_command() {
     local token_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.token_id")
     local amount=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.amount")
     local destination_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.destination_id")
-    local id_hash=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.id_hash")
+    local payment_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.payment_id")
     local idempotency_key=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.idempotency_key")
     
     # Apply variable substitution to parameters
@@ -433,7 +439,7 @@ execute_command() {
     token_id=$(substitute_variables "$token_id")
     amount=$(substitute_variables "$amount")
     destination_id=$(substitute_variables "$destination_id")
-    id_hash=$(substitute_variables "$id_hash")
+    payment_id=$(substitute_variables "$payment_id")
     idempotency_key=$(substitute_variables "$idempotency_key")
     
     echo_with_color $PURPLE "🚀 Executing command $((command_index + 1)): $command_name"
@@ -443,7 +449,7 @@ execute_command() {
     if [[ -n "$token_id" ]]; then echo_with_color $BLUE "    token_id: $token_id"; fi
     if [[ -n "$amount" ]]; then echo_with_color $BLUE "    amount: $amount"; fi
     if [[ -n "$destination_id" ]]; then echo_with_color $BLUE "    destination_id: $destination_id"; fi
-    if [[ -n "$id_hash" ]]; then echo_with_color $BLUE "    id_hash: $id_hash"; fi
+    if [[ -n "$payment_id" ]]; then echo_with_color $BLUE "    payment_id: $payment_id"; fi
     if [[ -n "$idempotency_key" ]]; then echo_with_color $BLUE "    idempotency_key: $idempotency_key"; fi
     
     # Execute command based on type
@@ -455,7 +461,7 @@ execute_command() {
             execute_instant "$command_name" "$user_email" "$user_password" "$token_id" "$amount" "$destination_id" "$idempotency_key"
             ;;
         "accept")
-            execute_accept "$command_name" "$user_email" "$user_password" "$id_hash" "$idempotency_key"
+            execute_accept "$command_name" "$user_email" "$user_password" "$payment_id" "$idempotency_key"
             ;;
         *)
             echo_with_color $RED "❌ Unknown command type: $command_type"
@@ -551,10 +557,10 @@ validate_commands_file() {
                 fi
                 ;;
             "accept")
-                local id_hash=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.id_hash")
+                local payment_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.payment_id")
                 
-                if [[ -z "$id_hash" ]]; then
-                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.id_hash' field"
+                if [[ -z "$payment_id" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.payment_id' field"
                     return 1
                 fi
                 ;;
