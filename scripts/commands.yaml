@@ -1,34 +1,34 @@
 commands:
-  # - name: issuer_deposit
-  #   type: deposit
-  #   user: 
-  #     id: issuer@yieldfabric.com
-  #     password: issuerpass456
-  #   parameters:
-  #     asset_id: aud-token-asset
-  #     amount: 10
-  #     idempotency_key: deposit-1
+  - name: issuer_deposit
+    type: deposit
+    user: 
+      id: issuer@yieldfabric.com
+      password: issuerpass456
+    parameters:
+      asset_id: aud-token-asset
+      amount: 10
+      idempotency_key: deposit-1
 
-  # - name: issuer_balance_1
-  #   type: balance
-  #   user: 
-  #     id: issuer@yieldfabric.com
-  #     password: issuerpass456
-  #   parameters:
-  #     obligor: 0x0000000000000000000000000000000000000000
-  #     denomination: aud-token-asset
-  #     group_id: 0
+  - name: issuer_balance_1
+    type: balance
+    user: 
+      id: issuer@yieldfabric.com
+      password: issuerpass456
+    parameters:
+      denomination: aud-token-asset
+      obligor: 0x0000000000000000000000000000000000000000
+      group_id: 0
 
-  # - name: issuer_send_1
-  #   type: instant
-  #   user: 
-  #     id: issuer@yieldfabric.com
-  #     password: issuerpass456
-  #   parameters:
-  #     asset_id: aud-token-asset
-  #     amount: 5
-  #     idempotency_key: instant-1
-  #     destination_id: counterpart@yieldfabric.com
+  - name: issuer_send_1
+    type: instant
+    user: 
+      id: issuer@yieldfabric.com
+      password: issuerpass456
+    parameters:
+      asset_id: aud-token-asset
+      amount: 5
+      idempotency_key: instant-1
+      destination_id: counterpart@yieldfabric.com
 
   - name: issuer_balance_2
     type: balance
@@ -36,35 +36,58 @@ commands:
       id: issuer@yieldfabric.com
       password: issuerpass456
     parameters:
-      # obligor: 0x0000000000000000000000000000000000000000
       denomination: aud-token-asset
-      # group_id: 0
 
-  # - name: issuer_send_2
-  #   type: instant
-  #   user: 
-  #     id: issuer@yieldfabric.com
-  #     password: issuerpass456
-  #   parameters:
-  #     asset_id: aud-token-asset
-  #     amount: 5
-  #     idempotency_key: instant-2
-  #     destination_id: admin2@yieldfabric.com
 
-  # - name: counterpart_accept
-  #   type: accept
-  #   user: 
-  #     id: counterpart@yieldfabric.com
-  #     password: counterpass789
-  #   parameters:
-  #     idempotency_key: accept-1
-  #     payment_id: $issuer_send_1.payment_id
+  - name: issuer_send_2
+    type: instant
+    user: 
+      id: issuer@yieldfabric.com
+      password: issuerpass456
+    parameters:
+      asset_id: aud-token-asset
+      amount: 5
+      idempotency_key: instant-2
+      destination_id: admin2@yieldfabric.com
 
-  # - name: admin2_accept
-  #   type: accept
-  #   user: 
-  #     id: admin2@yieldfabric.com
-  #     password: testpass123
-  #   parameters:
-  #     idempotency_key: accept-2
-  #     payment_id: $issuer_send_2.payment_id
+  - name: issuer_balance_3
+    type: balance
+    user: 
+      id: issuer@yieldfabric.com
+      password: issuerpass456
+    parameters:
+      denomination: aud-token-asset
+
+  - name: counterpart_accept
+    type: accept
+    user: 
+      id: counterpart@yieldfabric.com
+      password: counterpass789
+    parameters:
+      idempotency_key: accept-1
+      payment_id: $issuer_send_1.payment_id
+
+  - name: counterpart_balance_1
+    type: balance
+    user: 
+      id: counterpart@yieldfabric.com
+      password: counterpass789
+    parameters:
+      denomination: aud-token-asset
+
+  - name: admin2_accept
+    type: accept
+    user: 
+      id: admin2@yieldfabric.com
+      password: testpass123
+    parameters:
+      idempotency_key: accept-2
+      payment_id: $issuer_send_2.payment_id
+
+  - name: admin2_balance_1
+    type: balance
+    user: 
+      id: admin2@yieldfabric.com
+      password: testpass123
+    parameters:
+      denomination: aud-token-asset
