@@ -5,11 +5,11 @@ users:
 
   - id: issuer@yieldfabric.com
     password: issuerpass456
-    role: Admin
+    role: SuperAdmin
 
   - id: counterpart@yieldfabric.com
     password: counterpass789
-    role: Admin
+    role: SuperAdmin
 
 groups:
   - id: admin-group

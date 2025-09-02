@@ -355,10 +355,13 @@ check_user_in_group() {
     fi
     
     # Check if user is already a member
-    local members_response=$(curl -s -X GET "http://localhost:3000/auth/groups/$group_id/members" \
+    local http_response=$(curl -s -w "HTTP_STATUS:%{http_code}" -X GET "http://localhost:3000/auth/groups/$group_id/members" \
         -H "Authorization: Bearer $admin_token")
     
-    if [[ -n "$members_response" ]]; then
+    local http_status=$(echo "$http_response" | grep -o 'HTTP_STATUS:[0-9]*' | cut -d: -f2)
+    local members_response=$(echo "$http_response" | sed 's/HTTP_STATUS:[0-9]*//')
+    
+    if [[ "$http_status" == "200" && -n "$members_response" ]]; then
         local is_member=$(echo "$members_response" | jq -r ".[] | select(.user_id == \"$user_id\") | .user_id" 2>/dev/null)
         if [[ -n "$is_member" && "$is_member" != "null" ]]; then
             return 0  # User is already a member
@@ -403,16 +406,24 @@ add_user_to_group() {
     # Add user to group with the specified role
     local member_payload="{\"user_id\": \"$user_id\", \"role\": \"$role\"}"
     
-    local response=$(curl -s -X POST "http://localhost:3000/auth/groups/$group_id/members" \
+    # Get HTTP status code along with response
+    local http_response=$(curl -s -w "HTTP_STATUS:%{http_code}" -X POST "http://localhost:3000/auth/groups/$group_id/members" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $admin_token" \
         -d "$member_payload")
     
-    if [[ -n "$response" ]]; then
+    local http_status=$(echo "$http_response" | grep -o 'HTTP_STATUS:[0-9]*' | cut -d: -f2)
+    local response_body=$(echo "$http_response" | sed 's/HTTP_STATUS:[0-9]*//')
+    
+    if [[ "$http_status" == "200" ]]; then
         echo_with_color $GREEN "    ✅ Added as $role"
         return 0
+    elif [[ "$http_status" == "409" ]]; then
+        echo_with_color $YELLOW "    ⚠️  Already a member"
+        return 0
     else
-        echo_with_color $RED "    ❌ Failed to add"
+        echo_with_color $RED "    ❌ Failed to add (HTTP $http_status)"
+        echo_with_color $YELLOW "    Response: $response_body"
         return 1
     fi
 }
@@ -839,6 +850,25 @@ setup_group_relationships() {
         echo_with_color $BLUE "    🏦 Checking group account deployment for group ID: $resolved_group_id..."
         deploy_group_account_if_needed "$resolved_group_id" "$effective_token"
         
+        # Get the group creator's credentials to use their token for member operations
+        local creator_email=$(parse_yaml "$SETUP_FILE" ".groups[$i].user.id")
+        local creator_password=$(parse_yaml "$SETUP_FILE" ".groups[$i].user.password")
+        
+        # Get token for the group creator to use for member operations
+        local creator_token=""
+        if [[ -n "$creator_email" && -n "$creator_password" ]]; then
+            echo_with_color $BLUE "    🔑 Getting token for group creator: $creator_email"
+            creator_token=$(login_with_services "$creator_email" "$creator_password")
+            if [[ -z "$creator_token" || "$creator_token" == "null" ]]; then
+                echo_with_color $RED "    ❌ Failed to get token for group creator: $creator_email"
+                continue
+            fi
+            echo_with_color $GREEN "    ✅ Got token for group creator: $creator_email"
+        else
+            echo_with_color $YELLOW "    ⚠️  No creator specified, using admin token"
+            creator_token="$effective_token"
+        fi
+        
         # Handle members with their specific roles
         local member_count=$(parse_yaml "$SETUP_FILE" ".groups[$i].members | length" 2>/dev/null)
         if [[ -n "$member_count" && "$member_count" != "0" ]]; then
@@ -849,12 +879,12 @@ setup_group_relationships() {
                 if [[ -n "$member_email" && -n "$member_role" ]]; then
                     total_count=$((total_count + 1))
                     echo_with_color $BLUE "    👤 $member_email ($member_role)"
-                    if add_user_to_group "$resolved_group_id" "$member_email" "$member_role" "$effective_token"; then
+                    if add_user_to_group "$resolved_group_id" "$member_email" "$member_role" "$creator_token"; then
                         success_count=$((success_count + 1))
                         
                         # Add member as owner to group account
                         echo_with_color $BLUE "    🔑 Adding as account owner..."
-                        if add_member_as_owner "$resolved_group_id" "$member_email" "$effective_token"; then
+                        if add_member_as_owner "$resolved_group_id" "$member_email" "$creator_token"; then
                             echo_with_color $GREEN "    ✅ Successfully added as owner"
                         else
                             echo_with_color $YELLOW "    ⚠️  Owner addition had issues"
