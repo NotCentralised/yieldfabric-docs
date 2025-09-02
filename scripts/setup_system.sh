@@ -110,7 +110,8 @@ get_group_id_by_name() {
     local token="$1"
     local name="$2"
     local groups_json=$(curl -s -X GET "http://localhost:3000/auth/groups" -H "Authorization: Bearer $token")
-    echo "$groups_json" | jq -r ".[] | select(.name == \"$name\") | .id" 2>/dev/null
+    local group_id=$(echo "$groups_json" | jq -r ".[] | select(.name == \"$name\") | .id" 2>/dev/null)
+    echo "$group_id"
 }
 
 # Helper to get user ID by email from stored user IDs
@@ -306,7 +307,7 @@ create_group() {
     local name="$2"
     local description="$3"
     local group_type="$4"
-    local admin_token="$5"
+    local creator_token="$5"
     
     echo_with_color $BLUE "  🏢 $name ($group_type)"
     
@@ -315,7 +316,7 @@ create_group() {
     # Get HTTP status code along with response
     local http_response=$(curl -s -w "HTTP_STATUS:%{http_code}" -X POST "http://localhost:3000/auth/groups" \
         -H "Content-Type: application/json" \
-        -H "Authorization: Bearer $admin_token" \
+        -H "Authorization: Bearer $creator_token" \
         -d "$group_payload")
     
     local http_status=$(echo "$http_response" | grep -o 'HTTP_STATUS:[0-9]*' | cut -d: -f2)
@@ -587,9 +588,29 @@ setup_groups() {
         local description=$(parse_yaml "$SETUP_FILE" ".groups[$i].description")
         local group_type=$(parse_yaml "$SETUP_FILE" ".groups[$i].group_type")
         
+        # Parse the user field to determine who should create the group
+        local creator_email=$(parse_yaml "$SETUP_FILE" ".groups[$i].user.id")
+        local creator_password=$(parse_yaml "$SETUP_FILE" ".groups[$i].user.password")
+        
         if [[ -n "$group_id" && -n "$name" && -n "$description" && -n "$group_type" ]]; then
             total_count=$((total_count + 1))
-            if create_group "$group_id" "$name" "$description" "$group_type" "$effective_token"; then
+            
+            # Get token for the group creator
+            local creator_token=""
+            if [[ -n "$creator_email" && -n "$creator_password" ]]; then
+                echo_with_color $BLUE "  🔑 Getting token for group creator: $creator_email"
+                creator_token=$(login_with_services "$creator_email" "$creator_password")
+                if [[ -z "$creator_token" || "$creator_token" == "null" ]]; then
+                    echo_with_color $RED "  ❌ Failed to get token for group creator: $creator_email"
+                    continue
+                fi
+                echo_with_color $GREEN "  ✅ Got token for group creator: $creator_email"
+            else
+                echo_with_color $YELLOW "  ⚠️  No creator specified, using admin token"
+                creator_token="$effective_token"
+            fi
+            
+            if create_group "$group_id" "$name" "$description" "$group_type" "$creator_token"; then
                 success_count=$((success_count + 1))
             fi
         else
@@ -599,6 +620,174 @@ setup_groups() {
     
     echo_with_color $GREEN "✅ Groups setup completed: $success_count/$total_count successful"
     return $((success_count == total_count ? 0 : 1))
+}
+
+# Function to deploy group account if not already deployed
+deploy_group_account_if_needed() {
+    local group_id="$1"
+    local admin_token="$2"
+    
+    echo_with_color $BLUE "    🔍 Checking account status for group ID: $group_id"
+    
+    # Check if group account is already deployed
+    local account_status_response=$(curl -s -X GET "http://localhost:3000/auth/groups/$group_id/account-status" \
+        -H "Authorization: Bearer $admin_token")
+    
+    if [[ -n "$account_status_response" ]]; then
+        echo_with_color $BLUE "    📥 Account status response: $account_status_response"
+        local status=$(echo "$account_status_response" | jq -r '.account_status.status // empty' 2>/dev/null)
+        echo_with_color $BLUE "    📊 Parsed status: '$status'"
+        
+        if [[ "$status" == "deployed" ]]; then
+            echo_with_color $GREEN "    ✅ Group account already deployed"
+            return 0
+        elif [[ "$status" == "not_deployed" ]]; then
+            echo_with_color $BLUE "    🚀 Deploying group account..."
+            
+            # Deploy the group account
+            local deploy_response=$(curl -s -w "HTTP_STATUS:%{http_code}" -X POST "http://localhost:3000/auth/groups/$group_id/deploy-account" \
+                -H "Authorization: Bearer $admin_token")
+            
+            local http_status=$(echo "$deploy_response" | grep -o 'HTTP_STATUS:[0-9]*' | cut -d: -f2)
+            local response_body=$(echo "$deploy_response" | sed 's/HTTP_STATUS:[0-9]*//')
+            
+            if [[ "$http_status" == "200" ]]; then
+                local success=$(echo "$response_body" | jq -r '.status // empty' 2>/dev/null)
+                if [[ "$success" == "success" ]]; then
+                    echo_with_color $GREEN "    ✅ Group account deployment initiated"
+                    # Wait a moment for deployment to complete
+                    sleep 3
+                    return 0
+                else
+                    echo_with_color $YELLOW "    ⚠️  Group account deployment initiated"
+                    sleep 3
+                    return 0
+                fi
+            else
+                echo_with_color $RED "    ❌ Failed to deploy group account (HTTP $http_status)"
+                return 1
+            fi
+        else
+            echo_with_color $YELLOW "    ⚠️  Unknown account status: $status"
+            return 0
+        fi
+    else
+        echo_with_color $RED "    ❌ Failed to get group account status"
+        return 1
+    fi
+}
+
+# Function to create delegation JWT for group management
+create_delegation_jwt() {
+    local group_id="$1"
+    local admin_token="$2"
+    
+    echo_with_color $BLUE "    🔑 Creating delegation JWT for group: $group_id" >&2
+    
+    local delegation_response=$(curl -s -X POST "http://localhost:3000/auth/delegation/jwt" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $admin_token" \
+        -d "{\"group_id\": \"$group_id\", \"delegation_scope\": [\"CryptoOperations\", \"ReadGroup\", \"UpdateGroup\", \"ManageGroupMembers\"], \"expiry_seconds\": 3600}")
+    
+    local delegation_token=$(echo "$delegation_response" | jq -r '.delegation_jwt // .token // .delegation_token // .jwt // empty' 2>/dev/null)
+    
+    if [[ -n "$delegation_token" && "$delegation_token" != "null" ]]; then
+        echo_with_color $GREEN "    ✅ Delegation JWT created successfully" >&2
+        echo "$delegation_token"
+        return 0
+    else
+        echo_with_color $RED "    ❌ Failed to create delegation JWT" >&2
+        echo_with_color $YELLOW "    Response: $delegation_response" >&2
+        return 1
+    fi
+}
+
+# Function to add member as owner to group account
+add_member_as_owner() {
+    local group_id="$1"
+    local member_email="$2"
+    local admin_token="$3"
+    
+    echo_with_color $BLUE "    🔍 Looking up user ID for: $member_email"
+    
+    # Get the user ID from stored user IDs
+    local user_id
+    user_id=$(get_user_id_by_email "$member_email")
+    
+    if [[ -z "$user_id" ]]; then
+        echo_with_color $RED "    ❌ User not found in stored user IDs: $member_email"
+        return 1
+    fi
+    
+    echo_with_color $BLUE "    ✅ Found user ID: ${user_id:0:8}..."
+    
+    # Create delegation JWT for group management
+    echo_with_color $BLUE "    🔍 DEBUG: About to create delegation JWT"
+    local delegation_token
+    delegation_token=$(create_delegation_jwt "$group_id" "$admin_token")
+    local delegation_result=$?
+    echo_with_color $BLUE "    🔍 DEBUG: Delegation JWT creation result: $delegation_result"
+    if [[ $delegation_result -ne 0 ]]; then
+        echo_with_color $RED "    ❌ Failed to create delegation JWT"
+        return 1
+    fi
+    echo_with_color $BLUE "    🔍 DEBUG: Delegation JWT created successfully: ${delegation_token:0:50}..."
+    
+    echo_with_color $BLUE "    🔍 Checking account status for group ID: $group_id"
+    
+    # Get the group's account address using admin token (delegation JWT not needed for read operations)
+    local account_status_response=$(curl -s -X GET "http://localhost:3000/auth/groups/$group_id/account-status" \
+        -H "Authorization: Bearer $admin_token")
+    
+    echo_with_color $BLUE "    📥 Account status response: $account_status_response"
+    
+    if [[ -n "$account_status_response" ]]; then
+        local account_address=$(echo "$account_status_response" | jq -r '.account_status.account_address // empty' 2>/dev/null)
+        local status=$(echo "$account_status_response" | jq -r '.account_status.status // empty' 2>/dev/null)
+        
+        echo_with_color $BLUE "    📊 Parsed status: '$status'"
+        echo_with_color $BLUE "    📊 Parsed account_address: '$account_address'"
+        
+        if [[ "$status" == "deployed" && -n "$account_address" && "$account_address" != "null" ]]; then
+            echo_with_color $BLUE "    🔑 Adding $member_email as owner to account: ${account_address:0:10}..."
+            echo_with_color $BLUE "    📡 Making API call to: /auth/groups/$group_id/add-owner"
+            echo_with_color $BLUE "    📦 Payload: {\"new_owner\": \"$user_id\"}"
+            
+            # Add the user as an owner to the group's account using delegation JWT
+            local add_owner_payload="{\"new_owner\": \"$user_id\"}"
+            
+            local add_owner_response=$(curl -s -w "HTTP_STATUS:%{http_code}" -X POST "http://localhost:3000/auth/groups/$group_id/add-owner" \
+                -H "Content-Type: application/json" \
+                -H "Authorization: Bearer $delegation_token" \
+                -d "$add_owner_payload")
+            
+            local http_status=$(echo "$add_owner_response" | grep -o 'HTTP_STATUS:[0-9]*' | cut -d: -f2)
+            local response_body=$(echo "$add_owner_response" | sed 's/HTTP_STATUS:[0-9]*//')
+            
+            echo_with_color $BLUE "    📥 Response status: $http_status"
+            echo_with_color $BLUE "    📥 Response body: $response_body"
+            
+            if [[ "$http_status" == "200" ]]; then
+                local success=$(echo "$response_body" | jq -r '.status // empty' 2>/dev/null)
+                if [[ "$success" == "success" ]]; then
+                    echo_with_color $GREEN "    ✅ Added as owner"
+                    return 0
+                else
+                    echo_with_color $YELLOW "    ⚠️  Owner addition initiated"
+                    return 0
+                fi
+            else
+                echo_with_color $RED "    ❌ Failed to add owner (HTTP $http_status)"
+                return 1
+            fi
+        else
+            echo_with_color $YELLOW "    ⚠️  Group account not deployed yet, skipping owner addition"
+            return 0
+        fi
+    else
+        echo_with_color $RED "    ❌ Failed to get group account status"
+        return 1
+    fi
 }
 
 # Function to setup group relationships
@@ -627,11 +816,12 @@ setup_group_relationships() {
         local group_name=$(parse_yaml "$SETUP_FILE" ".groups[$i].name")
         
         echo_with_color $BLUE "🏢 Setting up relationships for: $group_name"
-        # Resolve group id by name if provided id does not work
-        local resolved_group_id="$group_id"
-        if [[ -z "$resolved_group_id" || "$resolved_group_id" == "null" ]]; then
-            resolved_group_id=$(get_group_id_by_name "$effective_token" "$group_name")
-        fi
+        echo_with_color $BLUE "    📋 Original group ID from YAML: '$group_id'"
+        
+        # Always resolve group id by name since YAML IDs are not UUIDs
+        echo_with_color $BLUE "    🔍 Looking up group by name to get actual UUID..."
+        local resolved_group_id=$(get_group_id_by_name "$effective_token" "$group_name")
+        echo_with_color $BLUE "    📋 Resolved group ID by name: '$resolved_group_id'"
         if [[ -z "$resolved_group_id" || "$resolved_group_id" == "null" ]]; then
             # Attempt to create the group quickly if it doesn't exist
             local description=$(parse_yaml "$SETUP_FILE" ".groups[$i].description")
@@ -645,6 +835,10 @@ setup_group_relationships() {
             continue
         fi
         
+        # Ensure group account is deployed before adding owners
+        echo_with_color $BLUE "    🏦 Checking group account deployment for group ID: $resolved_group_id..."
+        deploy_group_account_if_needed "$resolved_group_id" "$effective_token"
+        
         # Handle members with their specific roles
         local member_count=$(parse_yaml "$SETUP_FILE" ".groups[$i].members | length" 2>/dev/null)
         if [[ -n "$member_count" && "$member_count" != "0" ]]; then
@@ -657,6 +851,14 @@ setup_group_relationships() {
                     echo_with_color $BLUE "    👤 $member_email ($member_role)"
                     if add_user_to_group "$resolved_group_id" "$member_email" "$member_role" "$effective_token"; then
                         success_count=$((success_count + 1))
+                        
+                        # Add member as owner to group account
+                        echo_with_color $BLUE "    🔑 Adding as account owner..."
+                        if add_member_as_owner "$resolved_group_id" "$member_email" "$effective_token"; then
+                            echo_with_color $GREEN "    ✅ Successfully added as owner"
+                        else
+                            echo_with_color $YELLOW "    ⚠️  Owner addition had issues"
+                        fi
                     fi
                 else
                     echo_with_color $RED "    ❌ Invalid member data at index $j"
@@ -1128,6 +1330,7 @@ show_help() {
     echo_with_color $GREEN "  validate" "  - Validate setup.yaml file structure"
     echo_with_color $GREEN "  users" "     - Setup only users from setup.yaml"
     echo_with_color $GREEN "  groups" "    - Setup only groups from setup.yaml"
+    echo_with_color $GREEN "  owners" "    - Setup only group account owners from setup.yaml"
     echo_with_color $GREEN "  tokens" "    - Setup only tokens from setup.yaml"
     echo_with_color $GREEN "  assets" "    - Setup only assets from setup.yaml"
     echo_with_color $GREEN "  help" "      - Show this help message"
@@ -1145,6 +1348,11 @@ show_help() {
     echo "  • assets: array of assets with id, name, type, currency, description, and token_id"
     echo "  • Member roles: owner, admin, member, viewer"
     echo "  • Asset types: Cash, Token, Invoice, Factoring_Agreement, Escrow_Account, Payable, Receivable"
+    echo ""
+    echo "Owner Setup:"
+    echo "  • All group members are automatically added as owners to the group's account"
+    echo "  • Group accounts are automatically deployed if not already deployed"
+    echo "  • Use 'owners' command to setup only group account owners"
     echo ""
     echo "Examples:"
     echo "  $0 setup     # Complete system setup"
@@ -1218,6 +1426,21 @@ case "${1:-setup}" in
             
             # Setup tokens
             setup_tokens
+        else
+            echo_with_color $RED "Auth service not running"
+            exit 1
+        fi
+        ;;
+    "owners")
+        if check_service_running "Auth Service" "3000"; then
+            # Create users first if they don't exist
+            if ! create_initial_users; then
+                echo_with_color $RED "Failed to create users"
+                exit 1
+            fi
+            
+            # Setup group relationships (which includes owner setup)
+            setup_group_relationships
         else
             echo_with_color $RED "Auth service not running"
             exit 1
