@@ -54,6 +54,62 @@ check_yq_available() {
     fi
 }
 
+# Helper function to get group ID by name from auth service
+get_group_id_by_name() {
+    local token="$1"
+    local group_name="$2"
+    
+    echo_with_color $BLUE "  🔍 Looking up group ID for: $group_name" >&2
+    
+    local groups_json=$(curl -s -X GET "http://localhost:3000/auth/groups" \
+        -H "Authorization: Bearer $token")
+    
+    if [[ -n "$groups_json" ]]; then
+        local group_id=$(echo "$groups_json" | jq -r ".[] | select(.name == \"$group_name\") | .id" 2>/dev/null)
+        if [[ -n "$group_id" && "$group_id" != "null" ]]; then
+            echo_with_color $GREEN "    ✅ Found group ID: ${group_id:0:8}..." >&2
+            echo "$group_id"
+            return 0
+        else
+            echo_with_color $RED "    ❌ Group not found: $group_name" >&2
+            return 1
+        fi
+    else
+        echo_with_color $RED "    ❌ Failed to retrieve groups list" >&2
+        return 1
+    fi
+}
+
+# Helper function to create delegation JWT token for a specific group
+create_delegation_token() {
+    local user_token="$1"
+    local group_id="$2"
+    local group_name="$3"
+    
+    echo_with_color $BLUE "  🎫 Creating delegation JWT for group: $group_name" >&2
+    echo_with_color $BLUE "    Group ID: ${group_id:0:8}..." >&2
+    
+    # Create delegation JWT with comprehensive scope for payments operations
+    local delegation_response=$(curl -s -X POST "http://localhost:3000/auth/delegation/jwt" \
+        -H "Authorization: Bearer $user_token" \
+        -H "Content-Type: application/json" \
+        -d "{\"group_id\": \"$group_id\", \"delegation_scope\": [\"CryptoOperations\", \"ReadGroup\", \"UpdateGroup\", \"ManageGroupMembers\"], \"expiry_seconds\": 3600}")
+    
+    echo_with_color $BLUE "    Delegation response: $delegation_response" >&2
+    
+    local delegation_token=$(echo "$delegation_response" | jq -r '.delegation_jwt // .token // .delegation_token // .jwt // empty' 2>/dev/null)
+    
+    if [[ -n "$delegation_token" && "$delegation_token" != "null" ]]; then
+        echo_with_color $GREEN "    ✅ Delegation JWT created successfully" >&2
+        echo "$delegation_token"
+        return 0
+    else
+        echo_with_color $RED "    ❌ Failed to create delegation JWT" >&2
+        echo_with_color $YELLOW "    Response: $delegation_response" >&2
+        return 1
+    fi
+}
+
 # Function to store a command output value
 store_command_output() {
     local command_name="$1"
@@ -150,10 +206,11 @@ parse_yaml() {
     yq eval "$query" "$yaml_file" 2>/dev/null
 }
 
-# Function to login user and get JWT token
+# Function to login user and get JWT token (with optional group delegation)
 login_user() {
     local email="$1"
     local password="$2"
+    local group_name="$3"  # Optional group name for delegation
     local services_json='["vault", "payments"]'
 
     echo_with_color $BLUE "  🔐 Logging in user: $email" >&2
@@ -168,8 +225,34 @@ login_user() {
         local token=$(echo "$http_response" | jq -r '.token // .access_token // .jwt // empty')
         if [[ -n "$token" && "$token" != "null" ]]; then
             echo_with_color $GREEN "    ✅ Login successful" >&2
-            echo "$token"
-            return 0
+            
+            # If group name is specified, create delegation token
+            if [[ -n "$group_name" && "$group_name" != "null" ]]; then
+                echo_with_color $CYAN "  🏢 Group delegation requested for: $group_name" >&2
+                
+                # Get group ID by name
+                local group_id=$(get_group_id_by_name "$token" "$group_name")
+                if [[ $? -eq 0 && -n "$group_id" ]]; then
+                    # Create delegation token
+                    local delegation_token=$(create_delegation_token "$token" "$group_id" "$group_name")
+                    if [[ $? -eq 0 && -n "$delegation_token" ]]; then
+                        echo_with_color $GREEN "    ✅ Group delegation successful" >&2
+                        echo "$delegation_token"
+                        return 0
+                    else
+                        echo_with_color $YELLOW "    ⚠️  Delegation failed, using regular token" >&2
+                        echo "$token"
+                        return 0
+                    fi
+                else
+                    echo_with_color $YELLOW "    ⚠️  Group not found, using regular token" >&2
+                    echo "$token"
+                    return 0
+                fi
+            else
+                echo "$token"
+                return 0
+            fi
         else
             echo_with_color $RED "    ❌ No token in response" >&2
             return 1
@@ -188,17 +271,21 @@ execute_deposit() {
     local asset_id="$4"
     local amount="$5"
     local idempotency_key="$6"
+    local group_name="$7"  # Optional group name for delegation
     
     echo_with_color $CYAN "🏦 Executing deposit command via GraphQL: $command_name"
     
-    # Login to get JWT token
-    local jwt_token=$(login_user "$user_email" "$user_password")
+    # Login to get JWT token (with optional group delegation)
+    local jwt_token=$(login_user "$user_email" "$user_password" "$group_name")
     if [[ -z "$jwt_token" ]]; then
         echo_with_color $RED "❌ Failed to get JWT token for user: $user_email"
         return 1
     fi
     
     echo_with_color $BLUE "  🔑 JWT token obtained (first 50 chars): ${jwt_token:0:50}..."
+    if [[ -n "$group_name" ]]; then
+        echo_with_color $CYAN "  🏢 Using delegation JWT for group: $group_name"
+    fi
     echo_with_color $BLUE "  📤 Sending GraphQL deposit mutation..."
     
     # Prepare GraphQL mutation
@@ -262,16 +349,20 @@ execute_instant() {
     local amount="$5"
     local destination_id="$6"
     local idempotency_key="$7"
+    local group_name="$8"  # Optional group name for delegation
     
     echo_with_color $CYAN "⚡ Executing instant command via GraphQL: $command_name"
     
-    # Login to get JWT token
-    local jwt_token=$(login_user "$user_email" "$user_password")
+    # Login to get JWT token (with optional group delegation)
+    local jwt_token=$(login_user "$user_email" "$user_password" "$group_name")
     if [[ -z "$jwt_token" ]]; then
         echo_with_color $RED "❌ Failed to get JWT token for user: $user_email"
         return 1
     fi
     
+    if [[ -n "$group_name" ]]; then
+        echo_with_color $CYAN "  🏢 Using delegation JWT for group: $group_name"
+    fi
     echo_with_color $BLUE "  📤 Sending GraphQL instant send mutation..."
     
     # Prepare GraphQL mutation
@@ -345,17 +436,21 @@ execute_balance() {
     local denomination="$4"
     local obligor="$5"
     local group_id="$6"
+    local group_name="$7"  # Optional group name for delegation
     
     echo_with_color $CYAN "💰 Executing balance command via REST API: $command_name"
     
-    # Login to get JWT token
-    local jwt_token=$(login_user "$user_email" "$user_password")
+    # Login to get JWT token (with optional group delegation)
+    local jwt_token=$(login_user "$user_email" "$user_password" "$group_name")
     if [[ -z "$jwt_token" ]]; then
         echo_with_color $RED "❌ Failed to get JWT token for user: $user_email"
         return 1
     fi
     
     echo_with_color $BLUE "  🔑 JWT token obtained (first 50 chars): ${jwt_token:0:50}..."
+    if [[ -n "$group_name" ]]; then
+        echo_with_color $CYAN "  🏢 Using delegation JWT for group: $group_name"
+    fi
     echo_with_color $BLUE "  📤 Sending REST API balance request..."
     
     # Prepare query parameters
@@ -471,16 +566,20 @@ execute_accept() {
     local user_password="$3"
     local payment_id="$4"
     local idempotency_key="$5"
+    local group_name="$6"  # Optional group name for delegation
     
     echo_with_color $CYAN "✅ Executing accept command via GraphQL: $command_name"
     
-    # Login to get JWT token
-    local jwt_token=$(login_user "$user_email" "$user_password")
+    # Login to get JWT token (with optional group delegation)
+    local jwt_token=$(login_user "$user_email" "$user_password" "$group_name")
     if [[ -z "$jwt_token" ]]; then
         echo_with_color $RED "❌ Failed to get JWT token for user: $user_email"
         return 1
     fi
     
+    if [[ -n "$group_name" ]]; then
+        echo_with_color $CYAN "  🏢 Using delegation JWT for group: $group_name"
+    fi
     echo_with_color $BLUE "  📤 Sending GraphQL accept mutation..."
     
     # Prepare GraphQL mutation
@@ -553,6 +652,7 @@ execute_command() {
     local command_type=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].type")
     local user_email=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].user.id")
     local user_password=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].user.password")
+    local group_name=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].user.group")
     
     # Parse command parameters
     local asset_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.asset_id")
@@ -574,10 +674,12 @@ execute_command() {
     denomination=$(substitute_variables "$denomination")
     obligor=$(substitute_variables "$obligor")
     group_id=$(substitute_variables "$group_id")
+    group_name=$(substitute_variables "$group_name")
     
     echo_with_color $PURPLE "🚀 Executing command $((command_index + 1)): $command_name"
     echo_with_color $BLUE "  Type: $command_type"
     echo_with_color $BLUE "  User: $user_email"
+    if [[ -n "$group_name" ]]; then echo_with_color $CYAN "  Group: $group_name (delegation)"; fi
     echo_with_color $BLUE "  Parameters after substitution:"
     if [[ -n "$asset_id" ]]; then echo_with_color $BLUE "    asset_id: $asset_id"; fi
     if [[ -n "$amount" ]]; then echo_with_color $BLUE "    amount: $amount"; fi
@@ -591,16 +693,16 @@ execute_command() {
     # Execute command based on type
     case "$command_type" in
         "deposit")
-            execute_deposit "$command_name" "$user_email" "$user_password" "$asset_id" "$amount" "$idempotency_key"
+            execute_deposit "$command_name" "$user_email" "$user_password" "$asset_id" "$amount" "$idempotency_key" "$group_name"
             ;;
         "instant")
-            execute_instant "$command_name" "$user_email" "$user_password" "$asset_id" "$amount" "$destination_id" "$idempotency_key"
+            execute_instant "$command_name" "$user_email" "$user_password" "$asset_id" "$amount" "$destination_id" "$idempotency_key" "$group_name"
             ;;
         "accept")
-            execute_accept "$command_name" "$user_email" "$user_password" "$payment_id" "$idempotency_key"
+            execute_accept "$command_name" "$user_email" "$user_password" "$payment_id" "$idempotency_key" "$group_name"
             ;;
         "balance")
-            execute_balance "$command_name" "$user_email" "$user_password" "$denomination" "$obligor" "$group_id"
+            execute_balance "$command_name" "$user_email" "$user_password" "$denomination" "$obligor" "$group_id" "$group_name"
             ;;
         *)
             echo_with_color $RED "❌ Unknown command type: $command_type"

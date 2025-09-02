@@ -29,6 +29,7 @@ commands:
       amount: 5
       idempotency_key: instant-1
       destination_id: counterpart@yieldfabric.com
+      
 
   - name: issuer_balance_2
     type: balance
@@ -48,7 +49,7 @@ commands:
       asset_id: aud-token-asset
       amount: 5
       idempotency_key: instant-2
-      destination_id: admin2@yieldfabric.com
+      destination_id: Admin Group
 
   - name: issuer_balance_3
     type: balance
@@ -80,6 +81,7 @@ commands:
     user: 
       id: admin2@yieldfabric.com
       password: testpass123
+      group: Admin Group
     parameters:
       idempotency_key: accept-2
       payment_id: $issuer_send_2.payment_id
@@ -89,5 +91,6 @@ commands:
     user: 
       id: admin2@yieldfabric.com
       password: testpass123
+      group: Admin Group
     parameters:
       denomination: aud-token-asset

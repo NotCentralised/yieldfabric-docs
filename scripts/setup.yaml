@@ -20,25 +20,25 @@ groups:
       - id: admin2@yieldfabric.com
         role: owner
 
-  - id: issuer-group
-    name: Issuer Group
-    description: Issuer Group Description
-    group_type: project
-    members:
-      - id: issuer@yieldfabric.com
-        role: owner
-      - id: counterpart@yieldfabric.com
-        role: member
+  # - id: issuer-group
+  #   name: Issuer Group
+  #   description: Issuer Group Description
+  #   group_type: project
+  #   members:
+  #     - id: issuer@yieldfabric.com
+  #       role: owner
+  #     - id: counterpart@yieldfabric.com
+  #       role: member
     
-  - id: counterpart-group
-    name: Counterpart Group
-    description: Counterpart Group Description
-    group_type: project
-    members:
-      - id: counterpart@yieldfabric.com
-        role: owner
-      - id: issuer@yieldfabric.com
-        role: member
+  # - id: counterpart-group
+  #   name: Counterpart Group
+  #   description: Counterpart Group Description
+  #   group_type: project
+  #   members:
+  #     - id: counterpart@yieldfabric.com
+  #       role: owner
+  #     - id: issuer@yieldfabric.com
+  #       role: member
     
 tokens:
   - id: AUD
