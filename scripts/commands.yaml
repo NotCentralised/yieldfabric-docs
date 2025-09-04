@@ -19,6 +19,8 @@ commands:
       obligor: 0x0000000000000000000000000000000000000000
       group_id: 0
 
+
+
   - name: issuer_send_1
     type: instant
     user: 
@@ -31,7 +33,6 @@ commands:
       # destination_id: counterpart@yieldfabric.com
       destination_id: Admin Group
       
-
   - name: issuer_balance_2
     type: balance
     user: 
@@ -39,6 +40,7 @@ commands:
       password: issuerpass456
     parameters:
       denomination: aud-token-asset
+
 
 
   - name: issuer_send_2
@@ -77,6 +79,7 @@ commands:
       #     password: counterpass789
       #   parameters:
       #     denomination: aud-token-asset
+
 
 
   - name: counterpart_accept_1
@@ -120,3 +123,34 @@ commands:
       group: Admin Group
     parameters:
       denomination: aud-token-asset
+
+
+
+  
+  - name: admin2_create_deal
+    type: create_deal
+    user: 
+      id: admin2@yieldfabric.com
+      password: testpass123
+      group: Admin Group
+    parameters:
+      idempotency_key: create_deal-1
+      counterpart: Admin Group
+      deal_address: 0x959922bE3CAee4b8Cd9a407cc3ac1C251C2007B1
+      deal_group_id: 0
+      denomination: aud-token-asset
+      obligor: 0x0000000000000000000000000000000000000000
+      notional: 10 
+      expiry: 2025-10-10
+      data: {}
+      initial_payments:
+        amount: 10
+        payments:
+          - oracle_address: "0x0000000000000000000000000000000000000000"
+            oracle_owner: "0x0000000000000000000000000000000000000000"
+            oracle_key_sender: "0x0000000000000000000000000000000000000000"
+            oracle_value_sender: "0x0000000000000000000000000000000000000000"
+            oracle_key_recipient: "0x0000000000000000000000000000000000000000"
+            oracle_value_recipient: "0x0000000000000000000000000000000000000000"
+            unlock_sender: 0
+            unlock_receiver: 0
