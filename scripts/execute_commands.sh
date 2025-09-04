@@ -640,6 +640,154 @@ execute_accept() {
     fi
 }
 
+# Function to execute create deal command using GraphQL
+execute_create_deal() {
+    local command_name="$1"
+    local user_email="$2"
+    local user_password="$3"
+    local counterpart="$4"
+    local deal_address="$5"
+    local deal_group_id="$6"
+    local denomination="$7"
+    local obligor="$8"
+    local notional="$9"
+    local expiry="${10}"
+    local data="${11}"
+    local initial_payments_amount="${12}"
+    local initial_payments_json="${13}"
+    local idempotency_key="${14}"
+    local group_name="${15}"  # Optional group name for delegation
+    
+    echo_with_color $CYAN "🤝 Executing create deal command via GraphQL: $command_name"
+    
+    # Login to get JWT token (with optional group delegation)
+    local jwt_token=$(login_user "$user_email" "$user_password" "$group_name")
+    if [[ -z "$jwt_token" ]]; then
+        echo_with_color $RED "❌ Failed to get JWT token for user: $user_email"
+        return 1
+    fi
+    
+    if [[ -n "$group_name" ]]; then
+        echo_with_color $CYAN "  🏢 Using delegation JWT for group: $group_name"
+    fi
+    echo_with_color $BLUE "  📤 Sending GraphQL create deal mutation..."
+    
+    # Prepare GraphQL mutation with all required fields
+    local graphql_mutation
+    local graphql_variables=""
+    local input_params="counterpart: \\\"$counterpart\\\", dealAddress: \\\"$deal_address\\\", dealGroupId: \\\"$deal_group_id\\\", denomination: \\\"$denomination\\\""
+    
+    # Add optional fields if provided
+    if [[ -n "$obligor" ]]; then
+        input_params="$input_params, obligor: \\\"$obligor\\\""
+    fi
+    if [[ -n "$notional" ]]; then
+        input_params="$input_params, notional: \\\"$notional\\\""
+    fi
+    if [[ -n "$expiry" ]]; then
+        input_params="$input_params, expiry: \\\"$expiry\\\""
+    fi
+    if [[ -n "$data" && "$data" != "{}" ]]; then
+        input_params="$input_params, data: $data"
+    fi
+    if [[ -n "$initial_payments_amount" && -n "$initial_payments_json" ]]; then
+        # Convert snake_case field names to camelCase for GraphQL
+        local converted_payments=$(echo "$initial_payments_json" | jq 'map({
+            oracleAddress: .oracle_address,
+            oracleOwner: .oracle_owner,
+            oracleKeySender: .oracle_key_sender,
+            oracleValueSender: .oracle_value_sender,
+            oracleKeyRecipient: .oracle_key_recipient,
+            oracleValueRecipient: .oracle_value_recipient,
+            unlockSender: .unlock_sender,
+            unlockReceiver: .unlock_receiver
+        })')
+        
+        # Create a JSON variable for initial payments
+        local initial_payments_variable=$(echo "$converted_payments" | jq --arg amount "$initial_payments_amount" '{
+            amount: $amount,
+            payments: .
+        }')
+        
+        # Add the variable to the GraphQL variables
+        if [[ -n "$graphql_variables" ]]; then
+            graphql_variables="$graphql_variables, "
+        fi
+        graphql_variables="$graphql_variables\"initialPayments\": $initial_payments_variable"
+        
+        # Add the parameter to the input
+        input_params="$input_params, initialPayments: \$initialPayments"
+    fi
+    if [[ -n "$idempotency_key" ]]; then
+        input_params="$input_params, idempotencyKey: \\\"$idempotency_key\\\""
+    fi
+    
+    # Build GraphQL mutation with variables if needed
+    if [[ -n "$graphql_variables" ]]; then
+        graphql_mutation="mutation(\$initialPayments: InitialPaymentsInput) { createDeal(input: { $input_params }) { success message accountAddress dealResult messageId contractId transactionId signature timestamp idHash } }"
+        local graphql_payload="{\"query\": \"$graphql_mutation\", \"variables\": {$graphql_variables}}"
+    else
+        graphql_mutation="mutation { createDeal(input: { $input_params }) { success message accountAddress dealResult messageId contractId transactionId signature timestamp idHash } }"
+        local graphql_payload="{\"query\": \"$graphql_mutation\"}"
+    fi
+    
+    echo_with_color $BLUE "  📋 GraphQL mutation:"
+    echo_with_color $BLUE "    $graphql_mutation"
+    
+    # Send GraphQL request to payments service
+    echo_with_color $BLUE "  🌐 Making GraphQL request to: http://localhost:3002/graphql"
+    local http_response=$(curl -s -X POST "http://localhost:3002/graphql" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $jwt_token" \
+        -d "$graphql_payload")
+    
+    echo_with_color $BLUE "  📡 Raw GraphQL response: '$http_response'"
+    
+    # Parse GraphQL response
+    local success=$(echo "$http_response" | jq -r '.data.createDeal.success // empty')
+    if [[ "$success" == "true" ]]; then
+        local account_address=$(echo "$http_response" | jq -r '.data.createDeal.accountAddress // empty')
+        local message=$(echo "$http_response" | jq -r '.data.createDeal.message // empty')
+        local deal_result=$(echo "$http_response" | jq -r '.data.createDeal.dealResult // empty')
+        local message_id=$(echo "$http_response" | jq -r '.data.createDeal.messageId // empty')
+        local contract_id=$(echo "$http_response" | jq -r '.data.createDeal.contractId // empty')
+        local transaction_id=$(echo "$http_response" | jq -r '.data.createDeal.transactionId // empty')
+        local signature=$(echo "$http_response" | jq -r '.data.createDeal.signature // empty')
+        local timestamp=$(echo "$http_response" | jq -r '.data.createDeal.timestamp // empty')
+        local id_hash=$(echo "$http_response" | jq -r '.data.createDeal.idHash // empty')
+        
+        # Store outputs for variable substitution in future commands
+        store_command_output "$command_name" "account_address" "$account_address"
+        store_command_output "$command_name" "message" "$message"
+        store_command_output "$command_name" "deal_result" "$deal_result"
+        store_command_output "$command_name" "message_id" "$message_id"
+        store_command_output "$command_name" "contract_id" "$contract_id"
+        store_command_output "$command_name" "transaction_id" "$transaction_id"
+        store_command_output "$command_name" "signature" "$signature"
+        store_command_output "$command_name" "timestamp" "$timestamp"
+        store_command_output "$command_name" "id_hash" "$id_hash"
+        
+        echo_with_color $GREEN "    ✅ Create deal successful!"
+        echo_with_color $BLUE "      Account: $account_address"
+        echo_with_color $BLUE "      Contract ID: $contract_id"
+        echo_with_color $BLUE "      Transaction ID: $transaction_id"
+        echo_with_color $BLUE "      Message: $message"
+        echo_with_color $BLUE "      Message ID: $message_id"
+        echo_with_color $BLUE "      Deal Result: $deal_result"
+        if [[ -n "$id_hash" ]]; then
+            echo_with_color $CYAN "      ID Hash: $id_hash"
+        fi
+        echo_with_color $CYAN "      📝 Stored outputs for variable substitution:"
+        echo_with_color $CYAN "        ${command_name}_account_address, ${command_name}_message, ${command_name}_deal_result, ${command_name}_message_id, ${command_name}_contract_id, ${command_name}_transaction_id, ${command_name}_signature, ${command_name}_timestamp, ${command_name}_id_hash"
+        return 0
+    else
+        local error_message=$(echo "$http_response" | jq -r '.errors[0].message // "Unknown error"')
+        echo_with_color $RED "    ❌ Create deal failed: $error_message"
+        echo_with_color $BLUE "      Full response: $http_response"
+        return 1
+    fi
+}
+
 # Function to execute command based on type
 execute_command() {
     local command_index="$1"
@@ -664,6 +812,16 @@ execute_command() {
     local obligor=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.obligor")
     local group_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.group_id")
     
+    # Parse create_deal specific parameters
+    local counterpart=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.counterpart")
+    local deal_address=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.deal_address")
+    local deal_group_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.deal_group_id")
+    local notional=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.notional")
+    local expiry=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.expiry")
+    local data=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.data")
+    local initial_payments_amount=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.initial_payments.amount")
+    local initial_payments_json=$(yq eval -o json -I 0 ".commands[$command_index].parameters.initial_payments.payments" "$COMMANDS_FILE" 2>/dev/null || echo "[]")
+    
     # Apply variable substitution to parameters
     echo_with_color $CYAN "  🔄 Applying variable substitution to parameters..."
     asset_id=$(substitute_variables "$asset_id")
@@ -675,6 +833,15 @@ execute_command() {
     obligor=$(substitute_variables "$obligor")
     group_id=$(substitute_variables "$group_id")
     group_name=$(substitute_variables "$group_name")
+    
+    # Apply variable substitution to create_deal specific parameters
+    counterpart=$(substitute_variables "$counterpart")
+    deal_address=$(substitute_variables "$deal_address")
+    deal_group_id=$(substitute_variables "$deal_group_id")
+    notional=$(substitute_variables "$notional")
+    expiry=$(substitute_variables "$expiry")
+    data=$(substitute_variables "$data")
+    initial_payments_amount=$(substitute_variables "$initial_payments_amount")
     
     echo_with_color $PURPLE "🚀 Executing command $((command_index + 1)): $command_name"
     echo_with_color $BLUE "  Type: $command_type"
@@ -690,6 +857,15 @@ execute_command() {
     if [[ -n "$obligor" ]]; then echo_with_color $BLUE "    obligor: $obligor"; fi
     if [[ -n "$group_id" ]]; then echo_with_color $BLUE "    group_id: $group_id"; fi
     
+    # Display create_deal specific parameters
+    if [[ -n "$counterpart" ]]; then echo_with_color $BLUE "    counterpart: $counterpart"; fi
+    if [[ -n "$deal_address" ]]; then echo_with_color $BLUE "    deal_address: $deal_address"; fi
+    if [[ -n "$deal_group_id" ]]; then echo_with_color $BLUE "    deal_group_id: $deal_group_id"; fi
+    if [[ -n "$notional" ]]; then echo_with_color $BLUE "    notional: $notional"; fi
+    if [[ -n "$expiry" ]]; then echo_with_color $BLUE "    expiry: $expiry"; fi
+    if [[ -n "$data" ]]; then echo_with_color $BLUE "    data: $data"; fi
+    if [[ -n "$initial_payments_amount" ]]; then echo_with_color $BLUE "    initial_payments_amount: $initial_payments_amount"; fi
+    
     # Execute command based on type
     case "$command_type" in
         "deposit")
@@ -703,6 +879,9 @@ execute_command() {
             ;;
         "balance")
             execute_balance "$command_name" "$user_email" "$user_password" "$denomination" "$obligor" "$group_id" "$group_name"
+            ;;
+        "create_deal")
+            execute_create_deal "$command_name" "$user_email" "$user_password" "$counterpart" "$deal_address" "$deal_group_id" "$denomination" "$obligor" "$notional" "$expiry" "$data" "$initial_payments_amount" "$initial_payments_json" "$idempotency_key" "$group_name"
             ;;
         *)
             echo_with_color $RED "❌ Unknown command type: $command_type"
@@ -825,9 +1004,35 @@ validate_commands_file() {
                     return 1
                 fi
                 ;;
+            "create_deal")
+                local counterpart=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.counterpart")
+                local deal_address=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.deal_address")
+                local deal_group_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.deal_group_id")
+                local denomination=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.denomination")
+                
+                if [[ -z "$counterpart" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.counterpart' field"
+                    return 1
+                fi
+                
+                if [[ -z "$deal_address" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.deal_address' field"
+                    return 1
+                fi
+                
+                if [[ -z "$deal_group_id" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.deal_group_id' field"
+                    return 1
+                fi
+                
+                if [[ -z "$denomination" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.denomination' field"
+                    return 1
+                fi
+                ;;
             *)
                 echo_with_color $RED "Error: Command '$command_name' has unsupported type: '$command_type'"
-                echo_with_color $YELLOW "Supported types: deposit, instant, accept, balance"
+                echo_with_color $YELLOW "Supported types: deposit, instant, accept, balance, create_deal"
                 return 1
                 ;;
         esac
@@ -1025,10 +1230,11 @@ show_help() {
     echo "  • instantSend: Sends instant payments via GraphQL"
     echo "  • accept: Accepts payments using id_hash via GraphQL"
     echo "  • balance: Retrieves balance information via REST API"
+    echo "  • createDeal: Creates deals via GraphQL"
     echo ""
     echo "Commands.yaml Structure:"
     echo "  • commands: array of commands with type, user, and parameters"
-    echo "  • Supported command types: deposit, instant, accept, balance"
+    echo "  • Supported command types: deposit, instant, accept, balance, create_deal"
     echo "  • Each command must have user.id, user.password, and parameters"
     echo "  • Variables can be referenced using: \$command_name.field_name"
     echo ""
