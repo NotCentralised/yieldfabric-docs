@@ -48,7 +48,7 @@ commands:
       password: issuerpass456
     parameters:
       asset_id: aud-token-asset
-      amount: 10
+      amount: 5
       idempotency_key: instant-2
       destination_id: Admin Group
 
