@@ -474,6 +474,8 @@ execute_balance() {
         local private_balance=$(echo "$http_response" | jq -r '.balance.private_balance // empty')
         local public_balance=$(echo "$http_response" | jq -r '.balance.public_balance // empty')
         local decimals=$(echo "$http_response" | jq -r '.balance.decimals // empty')
+        local beneficial_balance=$(echo "$http_response" | jq -r '.balance.beneficial_balance // empty')
+        local beneficial_transaction_ids=$(echo "$http_response" | jq -r '.balance.beneficial_transaction_ids // []')
         # Handle both old format (counts) and new format (arrays)
         local locked_out_count
         local locked_in_count
@@ -493,6 +495,7 @@ execute_balance() {
         store_command_output "$command_name" "private_balance" "$private_balance"
         store_command_output "$command_name" "public_balance" "$public_balance"
         store_command_output "$command_name" "decimals" "$decimals"
+        store_command_output "$command_name" "beneficial_balance" "$beneficial_balance"
         store_command_output "$command_name" "locked_out_count" "$locked_out_count"
         store_command_output "$command_name" "locked_in_count" "$locked_in_count"
         store_command_output "$command_name" "denomination" "$denomination"
@@ -519,6 +522,7 @@ execute_balance() {
         echo_with_color $BLUE "      Private Balance: $private_balance"
         echo_with_color $BLUE "      Public Balance: $public_balance"
         echo_with_color $BLUE "      Decimals: $decimals"
+        echo_with_color $GREEN "      Beneficial Balance: $beneficial_balance"
         echo_with_color $BLUE "      Locked Out Count: $locked_out_count"
         echo_with_color $BLUE "      Locked In Count: $locked_in_count"
         echo_with_color $BLUE "      Denomination: $denomination"
@@ -548,8 +552,52 @@ execute_balance() {
                 echo_with_color $BLUE "      Count: $locked_in_count (detailed transactions not available in old format)"
             fi
         fi
+        
+        # Display beneficial balance information
+        if [[ "$beneficial_balance" != "0" && "$beneficial_balance" != "" ]]; then
+            echo_with_color $GREEN "  💎 Beneficial Balance Details:"
+            echo_with_color $GREEN "      Total Beneficial Value: $beneficial_balance"
+            echo_with_color $CYAN "      This represents the total notional value from deals where you are the owner"
+            
+            # Show beneficial transaction IDs if available
+            local beneficial_ids_count=$(echo "$beneficial_transaction_ids" | jq 'length')
+            if [[ "$beneficial_ids_count" -gt 0 ]]; then
+                echo_with_color $YELLOW "      Beneficial Transaction ID Hashes:"
+                echo "$beneficial_transaction_ids" | jq -r '.[]' | while read -r id_hash; do
+                    echo_with_color $YELLOW "        ID Hash: $id_hash"
+                done
+            else
+                echo_with_color $CYAN "      💡 Note: No locked transactions found in deal cashflows"
+                echo_with_color $CYAN "         The beneficial balance shows deal notional values as fallback"
+                echo_with_color $CYAN "         When locked transactions exist, they will show ID hashes"
+                echo_with_color $CYAN "         and the beneficial balance will be calculated from those transactions"
+            fi
+            
+            # Show beneficial transaction details if available
+            if echo "$http_response" | jq -e '.balance.locked_out' >/dev/null 2>&1; then
+                local beneficial_out_count=$(echo "$http_response" | jq '[.balance.locked_out[] | select(.deal_id != "0")] | length')
+                local beneficial_in_count=$(echo "$http_response" | jq '[.balance.locked_in[] | select(.deal_id != "0")] | length')
+                
+                if [[ "$beneficial_out_count" -gt 0 || "$beneficial_in_count" -gt 0 ]]; then
+                    echo_with_color $CYAN "      Beneficial Transactions:"
+                    echo_with_color $CYAN "        Locked Out (from deals): $beneficial_out_count"
+                    echo_with_color $CYAN "        Locked In (from deals): $beneficial_in_count"
+                    
+                    # Show beneficial transaction IDs with deal information
+                    if [[ "$beneficial_out_count" -gt 0 ]]; then
+                        echo_with_color $YELLOW "        Beneficial Locked Out Transaction Details:"
+                        echo "$http_response" | jq -r '.balance.locked_out[] | select(.deal_id != "0") | "          ID Hash: " + .id_hash + " (Deal ID: " + .deal_id + ", Amount: " + .amount + ")"' 2>/dev/null | sed 's/^/        /'
+                    fi
+                    
+                    if [[ "$beneficial_in_count" -gt 0 ]]; then
+                        echo_with_color $YELLOW "        Beneficial Locked In Transaction Details:"
+                        echo "$http_response" | jq -r '.balance.locked_in[] | select(.deal_id != "0") | "          ID Hash: " + .id_hash + " (Deal ID: " + .deal_id + ", Amount: " + .amount + ")"' 2>/dev/null | sed 's/^/        /'
+                    fi
+                fi
+            fi
+        fi
         echo_with_color $CYAN "      📝 Stored outputs for variable substitution:"
-        echo_with_color $CYAN "        ${command_name}_private_balance, ${command_name}_public_balance, ${command_name}_decimals, ${command_name}_locked_out_count, ${command_name}_locked_in_count, ${command_name}_locked_out, ${command_name}_locked_in, ${command_name}_denomination, ${command_name}_obligor, ${command_name}_group_id, ${command_name}_timestamp"
+        echo_with_color $CYAN "        ${command_name}_private_balance, ${command_name}_public_balance, ${command_name}_decimals, ${command_name}_beneficial_balance, ${command_name}_locked_out_count, ${command_name}_locked_in_count, ${command_name}_locked_out, ${command_name}_locked_in, ${command_name}_denomination, ${command_name}_obligor, ${command_name}_group_id, ${command_name}_timestamp"
         return 0
     else
         local error_message=$(echo "$http_response" | jq -r '.error // "Unknown error"')
@@ -635,6 +683,159 @@ execute_accept() {
     else
         local error_message=$(echo "$http_response" | jq -r '.errors[0].message // "Unknown error"')
         echo_with_color $RED "    ❌ Accept failed: $error_message"
+        echo_with_color $BLUE "      Full response: $http_response"
+        return 1
+    fi
+}
+
+# Function to execute accept deal command using GraphQL
+execute_accept_deal() {
+    local command_name="$1"
+    local user_email="$2"
+    local user_password="$3"
+    local contract_id="$4"
+    local idempotency_key="$5"
+    local group_name="$6"  # Optional group name for delegation
+    
+    echo_with_color $CYAN "✅ Executing accept deal command via GraphQL: $command_name"
+    
+    # Login to get JWT token (with optional group delegation)
+    local jwt_token=$(login_user "$user_email" "$user_password" "$group_name")
+    if [[ -z "$jwt_token" ]]; then
+        echo_with_color $RED "❌ Failed to get JWT token for user: $user_email"
+        return 1
+    fi
+    
+    if [[ -n "$group_name" ]]; then
+        echo_with_color $CYAN "  🏢 Using delegation JWT for group: $group_name"
+    fi
+    echo_with_color $BLUE "  📤 Sending GraphQL accept deal mutation..."
+    
+    # Prepare GraphQL mutation
+    local graphql_mutation
+    local input_params="contractId: \\\"$contract_id\\\""
+    
+    # Add idempotency_key if provided
+    if [[ -n "$idempotency_key" ]]; then
+        input_params="$input_params, idempotencyKey: \\\"$idempotency_key\\\""
+    fi
+    
+    graphql_mutation="mutation { acceptDeal(input: { $input_params }) { success message accountAddress dealId acceptResult messageId transactionId signature timestamp } }"
+    
+    local graphql_payload="{\"query\": \"$graphql_mutation\"}"
+    
+    echo_with_color $BLUE "  📋 GraphQL mutation:"
+    echo_with_color $BLUE "    $graphql_mutation"
+    
+    # Send GraphQL request to payments service
+    echo_with_color $BLUE "  🌐 Making GraphQL request to: http://localhost:3002/graphql"
+    local http_response=$(curl -s -X POST "http://localhost:3002/graphql" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $jwt_token" \
+        -d "$graphql_payload")
+    
+    echo_with_color $BLUE "  📡 Raw GraphQL response: '$http_response'"
+    
+    # Parse GraphQL response
+    local success=$(echo "$http_response" | jq -r '.data.acceptDeal.success // empty')
+    if [[ "$success" == "true" ]]; then
+        local account_address=$(echo "$http_response" | jq -r '.data.acceptDeal.accountAddress // empty')
+        local message=$(echo "$http_response" | jq -r '.data.acceptDeal.message // empty')
+        local deal_id=$(echo "$http_response" | jq -r '.data.acceptDeal.dealId // empty')
+        local message_id=$(echo "$http_response" | jq -r '.data.acceptDeal.messageId // empty')
+        local transaction_id=$(echo "$http_response" | jq -r '.data.acceptDeal.transactionId // empty')
+        local signature=$(echo "$http_response" | jq -r '.data.acceptDeal.signature // empty')
+        local timestamp=$(echo "$http_response" | jq -r '.data.acceptDeal.timestamp // empty')
+        local accept_result=$(echo "$http_response" | jq -r '.data.acceptDeal.acceptResult // empty')
+        
+        # Store outputs for variable substitution in future commands
+        store_command_output "$command_name" "account_address" "$account_address"
+        store_command_output "$command_name" "message" "$message"
+        store_command_output "$command_name" "deal_id" "$deal_id"
+        store_command_output "$command_name" "message_id" "$message_id"
+        store_command_output "$command_name" "transaction_id" "$transaction_id"
+        store_command_output "$command_name" "signature" "$signature"
+        store_command_output "$command_name" "timestamp" "$timestamp"
+        store_command_output "$command_name" "accept_result" "$accept_result"
+        
+        echo_with_color $GREEN "    ✅ Accept deal successful!"
+        echo_with_color $BLUE "      Account: $account_address"
+        echo_with_color $BLUE "      Deal ID: $deal_id"
+        echo_with_color $BLUE "      Message: $message"
+        echo_with_color $BLUE "      Message ID: $message_id"
+        echo_with_color $BLUE "      Transaction ID: $transaction_id"
+        echo_with_color $BLUE "      Accept Result: $accept_result"
+        echo_with_color $CYAN "      📝 Stored outputs for variable substitution:"
+        echo_with_color $CYAN "        ${command_name}_account_address, ${command_name}_message, ${command_name}_deal_id, ${command_name}_message_id, ${command_name}_transaction_id, ${command_name}_signature, ${command_name}_timestamp, ${command_name}_accept_result"
+        return 0
+    else
+        local error_message=$(echo "$http_response" | jq -r '.errors[0].message // "Unknown error"')
+        echo_with_color $RED "    ❌ Accept deal failed: $error_message"
+        echo_with_color $BLUE "      Full response: $http_response"
+        return 1
+    fi
+}
+
+# Function to execute deals command using REST API
+execute_deals() {
+    local command_name="$1"
+    local user_email="$2"
+    local user_password="$3"
+    local group_name="$4"  # Optional group name for delegation
+    
+    echo_with_color $CYAN "🤝 Executing deals command via REST API: $command_name"
+    
+    # Login to get JWT token (with optional group delegation)
+    local jwt_token=$(login_user "$user_email" "$user_password" "$group_name")
+    if [[ -z "$jwt_token" ]]; then
+        echo_with_color $RED "❌ Failed to get JWT token for user: $user_email"
+        return 1
+    fi
+    
+    echo_with_color $BLUE "  🔑 JWT token obtained (first 50 chars): ${jwt_token:0:50}..."
+    if [[ -n "$group_name" ]]; then
+        echo_with_color $CYAN "  🏢 Using delegation JWT for group: $group_name"
+    fi
+    echo_with_color $BLUE "  📤 Sending REST API deals request..."
+    
+    # Send REST API request to payments service
+    echo_with_color $BLUE "  🌐 Making REST API request to: http://localhost:3002/deals"
+    local http_response=$(curl -s -X GET "http://localhost:3002/deals" \
+        -H "Authorization: Bearer $jwt_token")
+    
+    echo_with_color $BLUE "  📡 Raw REST API response: '$http_response'"
+    
+    # Parse REST API response
+    local status=$(echo "$http_response" | jq -r '.status // empty')
+    if [[ "$status" == "success" ]]; then
+        local deals_count=$(echo "$http_response" | jq -r '.deals | length // 0')
+        local timestamp=$(echo "$http_response" | jq -r '.timestamp // empty')
+        
+        # Store outputs for variable substitution in future commands
+        store_command_output "$command_name" "deals_count" "$deals_count"
+        store_command_output "$command_name" "timestamp" "$timestamp"
+        store_command_output "$command_name" "deals_json" "$(echo "$http_response" | jq -c '.deals // []')"
+        
+        echo_with_color $GREEN "    ✅ Deals retrieved successfully!"
+        
+        echo_with_color $BLUE "  📋 Deals Information:"
+        echo_with_color $BLUE "      Total Deals: $deals_count"
+        echo_with_color $BLUE "      Timestamp: $timestamp"
+        
+        # Display deals if they exist
+        if [[ "$deals_count" -gt 0 ]]; then
+            echo_with_color $YELLOW "  🤝 Deals Details:"
+            echo "$http_response" | jq '.deals[]' 2>/dev/null | sed 's/^/      /'
+        else
+            echo_with_color $YELLOW "  📭 No deals found for this user"
+        fi
+        
+        echo_with_color $CYAN "      📝 Stored outputs for variable substitution:"
+        echo_with_color $CYAN "        ${command_name}_deals_count, ${command_name}_timestamp, ${command_name}_deals_json"
+        return 0
+    else
+        local error_message=$(echo "$http_response" | jq -r '.error // "Unknown error"')
+        echo_with_color $RED "    ❌ Deals retrieval failed: $error_message"
         echo_with_color $BLUE "      Full response: $http_response"
         return 1
     fi
@@ -822,6 +1023,9 @@ execute_command() {
     local initial_payments_amount=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.initial_payments.amount")
     local initial_payments_json=$(yq eval -o json -I 0 ".commands[$command_index].parameters.initial_payments.payments" "$COMMANDS_FILE" 2>/dev/null || echo "[]")
     
+    # Parse accept_deal specific parameters
+    local contract_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.contract_id")
+    
     # Apply variable substitution to parameters
     echo_with_color $CYAN "  🔄 Applying variable substitution to parameters..."
     asset_id=$(substitute_variables "$asset_id")
@@ -842,6 +1046,9 @@ execute_command() {
     expiry=$(substitute_variables "$expiry")
     data=$(substitute_variables "$data")
     initial_payments_amount=$(substitute_variables "$initial_payments_amount")
+    
+    # Apply variable substitution to accept_deal specific parameters
+    contract_id=$(substitute_variables "$contract_id")
     
     echo_with_color $PURPLE "🚀 Executing command $((command_index + 1)): $command_name"
     echo_with_color $BLUE "  Type: $command_type"
@@ -866,6 +1073,9 @@ execute_command() {
     if [[ -n "$data" ]]; then echo_with_color $BLUE "    data: $data"; fi
     if [[ -n "$initial_payments_amount" ]]; then echo_with_color $BLUE "    initial_payments_amount: $initial_payments_amount"; fi
     
+    # Display accept_deal specific parameters
+    if [[ -n "$contract_id" ]]; then echo_with_color $BLUE "    contract_id: $contract_id"; fi
+    
     # Execute command based on type
     case "$command_type" in
         "deposit")
@@ -882,6 +1092,12 @@ execute_command() {
             ;;
         "create_deal")
             execute_create_deal "$command_name" "$user_email" "$user_password" "$counterpart" "$deal_address" "$deal_group_id" "$denomination" "$obligor" "$notional" "$expiry" "$data" "$initial_payments_amount" "$initial_payments_json" "$idempotency_key" "$group_name"
+            ;;
+        "accept_deal")
+            execute_accept_deal "$command_name" "$user_email" "$user_password" "$contract_id" "$idempotency_key" "$group_name"
+            ;;
+        "deals")
+            execute_deals "$command_name" "$user_email" "$user_password" "$group_name"
             ;;
         *)
             echo_with_color $RED "❌ Unknown command type: $command_type"
@@ -1030,9 +1246,21 @@ validate_commands_file() {
                     return 1
                 fi
                 ;;
+            "accept_deal")
+                local contract_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.contract_id")
+                
+                if [[ -z "$contract_id" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.contract_id' field"
+                    return 1
+                fi
+                ;;
+            "deals")
+                # Deals command doesn't require any specific parameters
+                # It will list all deals for the authenticated user
+                ;;
             *)
                 echo_with_color $RED "Error: Command '$command_name' has unsupported type: '$command_type'"
-                echo_with_color $YELLOW "Supported types: deposit, instant, accept, balance, create_deal"
+                echo_with_color $YELLOW "Supported types: deposit, instant, accept, balance, create_deal, accept_deal, deals"
                 return 1
                 ;;
         esac
@@ -1231,10 +1459,12 @@ show_help() {
     echo "  • accept: Accepts payments using id_hash via GraphQL"
     echo "  • balance: Retrieves balance information via REST API"
     echo "  • createDeal: Creates deals via GraphQL"
+    echo "  • acceptDeal: Accepts deals using contract_id via GraphQL"
+    echo "  • deals: Lists all deals for a user via REST API"
     echo ""
     echo "Commands.yaml Structure:"
     echo "  • commands: array of commands with type, user, and parameters"
-    echo "  • Supported command types: deposit, instant, accept, balance, create_deal"
+    echo "  • Supported command types: deposit, instant, accept, balance, create_deal, accept_deal, deals"
     echo "  • Each command must have user.id, user.password, and parameters"
     echo "  • Variables can be referenced using: \$command_name.field_name"
     echo ""
@@ -1243,9 +1473,12 @@ show_help() {
     echo "  • amount: \$previous_deposit.amount   # Use amount from 'previous_deposit' command"
     echo "  • message_id: \$instant_pay.message_id # Use message_id from 'instant_pay' command"
     echo "  • private_balance: \$issuer_balance.private_balance # Use private_balance from 'issuer_balance' command"
+    echo "  • beneficial_balance: \$issuer_balance.beneficial_balance # Use beneficial_balance from 'issuer_balance' command"
     echo "  • denomination: \$issuer_balance.denomination # Use denomination from 'issuer_balance' command"
     echo "  • locked_out: \$issuer_balance.locked_out # Use locked_out transactions from 'issuer_balance' command"
     echo "  • locked_in: \$issuer_balance.locked_in # Use locked_in transactions from 'issuer_balance' command"
+    echo "  • deals_count: \$admin2_balance_2.deals_count # Use deals count from 'admin2_balance_2' command"
+    echo "  • deals_json: \$admin2_balance_2.deals_json # Use deals JSON from 'admin2_balance_2' command"
     echo ""
     echo "Examples:"
     echo "  $0 execute    # Execute all commands via GraphQL"
