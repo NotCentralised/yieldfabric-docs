@@ -873,23 +873,38 @@ execute_create_deal() {
     fi
     echo_with_color $BLUE "  📤 Sending GraphQL create deal mutation..."
     
-    # Prepare GraphQL mutation with all required fields
+    # Prepare GraphQL mutation with required fields
     local graphql_mutation
     local graphql_variables=""
-    local input_params="counterpart: \\\"$counterpart\\\", dealAddress: \\\"$deal_address\\\", dealGroupId: \\\"$deal_group_id\\\", denomination: \\\"$denomination\\\""
+    local input_params="counterpart: \\\"$counterpart\\\", denomination: \\\"$denomination\\\""
     
-    # Add optional fields if provided
-    if [[ -n "$obligor" ]]; then
+    # Add optional deal_address if provided (and not "null")
+    if [[ -n "$deal_address" && "$deal_address" != "null" ]]; then
+        input_params="$input_params, dealAddress: \\\"$deal_address\\\""
+    fi
+    
+    # Add optional deal_group_id if provided (and not "null")
+    if [[ -n "$deal_group_id" && "$deal_group_id" != "null" ]]; then
+        input_params="$input_params, dealGroupId: \\\"$deal_group_id\\\""
+    fi
+    
+    # Add optional fields if provided (and not "null")
+    if [[ -n "$obligor" && "$obligor" != "null" ]]; then
         input_params="$input_params, obligor: \\\"$obligor\\\""
     fi
-    if [[ -n "$notional" ]]; then
+    if [[ -n "$notional" && "$notional" != "null" ]]; then
         input_params="$input_params, notional: \\\"$notional\\\""
     fi
-    if [[ -n "$expiry" ]]; then
+    if [[ -n "$expiry" && "$expiry" != "null" ]]; then
         input_params="$input_params, expiry: \\\"$expiry\\\""
     fi
-    if [[ -n "$data" && "$data" != "{}" ]]; then
-        input_params="$input_params, data: $data"
+    if [[ -n "$data" && "$data" != "{}" && "$data" != "null" ]]; then
+        # Add data as a GraphQL variable
+        if [[ -n "$graphql_variables" ]]; then
+            graphql_variables="$graphql_variables, "
+        fi
+        graphql_variables="$graphql_variables\"data\": $data"
+        input_params="$input_params, data: \$data"
     fi
     if [[ -n "$initial_payments_amount" && -n "$initial_payments_json" ]]; then
         # Convert snake_case field names to camelCase for GraphQL
@@ -925,7 +940,16 @@ execute_create_deal() {
     
     # Build GraphQL mutation with variables if needed
     if [[ -n "$graphql_variables" ]]; then
-        graphql_mutation="mutation(\$initialPayments: InitialPaymentsInput) { createDeal(input: { $input_params }) { success message accountAddress dealResult messageId contractId transactionId signature timestamp idHash } }"
+        # Check if we have both data and initialPayments variables
+        if echo "$graphql_variables" | grep -q "initialPayments" && echo "$graphql_variables" | grep -q "data"; then
+            graphql_mutation="mutation(\$initialPayments: InitialPaymentsInput, \$data: JSON) { createDeal(input: { $input_params }) { success message accountAddress dealResult messageId contractId transactionId signature timestamp idHash } }"
+        elif echo "$graphql_variables" | grep -q "initialPayments"; then
+            graphql_mutation="mutation(\$initialPayments: InitialPaymentsInput) { createDeal(input: { $input_params }) { success message accountAddress dealResult messageId contractId transactionId signature timestamp idHash } }"
+        elif echo "$graphql_variables" | grep -q "data"; then
+            graphql_mutation="mutation(\$data: JSON) { createDeal(input: { $input_params }) { success message accountAddress dealResult messageId contractId transactionId signature timestamp idHash } }"
+        else
+            graphql_mutation="mutation { createDeal(input: { $input_params }) { success message accountAddress dealResult messageId contractId transactionId signature timestamp idHash } }"
+        fi
         local graphql_payload="{\"query\": \"$graphql_mutation\", \"variables\": {$graphql_variables}}"
     else
         graphql_mutation="mutation { createDeal(input: { $input_params }) { success message accountAddress dealResult messageId contractId transactionId signature timestamp idHash } }"
@@ -1019,7 +1043,7 @@ execute_command() {
     local deal_group_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.deal_group_id")
     local notional=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.notional")
     local expiry=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.expiry")
-    local data=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.data")
+    local data=$(yq eval -o json -I 0 ".commands[$command_index].parameters.data" "$COMMANDS_FILE" 2>/dev/null || echo "null")
     local initial_payments_amount=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.initial_payments.amount")
     local initial_payments_json=$(yq eval -o json -I 0 ".commands[$command_index].parameters.initial_payments.payments" "$COMMANDS_FILE" 2>/dev/null || echo "[]")
     
@@ -1066,11 +1090,11 @@ execute_command() {
     
     # Display create_deal specific parameters
     if [[ -n "$counterpart" ]]; then echo_with_color $BLUE "    counterpart: $counterpart"; fi
-    if [[ -n "$deal_address" ]]; then echo_with_color $BLUE "    deal_address: $deal_address"; fi
-    if [[ -n "$deal_group_id" ]]; then echo_with_color $BLUE "    deal_group_id: $deal_group_id"; fi
-    if [[ -n "$notional" ]]; then echo_with_color $BLUE "    notional: $notional"; fi
-    if [[ -n "$expiry" ]]; then echo_with_color $BLUE "    expiry: $expiry"; fi
-    if [[ -n "$data" ]]; then echo_with_color $BLUE "    data: $data"; fi
+    if [[ -n "$deal_address" && "$deal_address" != "null" ]]; then echo_with_color $BLUE "    deal_address: $deal_address"; fi
+    if [[ -n "$deal_group_id" && "$deal_group_id" != "null" ]]; then echo_with_color $BLUE "    deal_group_id: $deal_group_id"; fi
+    if [[ -n "$notional" && "$notional" != "null" ]]; then echo_with_color $BLUE "    notional: $notional"; fi
+    if [[ -n "$expiry" && "$expiry" != "null" ]]; then echo_with_color $BLUE "    expiry: $expiry"; fi
+    if [[ -n "$data" && "$data" != "null" ]]; then echo_with_color $BLUE "    data: $data"; fi
     if [[ -n "$initial_payments_amount" ]]; then echo_with_color $BLUE "    initial_payments_amount: $initial_payments_amount"; fi
     
     # Display accept_deal specific parameters
@@ -1231,15 +1255,7 @@ validate_commands_file() {
                     return 1
                 fi
                 
-                if [[ -z "$deal_address" ]]; then
-                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.deal_address' field"
-                    return 1
-                fi
-                
-                if [[ -z "$deal_group_id" ]]; then
-                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.deal_group_id' field"
-                    return 1
-                fi
+                # deal_address and deal_group_id are now optional - no validation needed
                 
                 if [[ -z "$denomination" ]]; then
                     echo_with_color $RED "Error: Command '$command_name' missing 'parameters.denomination' field"
