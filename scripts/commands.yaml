@@ -6,7 +6,7 @@ commands:
       password: issuerpass456
     parameters:
       asset_id: aud-token-asset
-      amount: 20
+      amount: 45
       idempotency_key: deposit-1
 
   - name: issuer_balance_1
@@ -63,22 +63,22 @@ commands:
       denomination: aud-token-asset
 
 
-      # - name: counterpart_accept
-      #   type: accept
-      #   user: 
-      #     id: counterpart@yieldfabric.com
-      #     password: counterpass789
-      #   parameters:
-      #     idempotency_key: accept-1
-      #     payment_id: $issuer_send_1.payment_id
+  #     # - name: counterpart_accept
+  #     #   type: accept
+  #     #   user: 
+  #     #     id: counterpart@yieldfabric.com
+  #     #     password: counterpass789
+  #     #   parameters:
+  #     #     idempotency_key: accept-1
+  #     #     payment_id: $issuer_send_1.payment_id
 
-      # - name: counterpart_balance_1
-      #   type: balance
-      #   user: 
-      #     id: counterpart@yieldfabric.com
-      #     password: counterpass789
-      #   parameters:
-      #     denomination: aud-token-asset
+  #     # - name: counterpart_balance_1
+  #     #   type: balance
+  #     #   user: 
+  #     #     id: counterpart@yieldfabric.com
+  #     #     password: counterpass789
+  #     #   parameters:
+  #     #     denomination: aud-token-asset
 
 
 
@@ -134,26 +134,30 @@ commands:
       password: testpass123
       group: Admin Group
     parameters:
-      idempotency_key: create_deal-1
-      counterpart: Admin Group
-      deal_address: 0x959922bE3CAee4b8Cd9a407cc3ac1C251C2007B1
-      deal_group_id: 0
+      idempotency_key: create_deal-2
+      counterpart: issuer@yieldfabric.com
       denomination: aud-token-asset
-      obligor: 0x0000000000000000000000000000000000000000
+      # obligor: 0x0000000000000000000000000000000000000000
       notional: 10 
       expiry: 2025-10-10
-      data: {}
+      data: 
+        name: "Test Deal"
+        description: "Test Deal Description"
       initial_payments:
         amount: 10
         payments:
           - oracle_address: "0x0000000000000000000000000000000000000000"
             oracle_owner: "0x0000000000000000000000000000000000000000"
-            oracle_key_sender: "0x0000000000000000000000000000000000000000"
-            oracle_value_sender: "0x0000000000000000000000000000000000000000"
-            oracle_key_recipient: "0x0000000000000000000000000000000000000000"
-            oracle_value_recipient: "0x0000000000000000000000000000000000000000"
-            unlock_sender: 0
-            unlock_receiver: 0
+            oracle_key_sender: "1"
+            oracle_value_sender_secret: "1"
+            oracle_key_recipient: "1"
+            oracle_value_recipient_secret: "2"
+
+          - oracle_address: "0x0000000000000000000000000000000000000000"
+            oracle_owner: "0x0000000000000000000000000000000000000000"
+            unlock_sender: 2025-12-31
+            unlock_receiver: 2025-12-31
+
 
   - name: issuer_accept_deal
     type: accept_deal
@@ -179,7 +183,7 @@ commands:
 
   
   
-  - name: admin2_balance_2
+  - name: admin2_deals
     type: deals
     user: 
       id: admin2@yieldfabric.com
