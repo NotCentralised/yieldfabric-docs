@@ -688,7 +688,7 @@ execute_accept() {
     fi
 }
 
-# Function to execute ergonomic create deal command using GraphQL
+# Function to execute create deal command using GraphQL (with ergonomic input)
 execute_create_deal_ergonomic() {
     local command_name="$1"
     local user_email="$2"
@@ -706,7 +706,7 @@ execute_create_deal_ergonomic() {
     local idempotency_key="${14}"
     local group_name="${15}"  # Optional group name for delegation
     
-    echo_with_color $CYAN "🤝 Executing ergonomic create deal command via GraphQL: $command_name"
+    echo_with_color $CYAN "🤝 Executing create deal command via GraphQL: $command_name"
     
     # Login to get JWT token (with optional group delegation)
     local jwt_token=$(login_user "$user_email" "$user_password" "$group_name")
@@ -718,7 +718,7 @@ execute_create_deal_ergonomic() {
     if [[ -n "$group_name" ]]; then
         echo_with_color $CYAN "  🏢 Using delegation JWT for group: $group_name"
     fi
-    echo_with_color $BLUE "  📤 Sending GraphQL ergonomic create deal mutation..."
+    echo_with_color $BLUE "  📤 Sending GraphQL create deal mutation..."
     
     # Prepare GraphQL mutation with required fields
     local graphql_mutation
@@ -754,17 +754,23 @@ execute_create_deal_ergonomic() {
         input_params="$input_params, data: \$data"
     fi
     if [[ -n "$initial_payments_amount" && -n "$initial_payments_json" ]]; then
-        # Convert ergonomic payments to GraphQL variables
-        # The ergonomic format uses nested structure with payer/payee
-        local ergonomic_payments=$(echo "$initial_payments_json" | jq 'map({
-            id: .id,
-            owner: .owner,
-            payer: (.payer // null),
-            payee: (.payee // null)
+        # Convert user-friendly payments to VaultPaymentInput format
+        # The user-friendly format uses nested structure with payer/payee
+        # We need to convert this to the flat VaultPaymentInput structure
+        # Note: GraphQL converts snake_case to camelCase, so we use camelCase field names
+        local vault_payments=$(echo "$initial_payments_json" | jq 'map({
+            oracleAddress: null,  # Will be set by the backend
+            oracleOwner: .owner,
+            oracleKeySender: (.payer.key // "0"),
+            oracleValueSenderSecret: (.payer.valueSecret // "0"),
+            oracleKeyRecipient: (.payee.key // "0"),
+            oracleValueRecipientSecret: (.payee.valueSecret // "0"),
+            unlockSender: .payer.unlock,
+            unlockReceiver: .payee.unlock
         })')
         
         # Create a JSON variable for initial payments
-        local initial_payments_variable=$(echo "$ergonomic_payments" | jq --arg amount "$initial_payments_amount" '{
+        local initial_payments_variable=$(echo "$vault_payments" | jq --arg amount "$initial_payments_amount" '{
             amount: $amount,
             payments: .
         }')
@@ -786,17 +792,17 @@ execute_create_deal_ergonomic() {
     if [[ -n "$graphql_variables" ]]; then
         # Check if we have both data and initialPayments variables
         if echo "$graphql_variables" | grep -q "initialPayments" && echo "$graphql_variables" | grep -q "data"; then
-            graphql_mutation="mutation(\$initialPayments: ErgonomicInitialPaymentsInput, \$data: JSON) { createDealErgonomic(input: { $input_params }) { success message accountAddress dealResult messageId contractId transactionId signature timestamp idHash } }"
+            graphql_mutation="mutation(\$initialPayments: InitialPaymentsInput, \$data: JSON) { createDeal(input: { $input_params }) { success message accountAddress dealResult messageId contractId transactionId signature timestamp idHash } }"
         elif echo "$graphql_variables" | grep -q "initialPayments"; then
-            graphql_mutation="mutation(\$initialPayments: ErgonomicInitialPaymentsInput) { createDealErgonomic(input: { $input_params }) { success message accountAddress dealResult messageId contractId transactionId signature timestamp idHash } }"
+            graphql_mutation="mutation(\$initialPayments: InitialPaymentsInput) { createDeal(input: { $input_params }) { success message accountAddress dealResult messageId contractId transactionId signature timestamp idHash } }"
         elif echo "$graphql_variables" | grep -q "data"; then
-            graphql_mutation="mutation(\$data: JSON) { createDealErgonomic(input: { $input_params }) { success message accountAddress dealResult messageId contractId transactionId signature timestamp idHash } }"
+            graphql_mutation="mutation(\$data: JSON) { createDeal(input: { $input_params }) { success message accountAddress dealResult messageId contractId transactionId signature timestamp idHash } }"
         else
-            graphql_mutation="mutation { createDealErgonomic(input: { $input_params }) { success message accountAddress dealResult messageId contractId transactionId signature timestamp idHash } }"
+            graphql_mutation="mutation { createDeal(input: { $input_params }) { success message accountAddress dealResult messageId contractId transactionId signature timestamp idHash } }"
         fi
         local graphql_payload="{\"query\": \"$graphql_mutation\", \"variables\": {$graphql_variables}}"
     else
-        graphql_mutation="mutation { createDealErgonomic(input: { $input_params }) { success message accountAddress dealResult messageId contractId transactionId signature timestamp idHash } }"
+        graphql_mutation="mutation { createDeal(input: { $input_params }) { success message accountAddress dealResult messageId contractId transactionId signature timestamp idHash } }"
         local graphql_payload="{\"query\": \"$graphql_mutation\"}"
     fi
     
@@ -813,17 +819,17 @@ execute_create_deal_ergonomic() {
     echo_with_color $BLUE "  📡 Raw GraphQL response: '$http_response'"
     
     # Parse GraphQL response
-    local success=$(echo "$http_response" | jq -r '.data.createDealErgonomic.success // empty')
+    local success=$(echo "$http_response" | jq -r '.data.createDeal.success // empty')
     if [[ "$success" == "true" ]]; then
-        local account_address=$(echo "$http_response" | jq -r '.data.createDealErgonomic.accountAddress // empty')
-        local message=$(echo "$http_response" | jq -r '.data.createDealErgonomic.message // empty')
-        local deal_result=$(echo "$http_response" | jq -r '.data.createDealErgonomic.dealResult // empty')
-        local message_id=$(echo "$http_response" | jq -r '.data.createDealErgonomic.messageId // empty')
-        local contract_id=$(echo "$http_response" | jq -r '.data.createDealErgonomic.contractId // empty')
-        local transaction_id=$(echo "$http_response" | jq -r '.data.createDealErgonomic.transactionId // empty')
-        local signature=$(echo "$http_response" | jq -r '.data.createDealErgonomic.signature // empty')
-        local timestamp=$(echo "$http_response" | jq -r '.data.createDealErgonomic.timestamp // empty')
-        local id_hash=$(echo "$http_response" | jq -r '.data.createDealErgonomic.idHash // empty')
+        local account_address=$(echo "$http_response" | jq -r '.data.createDeal.accountAddress // empty')
+        local message=$(echo "$http_response" | jq -r '.data.createDeal.message // empty')
+        local deal_result=$(echo "$http_response" | jq -r '.data.createDeal.dealResult // empty')
+        local message_id=$(echo "$http_response" | jq -r '.data.createDeal.messageId // empty')
+        local contract_id=$(echo "$http_response" | jq -r '.data.createDeal.contractId // empty')
+        local transaction_id=$(echo "$http_response" | jq -r '.data.createDeal.transactionId // empty')
+        local signature=$(echo "$http_response" | jq -r '.data.createDeal.signature // empty')
+        local timestamp=$(echo "$http_response" | jq -r '.data.createDeal.timestamp // empty')
+        local id_hash=$(echo "$http_response" | jq -r '.data.createDeal.idHash // empty')
         
         # Store outputs for variable substitution in future commands
         store_command_output "$command_name" "account_address" "$account_address"
@@ -836,7 +842,7 @@ execute_create_deal_ergonomic() {
         store_command_output "$command_name" "timestamp" "$timestamp"
         store_command_output "$command_name" "id_hash" "$id_hash"
         
-        echo_with_color $GREEN "    ✅ Ergonomic create deal successful!"
+        echo_with_color $GREEN "    ✅ Create deal successful!"
         echo_with_color $BLUE "      Account: $account_address"
         echo_with_color $BLUE "      Contract ID: $contract_id"
         echo_with_color $BLUE "      Transaction ID: $transaction_id"
@@ -851,7 +857,7 @@ execute_create_deal_ergonomic() {
         return 0
     else
         local error_message=$(echo "$http_response" | jq -r '.errors[0].message // "Unknown error"')
-        echo_with_color $RED "    ❌ Ergonomic create deal failed: $error_message"
+        echo_with_color $RED "    ❌ Create deal failed: $error_message"
         echo_with_color $BLUE "      Full response: $http_response"
         return 1
     fi
@@ -1286,9 +1292,6 @@ execute_command() {
             execute_balance "$command_name" "$user_email" "$user_password" "$denomination" "$obligor" "$group_id" "$group_name"
             ;;
         "create_deal")
-            execute_create_deal "$command_name" "$user_email" "$user_password" "$counterpart" "$deal_address" "$deal_group_id" "$denomination" "$obligor" "$notional" "$expiry" "$data" "$initial_payments_amount" "$initial_payments_json" "$idempotency_key" "$group_name"
-            ;;
-        "create_deal_ergonomic")
             execute_create_deal_ergonomic "$command_name" "$user_email" "$user_password" "$counterpart" "$deal_address" "$deal_group_id" "$denomination" "$obligor" "$notional" "$expiry" "$data" "$initial_payments_amount" "$initial_payments_json" "$idempotency_key" "$group_name"
             ;;
         "accept_deal")
@@ -1436,24 +1439,6 @@ validate_commands_file() {
                     return 1
                 fi
                 ;;
-            "create_deal_ergonomic")
-                local counterpart=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.counterpart")
-                local deal_address=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.deal_address")
-                local deal_group_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.deal_group_id")
-                local denomination=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.denomination")
-                
-                if [[ -z "$counterpart" ]]; then
-                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.counterpart' field"
-                    return 1
-                fi
-                
-                # deal_address and deal_group_id are now optional - no validation needed
-                
-                if [[ -z "$denomination" ]]; then
-                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.denomination' field"
-                    return 1
-                fi
-                ;;
             "accept_deal")
                 local contract_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.contract_id")
                 
@@ -1468,7 +1453,7 @@ validate_commands_file() {
                 ;;
             *)
                 echo_with_color $RED "Error: Command '$command_name' has unsupported type: '$command_type'"
-                echo_with_color $YELLOW "Supported types: deposit, instant, accept, balance, create_deal, create_deal_ergonomic, accept_deal, deals"
+                echo_with_color $YELLOW "Supported types: deposit, instant, accept, balance, create_deal, accept_deal, deals"
                 return 1
                 ;;
         esac
@@ -1672,7 +1657,7 @@ show_help() {
     echo ""
     echo "Commands.yaml Structure:"
     echo "  • commands: array of commands with type, user, and parameters"
-    echo "  • Supported command types: deposit, instant, accept, balance, create_deal, create_deal_ergonomic, accept_deal, deals"
+    echo "  • Supported command types: deposit, instant, accept, balance, create_deal, accept_deal, deals"
     echo "  • Each command must have user.id, user.password, and parameters"
     echo "  • Variables can be referenced using: \$command_name.field_name"
     echo ""
