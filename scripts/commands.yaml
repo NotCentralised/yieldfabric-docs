@@ -146,15 +146,14 @@ commands:
       initial_payments:
         amount: 10
         payments:
-          - oracle_address: "0x0000000000000000000000000000000000000000"
-            oracle_owner: "0x0000000000000000000000000000000000000000"
+        
+          - oracle_owner: Admin Group
             oracle_key_sender: "1"
             oracle_value_sender_secret: "1"
             oracle_key_recipient: "1"
             oracle_value_recipient_secret: "2"
 
-          - oracle_address: "0x0000000000000000000000000000000000000000"
-            oracle_owner: "0x0000000000000000000000000000000000000000"
+          - oracle_owner: Admin Group
             unlock_sender: 2025-12-31
             unlock_receiver: 2025-12-31
 
