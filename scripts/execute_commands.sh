@@ -907,14 +907,16 @@ execute_create_deal() {
         input_params="$input_params, data: \$data"
     fi
     if [[ -n "$initial_payments_amount" && -n "$initial_payments_json" ]]; then
-        # Convert snake_case field names to camelCase for GraphQL
+        # Convert field names to match GraphQL schema (snake_case)
+        # Convert numeric oracle fields to strings as required by GraphQL schema
+        # Handle missing fields by providing defaults
         local converted_payments=$(echo "$initial_payments_json" | jq 'map({
-            oracleAddress: .oracle_address,
-            oracleOwner: .oracle_owner,
-            oracleKeySender: .oracle_key_sender,
-            oracleValueSender: .oracle_value_sender,
-            oracleKeyRecipient: .oracle_key_recipient,
-            oracleValueRecipient: .oracle_value_recipient,
+            oracleAddress: (.oracle_address // "0x0000000000000000000000000000000000000000"),
+            oracleOwner: (.oracle_owner // "0x0000000000000000000000000000000000000000"),
+            oracleKeySender: ((.oracle_key_sender // 0) | tostring),
+            oracleValueSenderSecret: ((.oracle_value_sender_secret // 0) | tostring),
+            oracleKeyRecipient: ((.oracle_key_recipient // 0) | tostring),
+            oracleValueRecipientSecret: ((.oracle_value_recipient_secret // 0) | tostring),
             unlockSender: .unlock_sender,
             unlockReceiver: .unlock_receiver
         })')
