@@ -1580,11 +1580,6 @@ execute_all_commands() {
         echo_with_color $PURPLE "🔍 DEBUG: Next iteration will be i=$((i+1))"
         echo ""
         
-        # Add delay between commands
-        if [[ $i -lt $((command_count - 1)) ]]; then
-            echo_with_color $BLUE "⏳ Waiting 2 seconds before next command..."
-            sleep 2
-        fi
     done
     
     echo_with_color $PURPLE "=" | tr '=' '=' | head -c 80
