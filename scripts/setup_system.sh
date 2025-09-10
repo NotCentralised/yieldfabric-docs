@@ -654,16 +654,17 @@ create_asset() {
 # Function to create US bank account
 create_us_bank_account() {
     local account_id="$1"
-    local country="$2"
-    local currency="$3"
-    local account_holder_name="$4"
-    local iban="$5"
-    local routing_number="$6"
-    local account_number="$7"
-    local admin_token="$8"
-    local user_email="$9"  # Optional user email for delegation
-    local user_password="${10}"  # Optional user password for delegation
-    local group_name="${11}"  # Optional group name for delegation
+    local asset_id="$2"
+    local country="$3"
+    local currency="$4"
+    local account_holder_name="$5"
+    local iban="$6"
+    local routing_number="$7"
+    local account_number="$8"
+    local admin_token="$9"
+    local user_email="${10}"  # Optional user email for delegation
+    local user_password="${11}"  # Optional user password for delegation
+    local group_name="${12}"  # Optional group name for delegation
     
     echo_with_color $BLUE "  🏦 US Bank Account: $account_holder_name ($account_id)"
     
@@ -679,7 +680,7 @@ create_us_bank_account() {
     fi
     
     # Create US bank account using GraphQL API
-    local create_fiat_account_query="{\"query\": \"mutation { fiatAccountFlow { createUsBankAccount(input: { accountId: \\\"$account_id\\\", country: \\\"$country\\\", currency: \\\"$currency\\\", accountHolderName: \\\"$account_holder_name\\\", iban: \\\"$iban\\\", status: ACTIVE, routingNumber: \\\"$routing_number\\\", accountNumber: \\\"$account_number\\\" }) { success message bankAccount { id country currency accountHolderName iban status } transactionId signature timestamp } } }\"}"
+    local create_fiat_account_query="{\"query\": \"mutation { fiatAccountFlow { createUsBankAccount(input: { accountId: \\\"$account_id\\\", assetId: \\\"$asset_id\\\", country: \\\"$country\\\", currency: \\\"$currency\\\", accountHolderName: \\\"$account_holder_name\\\", iban: \\\"$iban\\\", status: ACTIVE, routingNumber: \\\"$routing_number\\\", accountNumber: \\\"$account_number\\\" }) { success message bankAccount { id assetId country currency accountHolderName iban status } transactionId signature timestamp } } }\"}"
     
     local response=$(curl -s -X POST "http://localhost:3002/graphql" \
         -H "Content-Type: application/json" \
@@ -724,16 +725,17 @@ create_us_bank_account() {
 # Function to create UK bank account
 create_uk_bank_account() {
     local account_id="$1"
-    local country="$2"
-    local currency="$3"
-    local account_holder_name="$4"
-    local iban="$5"
-    local sort_code="$6"
-    local account_number="$7"
-    local admin_token="$8"
-    local user_email="$9"  # Optional user email for delegation
-    local user_password="${10}"  # Optional user password for delegation
-    local group_name="${11}"  # Optional group name for delegation
+    local asset_id="$2"
+    local country="$3"
+    local currency="$4"
+    local account_holder_name="$5"
+    local iban="$6"
+    local sort_code="$7"
+    local account_number="$8"
+    local admin_token="$9"
+    local user_email="${10}"  # Optional user email for delegation
+    local user_password="${11}"  # Optional user password for delegation
+    local group_name="${12}"  # Optional group name for delegation
     
     echo_with_color $BLUE "  🏦 UK Bank Account: $account_holder_name ($account_id)"
     
@@ -749,7 +751,7 @@ create_uk_bank_account() {
     fi
     
     # Create UK bank account using GraphQL API
-    local create_fiat_account_query="{\"query\": \"mutation { fiatAccountFlow { createUkBankAccount(input: { accountId: \\\"$account_id\\\", country: \\\"$country\\\", currency: \\\"$currency\\\", accountHolderName: \\\"$account_holder_name\\\", iban: \\\"$iban\\\", status: ACTIVE, sortCode: \\\"$sort_code\\\", accountNumber: \\\"$account_number\\\" }) { success message bankAccount { id country currency accountHolderName iban status } transactionId signature timestamp } } }\"}"
+    local create_fiat_account_query="{\"query\": \"mutation { fiatAccountFlow { createUkBankAccount(input: { accountId: \\\"$account_id\\\", assetId: \\\"$asset_id\\\", country: \\\"$country\\\", currency: \\\"$currency\\\", accountHolderName: \\\"$account_holder_name\\\", iban: \\\"$iban\\\", status: ACTIVE, sortCode: \\\"$sort_code\\\", accountNumber: \\\"$account_number\\\" }) { success message bankAccount { id assetId country currency accountHolderName iban status } transactionId signature timestamp } } }\"}"
     
     local response=$(curl -s -X POST "http://localhost:3002/graphql" \
         -H "Content-Type: application/json" \
@@ -794,16 +796,17 @@ create_uk_bank_account() {
 # Function to create AU bank account
 create_au_bank_account() {
     local account_id="$1"
-    local country="$2"
-    local currency="$3"
-    local account_holder_name="$4"
-    local iban="$5"
-    local bsb="$6"
-    local account_number="$7"
-    local admin_token="$8"
-    local user_email="$9"  # Optional user email for delegation
-    local user_password="${10}"  # Optional user password for delegation
-    local group_name="${11}"  # Optional group name for delegation
+    local asset_id="$2"
+    local country="$3"
+    local currency="$4"
+    local account_holder_name="$5"
+    local iban="$6"
+    local bsb="$7"
+    local account_number="$8"
+    local admin_token="$9"
+    local user_email="${10}"  # Optional user email for delegation
+    local user_password="${11}"  # Optional user password for delegation
+    local group_name="${12}"  # Optional group name for delegation
     
     echo_with_color $BLUE "  🏦 AU Bank Account: $account_holder_name ($account_id)"
     
@@ -819,7 +822,7 @@ create_au_bank_account() {
     fi
     
     # Create AU bank account using GraphQL API
-    local create_fiat_account_query="{\"query\": \"mutation { fiatAccountFlow { createAuBankAccount(input: { accountId: \\\"$account_id\\\", country: \\\"$country\\\", currency: \\\"$currency\\\", accountHolderName: \\\"$account_holder_name\\\", iban: \\\"$iban\\\", status: ACTIVE, bsb: \\\"$bsb\\\", accountNumber: \\\"$account_number\\\" }) { success message bankAccount { id country currency accountHolderName iban status } transactionId signature timestamp } } }\"}"
+    local create_fiat_account_query="{\"query\": \"mutation { fiatAccountFlow { createAuBankAccount(input: { accountId: \\\"$account_id\\\", assetId: \\\"$asset_id\\\", country: \\\"$country\\\", currency: \\\"$currency\\\", accountHolderName: \\\"$account_holder_name\\\", iban: \\\"$iban\\\", status: ACTIVE, bsb: \\\"$bsb\\\", accountNumber: \\\"$account_number\\\" }) { success message bankAccount { id assetId country currency accountHolderName iban status } transactionId signature timestamp } } }\"}"
     
     local response=$(curl -s -X POST "http://localhost:3002/graphql" \
         -H "Content-Type: application/json" \
@@ -1372,6 +1375,7 @@ setup_fiat_accounts() {
     
     for ((i=0; i<$fiat_account_count; i++)); do
         local account_id=$(parse_yaml "$SETUP_FILE" ".fiat_accounts[$i].id" 2>/dev/null)
+        local asset_id=$(parse_yaml "$SETUP_FILE" ".fiat_accounts[$i].asset" 2>/dev/null)
         local holder=$(parse_yaml "$SETUP_FILE" ".fiat_accounts[$i].holder" 2>/dev/null)
         local iban=$(parse_yaml "$SETUP_FILE" ".fiat_accounts[$i].iban" 2>/dev/null)
         local currency=$(parse_yaml "$SETUP_FILE" ".fiat_accounts[$i].currency" 2>/dev/null)
@@ -1392,7 +1396,7 @@ setup_fiat_accounts() {
             currency="AUD"  # Default to Australian Dollar
         fi
         
-        if [[ -n "$account_id" && -n "$holder" && -n "$iban" && -n "$account_number" ]]; then
+        if [[ -n "$account_id" && -n "$asset_id" && -n "$holder" && -n "$iban" && -n "$account_number" ]]; then
             total_count=$((total_count + 1))
             
             # Determine account type based on currency only
@@ -1417,7 +1421,7 @@ setup_fiat_accounts() {
             case "$account_type" in
                 "US")
                     if [[ -n "$routing_number" ]]; then
-                        if create_us_bank_account "$account_id" "US" "$currency" "$holder" "$iban" "$routing_number" "$account_number" "$admin_token" "$user_email" "$user_password" "$group_name"; then
+                        if create_us_bank_account "$account_id" "$asset_id" "US" "$currency" "$holder" "$iban" "$routing_number" "$account_number" "$admin_token" "$user_email" "$user_password" "$group_name"; then
                             success_count=$((success_count + 1))
                         fi
                     else
@@ -1426,7 +1430,7 @@ setup_fiat_accounts() {
                     ;;
                 "UK")
                     if [[ -n "$sort_code" ]]; then
-                        if create_uk_bank_account "$account_id" "UK" "$currency" "$holder" "$iban" "$sort_code" "$account_number" "$admin_token" "$user_email" "$user_password" "$group_name"; then
+                        if create_uk_bank_account "$account_id" "$asset_id" "UK" "$currency" "$holder" "$iban" "$sort_code" "$account_number" "$admin_token" "$user_email" "$user_password" "$group_name"; then
                             success_count=$((success_count + 1))
                         fi
                     else
@@ -1435,7 +1439,7 @@ setup_fiat_accounts() {
                     ;;
                 "AU")
                     if [[ -n "$bsb" ]]; then
-                        if create_au_bank_account "$account_id" "AU" "$currency" "$holder" "$iban" "$bsb" "$account_number" "$admin_token" "$user_email" "$user_password" "$group_name"; then
+                        if create_au_bank_account "$account_id" "$asset_id" "AU" "$currency" "$holder" "$iban" "$bsb" "$account_number" "$admin_token" "$user_email" "$user_password" "$group_name"; then
                             success_count=$((success_count + 1))
                         fi
                     else
@@ -1445,7 +1449,7 @@ setup_fiat_accounts() {
             esac
         else
             echo_with_color $RED "  ❌ Invalid fiat account data at index $i"
-            echo_with_color $YELLOW "     Required: id, holder, iban, account_number"
+            echo_with_color $YELLOW "     Required: id, asset, holder, iban, account_number"
         fi
     done
     

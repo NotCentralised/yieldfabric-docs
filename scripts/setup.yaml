@@ -71,3 +71,4 @@ fiat_accounts:
     iban: AU12ABCD1234567890123456
     bsb: 012345
     account_number: 123456789
+    asset: aud-token-asset
