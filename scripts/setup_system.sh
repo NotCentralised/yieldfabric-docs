@@ -135,6 +135,119 @@ get_user_id_by_email() {
     return 1
 }
 
+# Helper function to get group ID by name from auth service
+get_group_id_by_name_for_delegation() {
+    local token="$1"
+    local group_name="$2"
+    
+    echo_with_color $BLUE "  🔍 Looking up group ID for delegation: $group_name" >&2
+    
+    local groups_json=$(curl -s -X GET "http://localhost:3000/auth/groups" \
+        -H "Authorization: Bearer $token")
+    
+    if [[ -n "$groups_json" ]]; then
+        local group_id=$(echo "$groups_json" | jq -r ".[] | select(.name == \"$group_name\") | .id" 2>/dev/null)
+        if [[ -n "$group_id" && "$group_id" != "null" ]]; then
+            echo_with_color $GREEN "    ✅ Found group ID for delegation: ${group_id:0:8}..." >&2
+            echo "$group_id"
+            return 0
+        else
+            echo_with_color $RED "    ❌ Group not found for delegation: $group_name" >&2
+            return 1
+        fi
+    else
+        echo_with_color $RED "    ❌ Failed to retrieve groups list for delegation" >&2
+        return 1
+    fi
+}
+
+# Helper function to create delegation JWT token for a specific group
+create_delegation_token_for_fiat() {
+    local user_token="$1"
+    local group_id="$2"
+    local group_name="$3"
+    
+    echo_with_color $BLUE "  🎫 Creating delegation JWT for fiat account creation: $group_name" >&2
+    echo_with_color $BLUE "    Group ID: ${group_id:0:8}..." >&2
+    
+    # Create delegation JWT with comprehensive scope for payments operations
+    local delegation_response=$(curl -s -X POST "http://localhost:3000/auth/delegation/jwt" \
+        -H "Authorization: Bearer $user_token" \
+        -H "Content-Type: application/json" \
+        -d "{\"group_id\": \"$group_id\", \"delegation_scope\": [\"CryptoOperations\", \"ReadGroup\", \"UpdateGroup\", \"ManageGroupMembers\"], \"expiry_seconds\": 3600}")
+    
+    echo_with_color $BLUE "    Delegation response: $delegation_response" >&2
+    
+    local delegation_token=$(echo "$delegation_response" | jq -r '.delegation_jwt // .token // .delegation_token // .jwt // empty' 2>/dev/null)
+    
+    if [[ -n "$delegation_token" && "$delegation_token" != "null" ]]; then
+        echo_with_color $GREEN "    ✅ Delegation JWT created successfully for fiat account creation" >&2
+        echo "$delegation_token"
+        return 0
+    else
+        echo_with_color $RED "    ❌ Failed to create delegation JWT for fiat account creation" >&2
+        echo_with_color $YELLOW "    Response: $delegation_response" >&2
+        return 1
+    fi
+}
+
+# Function to login user and get JWT token (with optional group delegation for fiat accounts)
+login_user_for_fiat_account() {
+    local email="$1"
+    local password="$2"
+    local group_name="$3"  # Optional group name for delegation
+    
+    echo_with_color $BLUE "  🔐 Logging in user for fiat account creation: $email" >&2
+    
+    local services_json='["vault", "payments"]'
+    local http_response=$(curl -s -X POST "http://localhost:3000/auth/login/with-services" \
+        -H "Content-Type: application/json" \
+        -d "{\"email\": \"$email\", \"password\": \"$password\", \"services\": $services_json}")
+    
+    echo_with_color $BLUE "    📡 Login response: $http_response" >&2
+    
+    if [[ -n "$http_response" ]]; then
+        local token=$(echo "$http_response" | jq -r '.token // .access_token // .jwt // empty')
+        if [[ -n "$token" && "$token" != "null" ]]; then
+            echo_with_color $GREEN "    ✅ Login successful for fiat account creation" >&2
+            
+            # If group name is specified, create delegation token
+            if [[ -n "$group_name" && "$group_name" != "null" ]]; then
+                echo_with_color $CYAN "  🏢 Group delegation requested for fiat account creation: $group_name" >&2
+                
+                # Get group ID by name
+                local group_id=$(get_group_id_by_name_for_delegation "$token" "$group_name")
+                if [[ $? -eq 0 && -n "$group_id" ]]; then
+                    # Create delegation token
+                    local delegation_token=$(create_delegation_token_for_fiat "$token" "$group_id" "$group_name")
+                    if [[ $? -eq 0 && -n "$delegation_token" ]]; then
+                        echo_with_color $GREEN "    ✅ Group delegation successful for fiat account creation" >&2
+                        echo "$delegation_token"
+                        return 0
+                    else
+                        echo_with_color $YELLOW "    ⚠️  Delegation failed, using regular token for fiat account creation" >&2
+                        echo "$token"
+                        return 0
+                    fi
+                else
+                    echo_with_color $YELLOW "    ⚠️  Group not found, using regular token for fiat account creation" >&2
+                    echo "$token"
+                    return 0
+                fi
+            else
+                echo "$token"
+                return 0
+            fi
+        else
+            echo_with_color $RED "    ❌ No token in response for fiat account creation" >&2
+            return 1
+        fi
+    else
+        echo_with_color $RED "    ❌ Login failed for fiat account creation: no response" >&2
+        return 1
+    fi
+}
+
 # Ensure we have a working auth token for group operations
 ensure_auth_token() {
     # 1) Try logging in with the first user from setup.yaml
@@ -511,6 +624,216 @@ create_asset() {
             local message=$(echo "$response" | jq -r '.data.assetFlow.createAsset.message // empty' 2>/dev/null)
             if [[ -n "$created_asset_id" && "$created_asset_id" != "null" ]]; then
                 echo_with_color $GREEN "    ✅ Created (ID: ${created_asset_id:0:8}...) - $message"
+                return 0
+            else
+                echo_with_color $GREEN "    ✅ Created - $message"
+                return 0
+            fi
+        else
+            # Check for errors
+            local error_msg=$(echo "$response" | jq -r '.errors[0].message // empty' 2>/dev/null)
+            if [[ -n "$error_msg" ]]; then
+                if [[ "$error_msg" == *"already exists"* ]]; then
+                    echo_with_color $YELLOW "    ⚠️  Already exists"
+                    return 0
+                else
+                    echo_with_color $RED "    ❌ Failed: $(echo "$error_msg" | head -c 50)..."
+                    return 1
+                fi
+            else
+                echo_with_color $RED "    ❌ Failed: unknown error"
+                return 1
+            fi
+        fi
+    else
+        echo_with_color $RED "    ❌ Failed: no response"
+        return 1
+    fi
+}
+
+# Function to create US bank account
+create_us_bank_account() {
+    local account_id="$1"
+    local country="$2"
+    local currency="$3"
+    local account_holder_name="$4"
+    local iban="$5"
+    local routing_number="$6"
+    local account_number="$7"
+    local admin_token="$8"
+    local user_email="$9"  # Optional user email for delegation
+    local user_password="${10}"  # Optional user password for delegation
+    local group_name="${11}"  # Optional group name for delegation
+    
+    echo_with_color $BLUE "  🏦 US Bank Account: $account_holder_name ($account_id)"
+    
+    # Determine which token to use - delegation if group specified, otherwise admin token
+    local effective_token="$admin_token"
+    if [[ -n "$user_email" && -n "$user_password" && -n "$group_name" ]]; then
+        echo_with_color $CYAN "  🏢 Using delegation JWT for group: $group_name"
+        effective_token=$(login_user_for_fiat_account "$user_email" "$user_password" "$group_name")
+        if [[ -z "$effective_token" ]]; then
+            echo_with_color $YELLOW "  ⚠️  Delegation failed, falling back to admin token"
+            effective_token="$admin_token"
+        fi
+    fi
+    
+    # Create US bank account using GraphQL API
+    local create_fiat_account_query="{\"query\": \"mutation { fiatAccountFlow { createUsBankAccount(input: { accountId: \\\"$account_id\\\", country: \\\"$country\\\", currency: \\\"$currency\\\", accountHolderName: \\\"$account_holder_name\\\", iban: \\\"$iban\\\", status: ACTIVE, routingNumber: \\\"$routing_number\\\", accountNumber: \\\"$account_number\\\" }) { success message bankAccount { id country currency accountHolderName iban status } transactionId signature timestamp } } }\"}"
+    
+    local response=$(curl -s -X POST "http://localhost:3002/graphql" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $effective_token" \
+        -d "$create_fiat_account_query")
+    
+    if [[ -n "$response" ]]; then
+        # Check if fiat account was created successfully
+        local success=$(echo "$response" | jq -r '.data.fiatAccountFlow.createUsBankAccount.success // false' 2>/dev/null)
+        if [[ "$success" == "true" ]]; then
+            local created_account_id=$(echo "$response" | jq -r '.data.fiatAccountFlow.createUsBankAccount.bankAccount.id // empty' 2>/dev/null)
+            local message=$(echo "$response" | jq -r '.data.fiatAccountFlow.createUsBankAccount.message // empty' 2>/dev/null)
+            if [[ -n "$created_account_id" && "$created_account_id" != "null" ]]; then
+                echo_with_color $GREEN "    ✅ Created (ID: ${created_account_id:0:8}...) - $message"
+                return 0
+            else
+                echo_with_color $GREEN "    ✅ Created - $message"
+                return 0
+            fi
+        else
+            # Check for errors
+            local error_msg=$(echo "$response" | jq -r '.errors[0].message // empty' 2>/dev/null)
+            if [[ -n "$error_msg" ]]; then
+                if [[ "$error_msg" == *"already exists"* ]]; then
+                    echo_with_color $YELLOW "    ⚠️  Already exists"
+                    return 0
+                else
+                    echo_with_color $RED "    ❌ Failed: $(echo "$error_msg" | head -c 50)..."
+                    return 1
+                fi
+            else
+                echo_with_color $RED "    ❌ Failed: unknown error"
+                return 1
+            fi
+        fi
+    else
+        echo_with_color $RED "    ❌ Failed: no response"
+        return 1
+    fi
+}
+
+# Function to create UK bank account
+create_uk_bank_account() {
+    local account_id="$1"
+    local country="$2"
+    local currency="$3"
+    local account_holder_name="$4"
+    local iban="$5"
+    local sort_code="$6"
+    local account_number="$7"
+    local admin_token="$8"
+    local user_email="$9"  # Optional user email for delegation
+    local user_password="${10}"  # Optional user password for delegation
+    local group_name="${11}"  # Optional group name for delegation
+    
+    echo_with_color $BLUE "  🏦 UK Bank Account: $account_holder_name ($account_id)"
+    
+    # Determine which token to use - delegation if group specified, otherwise admin token
+    local effective_token="$admin_token"
+    if [[ -n "$user_email" && -n "$user_password" && -n "$group_name" ]]; then
+        echo_with_color $CYAN "  🏢 Using delegation JWT for group: $group_name"
+        effective_token=$(login_user_for_fiat_account "$user_email" "$user_password" "$group_name")
+        if [[ -z "$effective_token" ]]; then
+            echo_with_color $YELLOW "  ⚠️  Delegation failed, falling back to admin token"
+            effective_token="$admin_token"
+        fi
+    fi
+    
+    # Create UK bank account using GraphQL API
+    local create_fiat_account_query="{\"query\": \"mutation { fiatAccountFlow { createUkBankAccount(input: { accountId: \\\"$account_id\\\", country: \\\"$country\\\", currency: \\\"$currency\\\", accountHolderName: \\\"$account_holder_name\\\", iban: \\\"$iban\\\", status: ACTIVE, sortCode: \\\"$sort_code\\\", accountNumber: \\\"$account_number\\\" }) { success message bankAccount { id country currency accountHolderName iban status } transactionId signature timestamp } } }\"}"
+    
+    local response=$(curl -s -X POST "http://localhost:3002/graphql" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $effective_token" \
+        -d "$create_fiat_account_query")
+    
+    if [[ -n "$response" ]]; then
+        # Check if fiat account was created successfully
+        local success=$(echo "$response" | jq -r '.data.fiatAccountFlow.createUkBankAccount.success // false' 2>/dev/null)
+        if [[ "$success" == "true" ]]; then
+            local created_account_id=$(echo "$response" | jq -r '.data.fiatAccountFlow.createUkBankAccount.bankAccount.id // empty' 2>/dev/null)
+            local message=$(echo "$response" | jq -r '.data.fiatAccountFlow.createUkBankAccount.message // empty' 2>/dev/null)
+            if [[ -n "$created_account_id" && "$created_account_id" != "null" ]]; then
+                echo_with_color $GREEN "    ✅ Created (ID: ${created_account_id:0:8}...) - $message"
+                return 0
+            else
+                echo_with_color $GREEN "    ✅ Created - $message"
+                return 0
+            fi
+        else
+            # Check for errors
+            local error_msg=$(echo "$response" | jq -r '.errors[0].message // empty' 2>/dev/null)
+            if [[ -n "$error_msg" ]]; then
+                if [[ "$error_msg" == *"already exists"* ]]; then
+                    echo_with_color $YELLOW "    ⚠️  Already exists"
+                    return 0
+                else
+                    echo_with_color $RED "    ❌ Failed: $(echo "$error_msg" | head -c 50)..."
+                    return 1
+                fi
+            else
+                echo_with_color $RED "    ❌ Failed: unknown error"
+                return 1
+            fi
+        fi
+    else
+        echo_with_color $RED "    ❌ Failed: no response"
+        return 1
+    fi
+}
+
+# Function to create AU bank account
+create_au_bank_account() {
+    local account_id="$1"
+    local country="$2"
+    local currency="$3"
+    local account_holder_name="$4"
+    local iban="$5"
+    local bsb="$6"
+    local account_number="$7"
+    local admin_token="$8"
+    local user_email="$9"  # Optional user email for delegation
+    local user_password="${10}"  # Optional user password for delegation
+    local group_name="${11}"  # Optional group name for delegation
+    
+    echo_with_color $BLUE "  🏦 AU Bank Account: $account_holder_name ($account_id)"
+    
+    # Determine which token to use - delegation if group specified, otherwise admin token
+    local effective_token="$admin_token"
+    if [[ -n "$user_email" && -n "$user_password" && -n "$group_name" ]]; then
+        echo_with_color $CYAN "  🏢 Using delegation JWT for group: $group_name"
+        effective_token=$(login_user_for_fiat_account "$user_email" "$user_password" "$group_name")
+        if [[ -z "$effective_token" ]]; then
+            echo_with_color $YELLOW "  ⚠️  Delegation failed, falling back to admin token"
+            effective_token="$admin_token"
+        fi
+    fi
+    
+    # Create AU bank account using GraphQL API
+    local create_fiat_account_query="{\"query\": \"mutation { fiatAccountFlow { createAuBankAccount(input: { accountId: \\\"$account_id\\\", country: \\\"$country\\\", currency: \\\"$currency\\\", accountHolderName: \\\"$account_holder_name\\\", iban: \\\"$iban\\\", status: ACTIVE, bsb: \\\"$bsb\\\", accountNumber: \\\"$account_number\\\" }) { success message bankAccount { id country currency accountHolderName iban status } transactionId signature timestamp } } }\"}"
+    
+    local response=$(curl -s -X POST "http://localhost:3002/graphql" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $effective_token" \
+        -d "$create_fiat_account_query")
+    
+    if [[ -n "$response" ]]; then
+        # Check if fiat account was created successfully
+        local success=$(echo "$response" | jq -r '.data.fiatAccountFlow.createAuBankAccount.success // false' 2>/dev/null)
+        if [[ "$success" == "true" ]]; then
+            local created_account_id=$(echo "$response" | jq -r '.data.fiatAccountFlow.createAuBankAccount.bankAccount.id // empty' 2>/dev/null)
+            local message=$(echo "$response" | jq -r '.data.fiatAccountFlow.createAuBankAccount.message // empty' 2>/dev/null)
+            if [[ -n "$created_account_id" && "$created_account_id" != "null" ]]; then
+                echo_with_color $GREEN "    ✅ Created (ID: ${created_account_id:0:8}...) - $message"
                 return 0
             else
                 echo_with_color $GREEN "    ✅ Created - $message"
@@ -1014,6 +1337,122 @@ setup_assets() {
     return $((success_count == total_count ? 0 : 1))
 }
 
+# Function to setup fiat accounts
+setup_fiat_accounts() {
+    echo_with_color $CYAN "🏦 Setting up fiat accounts from setup.yaml..."
+    
+    # Check if payment service is running (where fiat account GraphQL is available)
+    if ! check_token_service_running; then
+        echo_with_color $YELLOW "⚠️  Payment service not running on port 3002, skipping fiat account setup"
+        echo_with_color $BLUE "   Start the payment service first: cd ../yieldfabric-payments && cargo run"
+        return 0
+    fi
+    
+    # Get admin token for fiat account operations
+    echo_with_color $BLUE "🔑 Getting admin token for fiat account operations..."
+    local admin_token
+    admin_token=$(ensure_auth_token)
+    if [[ -z "$admin_token" ]]; then
+        echo_with_color $RED "❌ Failed to obtain a valid token for fiat account operations"
+        return 1
+    fi
+    
+    echo_with_color $GREEN "✅ Using admin token for fiat account operations"
+    
+    local success_count=0
+    local total_count=0
+    
+    # Get fiat account count
+    local fiat_account_count=$(parse_yaml "$SETUP_FILE" '.fiat_accounts | length' 2>/dev/null)
+    
+    if [[ -z "$fiat_account_count" || "$fiat_account_count" == "0" ]]; then
+        echo_with_color $YELLOW "⚠️  No fiat accounts defined in setup.yaml, skipping fiat account setup"
+        return 0
+    fi
+    
+    for ((i=0; i<$fiat_account_count; i++)); do
+        local account_id=$(parse_yaml "$SETUP_FILE" ".fiat_accounts[$i].id" 2>/dev/null)
+        local holder=$(parse_yaml "$SETUP_FILE" ".fiat_accounts[$i].holder" 2>/dev/null)
+        local iban=$(parse_yaml "$SETUP_FILE" ".fiat_accounts[$i].iban" 2>/dev/null)
+        local currency=$(parse_yaml "$SETUP_FILE" ".fiat_accounts[$i].currency" 2>/dev/null)
+        
+        # Get user information for delegation
+        local user_email=$(parse_yaml "$SETUP_FILE" ".fiat_accounts[$i].user.id" 2>/dev/null)
+        local user_password=$(parse_yaml "$SETUP_FILE" ".fiat_accounts[$i].user.password" 2>/dev/null)
+        local group_name=$(parse_yaml "$SETUP_FILE" ".fiat_accounts[$i].user.group" 2>/dev/null)
+        
+        # Get country-specific fields
+        local routing_number=$(parse_yaml "$SETUP_FILE" ".fiat_accounts[$i].routing_number" 2>/dev/null)
+        local sort_code=$(parse_yaml "$SETUP_FILE" ".fiat_accounts[$i].sort_code" 2>/dev/null)
+        local bsb=$(parse_yaml "$SETUP_FILE" ".fiat_accounts[$i].bsb" 2>/dev/null)
+        local account_number=$(parse_yaml "$SETUP_FILE" ".fiat_accounts[$i].account_number" 2>/dev/null)
+        
+        # Set default if not specified
+        if [[ -z "$currency" ]]; then
+            currency="AUD"  # Default to Australian Dollar
+        fi
+        
+        if [[ -n "$account_id" && -n "$holder" && -n "$iban" && -n "$account_number" ]]; then
+            total_count=$((total_count + 1))
+            
+            # Determine account type based on currency only
+            local account_type=""
+            if [[ "$currency" == "USD" ]]; then
+                account_type="US"
+            elif [[ "$currency" == "GBP" ]]; then
+                account_type="UK"
+            elif [[ "$currency" == "AUD" ]]; then
+                account_type="AU"
+            else
+                # Default to AU if unclear
+                account_type="AU"
+            fi
+            
+            # Log delegation context if group is specified
+            if [[ -n "$group_name" ]]; then
+                echo_with_color $CYAN "  🏢 Creating fiat account with group delegation: $group_name"
+            fi
+            
+            # Create account based on determined type
+            case "$account_type" in
+                "US")
+                    if [[ -n "$routing_number" ]]; then
+                        if create_us_bank_account "$account_id" "US" "$currency" "$holder" "$iban" "$routing_number" "$account_number" "$admin_token" "$user_email" "$user_password" "$group_name"; then
+                            success_count=$((success_count + 1))
+                        fi
+                    else
+                        echo_with_color $RED "  ❌ US account '$account_id' missing routing_number"
+                    fi
+                    ;;
+                "UK")
+                    if [[ -n "$sort_code" ]]; then
+                        if create_uk_bank_account "$account_id" "UK" "$currency" "$holder" "$iban" "$sort_code" "$account_number" "$admin_token" "$user_email" "$user_password" "$group_name"; then
+                            success_count=$((success_count + 1))
+                        fi
+                    else
+                        echo_with_color $RED "  ❌ UK account '$account_id' missing sort_code"
+                    fi
+                    ;;
+                "AU")
+                    if [[ -n "$bsb" ]]; then
+                        if create_au_bank_account "$account_id" "AU" "$currency" "$holder" "$iban" "$bsb" "$account_number" "$admin_token" "$user_email" "$user_password" "$group_name"; then
+                            success_count=$((success_count + 1))
+                        fi
+                    else
+                        echo_with_color $RED "  ❌ AU account '$account_id' missing bsb"
+                    fi
+                    ;;
+            esac
+        else
+            echo_with_color $RED "  ❌ Invalid fiat account data at index $i"
+            echo_with_color $YELLOW "     Required: id, holder, iban, account_number"
+        fi
+    done
+    
+    echo_with_color $GREEN "✅ Fiat accounts setup completed: $success_count/$total_count successful"
+    return $((success_count == total_count ? 0 : 1))
+}
+
 # Function to validate setup.yaml
 validate_setup_file() {
     echo_with_color $CYAN "Validating setup.yaml..."
@@ -1184,6 +1623,109 @@ validate_setup_file() {
         done
     fi
     
+    # Validate fiat account structure
+    local fiat_account_count=$(parse_yaml "$SETUP_FILE" '.fiat_accounts | length' 2>/dev/null)
+    if [[ -n "$fiat_account_count" && "$fiat_account_count" != "0" ]]; then
+        for ((i=0; i<$fiat_account_count; i++)); do
+            local account_id=$(parse_yaml "$SETUP_FILE" ".fiat_accounts[$i].id" 2>/dev/null)
+            local holder=$(parse_yaml "$SETUP_FILE" ".fiat_accounts[$i].holder" 2>/dev/null)
+            local iban=$(parse_yaml "$SETUP_FILE" ".fiat_accounts[$i].iban" 2>/dev/null)
+            local account_number=$(parse_yaml "$SETUP_FILE" ".fiat_accounts[$i].account_number" 2>/dev/null)
+            
+            # Check for country-specific fields
+            local routing_number=$(parse_yaml "$SETUP_FILE" ".fiat_accounts[$i].routing_number" 2>/dev/null)
+            local sort_code=$(parse_yaml "$SETUP_FILE" ".fiat_accounts[$i].sort_code" 2>/dev/null)
+            local bsb=$(parse_yaml "$SETUP_FILE" ".fiat_accounts[$i].bsb" 2>/dev/null)
+            
+            if [[ -z "$account_id" ]]; then
+                echo_with_color $RED "Error: Fiat account $i missing 'id' field"
+                return 1
+            fi
+            
+            if [[ -z "$holder" ]]; then
+                echo_with_color $RED "Error: Fiat account '$account_id' missing 'holder' field"
+                return 1
+            fi
+            
+            if [[ -z "$iban" ]]; then
+                echo_with_color $RED "Error: Fiat account '$account_id' missing 'iban' field"
+                return 1
+            fi
+            
+            if [[ -z "$account_number" ]]; then
+                echo_with_color $RED "Error: Fiat account '$account_id' missing 'account_number' field"
+                return 1
+            fi
+            
+            # Validate that at least one country-specific field is present
+            if [[ -z "$routing_number" && -z "$sort_code" && -z "$bsb" ]]; then
+                echo_with_color $RED "Error: Fiat account '$account_id' missing country-specific field"
+                echo_with_color $YELLOW "Must include one of: routing_number (US), sort_code (UK), bsb (AU)"
+                return 1
+            fi
+            
+            # Determine account type based on currency only
+            local currency=$(parse_yaml "$SETUP_FILE" ".fiat_accounts[$i].currency" 2>/dev/null)
+            
+            # Set default if not specified
+            if [[ -z "$currency" ]]; then
+                currency="AUD"  # Default to Australian Dollar
+            fi
+            
+            # Determine account type based on currency
+            local account_type=""
+            if [[ "$currency" == "USD" ]]; then
+                account_type="US"
+            elif [[ "$currency" == "GBP" ]]; then
+                account_type="UK"
+            elif [[ "$currency" == "AUD" ]]; then
+                account_type="AU"
+            else
+                # Default to AU if unclear
+                account_type="AU"
+            fi
+            
+            # Validate country-specific field formats based on account type
+            case "$account_type" in
+                "US")
+                    if [[ -z "$routing_number" ]]; then
+                        echo_with_color $RED "Error: Fiat account '$account_id' (US account) missing 'routing_number' field"
+                        return 1
+                    fi
+                    if [[ ! "$routing_number" =~ ^[0-9]{9}$ ]]; then
+                        echo_with_color $RED "Error: Fiat account '$account_id' routing_number '$routing_number' must be 9 digits"
+                        return 1
+                    fi
+                    ;;
+                "UK")
+                    if [[ -z "$sort_code" ]]; then
+                        echo_with_color $RED "Error: Fiat account '$account_id' (UK account) missing 'sort_code' field"
+                        return 1
+                    fi
+                    if [[ ! "$sort_code" =~ ^[0-9]{6}$ ]]; then
+                        echo_with_color $RED "Error: Fiat account '$account_id' sort_code '$sort_code' must be 6 digits"
+                        return 1
+                    fi
+                    ;;
+                "AU")
+                    if [[ -z "$bsb" ]]; then
+                        echo_with_color $RED "Error: Fiat account '$account_id' (AU account) missing 'bsb' field"
+                        return 1
+                    fi
+                    if [[ ! "$bsb" =~ ^[0-9]{6}$ ]]; then
+                        echo_with_color $RED "Error: Fiat account '$account_id' bsb '$bsb' must be 6 digits"
+                        return 1
+                    fi
+                    ;;
+            esac
+            
+            # Validate IBAN format (basic check)
+            if [[ ! "$iban" =~ ^[A-Z]{2}[0-9]{2}[A-Z0-9]+$ ]]; then
+                echo_with_color $YELLOW "Warning: Fiat account '$account_id' iban '$iban' should be a valid IBAN format"
+            fi
+        done
+    fi
+    
     echo_with_color $GREEN "Setup file validation passed"
     return 0
 }
@@ -1255,6 +1797,21 @@ show_setup_status() {
                 done
             else
                 echo_with_color $BLUE "   Assets defined: 0"
+            fi
+            
+            # Show fiat account details
+            local fiat_account_count=$(parse_yaml "$SETUP_FILE" '.fiat_accounts | length' 2>/dev/null)
+            if [[ -n "$fiat_account_count" && "$fiat_account_count" != "0" ]]; then
+                echo_with_color $BLUE "   Fiat accounts defined: $fiat_account_count"
+                for ((i=0; i<$fiat_account_count; i++)); do
+                    local account_id=$(parse_yaml "$SETUP_FILE" ".fiat_accounts[$i].id" 2>/dev/null)
+                    local holder=$(parse_yaml "$SETUP_FILE" ".fiat_accounts[$i].holder" 2>/dev/null)
+                    local country=$(parse_yaml "$SETUP_FILE" ".fiat_accounts[$i].country" 2>/dev/null)
+                    local currency=$(parse_yaml "$SETUP_FILE" ".fiat_accounts[$i].currency" 2>/dev/null)
+                    echo_with_color $BLUE "   Fiat Account '$holder' ($account_id): Country $country, Currency $currency"
+                done
+            else
+                echo_with_color $BLUE "   Fiat accounts defined: 0"
             fi
         else
             echo_with_color $YELLOW "   yq not available - cannot parse YAML"
@@ -1340,6 +1897,13 @@ run_setup() {
     fi
     
     echo ""
+    
+    # Setup fiat accounts
+    if ! setup_fiat_accounts; then
+        echo_with_color $YELLOW "⚠️  Fiat account setup had some issues"
+    fi
+    
+    echo ""
     echo_with_color $GREEN "🎉 System setup completed!"
     echo ""
     
@@ -1363,6 +1927,7 @@ show_help() {
     echo_with_color $GREEN "  owners" "    - Setup only group account owners from setup.yaml"
     echo_with_color $GREEN "  tokens" "    - Setup only tokens from setup.yaml"
     echo_with_color $GREEN "  assets" "    - Setup only assets from setup.yaml"
+    echo_with_color $GREEN "  fiat" "      - Setup only fiat accounts from setup.yaml"
     echo_with_color $GREEN "  help" "      - Show this help message"
     echo ""
     echo "Requirements:"
@@ -1376,8 +1941,11 @@ show_help() {
     echo "  • groups: array of groups with members array containing id and role"
     echo "  • tokens: array of tokens with id, name, description, chain_id, and address"
     echo "  • assets: array of assets with id, name, type, currency, description, and token_id"
+    echo "  • fiat_accounts: array of bank accounts with id, holder, iban, account_number, user info, and country-specific fields"
     echo "  • Member roles: owner, admin, member, viewer"
     echo "  • Asset types: Cash, Token, Invoice, Factoring_Agreement, Escrow_Account, Payable, Receivable"
+    echo "  • Fiat account types: US (routing_number), UK (sort_code), AU (bsb)"
+    echo "  • Fiat account delegation: Include user.id, user.password, and user.group for group delegation"
     echo ""
     echo "Owner Setup:"
     echo "  • All group members are automatically added as owners to the group's account"
@@ -1486,6 +2054,21 @@ case "${1:-setup}" in
             
             # Setup assets
             setup_assets
+        else
+            echo_with_color $RED "Auth service not running"
+            exit 1
+        fi
+        ;;
+    "fiat")
+        if check_service_running "Auth Service" "3000"; then
+            # Create users first if they don't exist
+            if ! create_initial_users; then
+                echo_with_color $RED "Failed to create users"
+                exit 1
+            fi
+            
+            # Setup fiat accounts
+            setup_fiat_accounts
         else
             echo_with_color $RED "Auth service not running"
             exit 1

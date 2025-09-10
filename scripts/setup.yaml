@@ -59,3 +59,15 @@ assets:
     currency: AUD
     description: AUD Token Description
     token_id: AUD-token
+
+fiat_accounts:
+  - id: AUDBANK-001
+    user:
+      id: admin2@yieldfabric.com
+      password: testpass123
+      group: Admin Group
+    holder: YieldFabric Inc
+    currency: AUD
+    iban: AU12ABCD1234567890123456
+    bsb: 012345
+    account_number: 123456789
