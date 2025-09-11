@@ -16,8 +16,6 @@ commands:
       password: issuerpass456
     parameters:
       denomination: aud-token-asset
-      obligor: 0x0000000000000000000000000000000000000000
-      group_id: 0
 
 
 
