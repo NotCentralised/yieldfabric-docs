@@ -476,6 +476,7 @@ execute_balance() {
         local decimals=$(echo "$http_response" | jq -r '.balance.decimals // empty')
         local beneficial_balance=$(echo "$http_response" | jq -r '.balance.beneficial_balance // empty')
         local beneficial_transaction_ids=$(echo "$http_response" | jq -r '.balance.beneficial_transaction_ids // []')
+        local outstanding=$(echo "$http_response" | jq -r '.balance.outstanding // empty')
         # Handle both old format (counts) and new format (arrays)
         local locked_out_count
         local locked_in_count
@@ -496,6 +497,7 @@ execute_balance() {
         store_command_output "$command_name" "public_balance" "$public_balance"
         store_command_output "$command_name" "decimals" "$decimals"
         store_command_output "$command_name" "beneficial_balance" "$beneficial_balance"
+        store_command_output "$command_name" "outstanding" "$outstanding"
         store_command_output "$command_name" "locked_out_count" "$locked_out_count"
         store_command_output "$command_name" "locked_in_count" "$locked_in_count"
         store_command_output "$command_name" "denomination" "$denomination"
@@ -523,6 +525,7 @@ execute_balance() {
         echo_with_color $BLUE "      Public Balance: $public_balance"
         echo_with_color $BLUE "      Decimals: $decimals"
         echo_with_color $GREEN "      Beneficial Balance: $beneficial_balance"
+        echo_with_color $YELLOW "      Outstanding: $outstanding"
         echo_with_color $BLUE "      Locked Out Count: $locked_out_count"
         echo_with_color $BLUE "      Locked In Count: $locked_in_count"
         echo_with_color $BLUE "      Denomination: $denomination"
@@ -597,7 +600,7 @@ execute_balance() {
             fi
         fi
         echo_with_color $CYAN "      📝 Stored outputs for variable substitution:"
-        echo_with_color $CYAN "        ${command_name}_private_balance, ${command_name}_public_balance, ${command_name}_decimals, ${command_name}_beneficial_balance, ${command_name}_locked_out_count, ${command_name}_locked_in_count, ${command_name}_locked_out, ${command_name}_locked_in, ${command_name}_denomination, ${command_name}_obligor, ${command_name}_group_id, ${command_name}_timestamp"
+        echo_with_color $CYAN "        ${command_name}_private_balance, ${command_name}_public_balance, ${command_name}_decimals, ${command_name}_beneficial_balance, ${command_name}_outstanding, ${command_name}_locked_out_count, ${command_name}_locked_in_count, ${command_name}_locked_out, ${command_name}_locked_in, ${command_name}_denomination, ${command_name}_obligor, ${command_name}_group_id, ${command_name}_timestamp"
         return 0
     else
         local error_message=$(echo "$http_response" | jq -r '.error // "Unknown error"')
@@ -1662,6 +1665,7 @@ show_help() {
     echo "  • message_id: \$instant_pay.message_id # Use message_id from 'instant_pay' command"
     echo "  • private_balance: \$issuer_balance.private_balance # Use private_balance from 'issuer_balance' command"
     echo "  • beneficial_balance: \$issuer_balance.beneficial_balance # Use beneficial_balance from 'issuer_balance' command"
+    echo "  • outstanding: \$issuer_balance.outstanding # Use outstanding amount from 'issuer_balance' command"
     echo "  • denomination: \$issuer_balance.denomination # Use denomination from 'issuer_balance' command"
     echo "  • locked_out: \$issuer_balance.locked_out # Use locked_out transactions from 'issuer_balance' command"
     echo "  • locked_in: \$issuer_balance.locked_in # Use locked_in transactions from 'issuer_balance' command"
