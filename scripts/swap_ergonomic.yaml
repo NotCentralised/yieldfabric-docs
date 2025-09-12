@@ -63,8 +63,8 @@ commands:
       idempotency_key: accept_deal-ergonomic-$(date +%s)
       contract_id: $admin2_create_deal_obligor_1.contract_id
 
-  - name: create_deal_swap_ergonomic-1
-    type: create_deal_swap_ergonomic
+  - name: create_deal_swap-1
+    type: create_deal_swap
     user: 
       id: admin2@yieldfabric.com
       password: testpass123

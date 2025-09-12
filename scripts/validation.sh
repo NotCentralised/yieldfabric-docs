@@ -190,7 +190,7 @@ validate_commands_file() {
                     return 1
                 fi
                 ;;
-            "create_deal_swap"|"create_deal_swap_ergonomic")
+            "create_deal_swap")
                 local swap_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.swap_id")
                 local counterparty=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.counterparty")
                 local deal_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.deal_id")
@@ -246,7 +246,7 @@ validate_commands_file() {
                 ;;
             *)
                 echo_with_color $RED "Error: Command '$command_name' has unsupported type: '$command_type'"
-                echo_with_color $YELLOW "Supported types: deposit, instant, accept, balance, create_deal, accept_deal, deals, total_supply, mint, burn, create_deal_swap, create_deal_swap_ergonomic, complete_swap, cancel_swap"
+                echo_with_color $YELLOW "Supported types: deposit, instant, accept, balance, create_deal, accept_deal, deals, total_supply, mint, burn, create_deal_swap, complete_swap, cancel_swap"
                 return 1
                 ;;
         esac

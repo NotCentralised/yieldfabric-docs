@@ -667,8 +667,8 @@ execute_cancel_swap() {
 }
 
 
-# Function to execute create deal swap ergonomic command using GraphQL
-execute_create_deal_swap_ergonomic() {
+# Function to execute create deal swap command using GraphQL (simplified approach)
+execute_create_deal_swap() {
     local command_name="$1"
     local user_email="$2"
     local user_password="$3"
@@ -729,11 +729,11 @@ execute_create_deal_swap_ergonomic() {
     local mutation="mutation"
     local variables=""
     if [[ -n "$expected_payments_variable" && "$expected_payments_variable" != "null" && "$expected_payments_variable" != "{}" ]]; then
-        mutation="$mutation(\$expectedPayments: InitialPaymentsInput)"
-        variables="\"expectedPayments\": $expected_payments_variable"
-    fi
-    
-    mutation="$mutation { createDealSwapErgonomic(input: { swapId: \"$swap_id\", counterparty: \"$counterparty\", dealId: \"$deal_id\", deadline: \"$deadline\", idempotencyKey: \"$idempotency_key\""
+    mutation="$mutation(\$expectedPayments: InitialPaymentsInput)"
+    variables="\"expectedPayments\": $expected_payments_variable"
+fi
+
+mutation="$mutation { createDealSwap(input: { swapId: \"$swap_id\", counterparty: \"$counterparty\", dealId: \"$deal_id\", deadline: \"$deadline\", idempotencyKey: \"$idempotency_key\""
     if [[ -n "$expected_payments_variable" && "$expected_payments_variable" != "null" && "$expected_payments_variable" != "{}" ]]; then
         mutation="$mutation, expectedPayments: \$expectedPayments"
     fi
@@ -770,24 +770,24 @@ execute_create_deal_swap_ergonomic() {
     # Check for errors in response
     local error_message=$(echo "$response" | jq -r ".errors[0].message // empty")
     if [[ -n "$error_message" && "$error_message" != "null" ]]; then
-        echo "❌ Create deal swap ergonomic failed"
+        echo "❌ Create deal swap failed"
         echo "  📊 Error: $error_message"
         echo "  📊 Full response: $response"
         return 1
     fi
     
     # Extract success status
-    local success=$(echo "$response" | jq -r ".data.createDealSwapErgonomic.success // false")
+    local success=$(echo "$response" | jq -r ".data.createDealSwap.success // false")
     if [[ "$success" == "true" ]]; then
-        echo "✅ Create deal swap ergonomic successful"
-        local message=$(echo "$response" | jq -r ".data.createDealSwapErgonomic.message // \"No message\"")
-        local swap_id=$(echo "$response" | jq -r ".data.createDealSwapErgonomic.swapId // \"No swap ID\"")
-        local message_id=$(echo "$response" | jq -r ".data.createDealSwapErgonomic.messageId // \"No message ID\"")
+        echo "✅ Create deal swap successful"
+        local message=$(echo "$response" | jq -r ".data.createDealSwap.message // \"No message\"")
+        local swap_id=$(echo "$response" | jq -r ".data.createDealSwap.swapId // \"No swap ID\"")
+        local message_id=$(echo "$response" | jq -r ".data.createDealSwap.messageId // \"No message ID\"")
         echo "  📊 Message: $message"
         echo "  📊 Swap ID: $swap_id"
         echo "  📊 Message ID: $message_id"
     else
-        echo "❌ Create deal swap ergonomic failed"
+        echo "❌ Create deal swap failed"
         echo "  📊 Full response: $response"
         return 1
     fi
