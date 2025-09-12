@@ -414,6 +414,13 @@ execute_create_deal_swap() {
     fi
     echo_with_color $BLUE "  📤 Sending GraphQL create deal swap mutation..."
     
+    # Debug: Show parsed values
+    echo_with_color $PURPLE "  🔍 DEBUG: Parsed values:"
+    echo_with_color $PURPLE "    expected_payments_amount: '$expected_payments_amount'"
+    echo_with_color $PURPLE "    expected_payments_denomination: '$expected_payments_denomination'"
+    echo_with_color $PURPLE "    expected_payments_obligor: '$expected_payments_obligor'"
+    echo_with_color $PURPLE "    expected_payments_json: '$expected_payments_json'"
+    
     # Prepare GraphQL mutation
     local graphql_mutation
     local input_params="swapId: \\\"$swap_id\\\", counterparty: \\\"$counterparty\\\", dealId: \\\"$deal_id\\\", deadline: \\\"$deadline\\\""
@@ -448,6 +455,10 @@ execute_create_deal_swap() {
     
     echo_with_color $BLUE "  📋 GraphQL mutation:"
     echo_with_color $BLUE "    $graphql_mutation"
+    
+    # Debug: Show the final input_params
+    echo_with_color $PURPLE "  🔍 DEBUG: Final input_params:"
+    echo_with_color $PURPLE "    $input_params"
     
     # Send GraphQL request to payments service
     echo_with_color $BLUE "  🌐 Making GraphQL request to: http://localhost:3002/graphql"
@@ -717,9 +728,17 @@ execute_create_deal_swap() {
             echo "  🔍 DEBUG: vault_payments = $vault_payments"
         fi
         
-           # Create the expected payments variable (InitialPaymentsInput only has amount and payments)
-           expected_payments_variable=$(echo "$vault_payments" | jq --arg amount "$expected_payments_amount" '{
+        # Debug: Show the values being passed to jq
+        echo "  🔍 DEBUG: Values for jq:"
+        echo "    expected_payments_amount: '$expected_payments_amount'"
+        echo "    expected_payments_denomination: '$expected_payments_denomination'"
+        echo "    expected_payments_obligor: '$expected_payments_obligor'"
+        
+           # Create the expected payments variable (InitialPaymentsInput has amount, denomination, obligor, and payments)
+           expected_payments_variable=$(echo "$vault_payments" | jq --arg amount "$expected_payments_amount" --arg denomination "$expected_payments_denomination" --arg obligor "$expected_payments_obligor" '{
                amount: $amount,
+               denomination: (if $denomination != "" and $denomination != "null" then $denomination else null end),
+               obligor: (if $obligor != "" and $obligor != "null" then $obligor else null end),
                payments: .
            }')
         echo "  🔍 DEBUG: expected_payments_variable = $expected_payments_variable"
