@@ -383,3 +383,285 @@ execute_deals() {
         return 1
     fi
 }
+
+# Function to execute create deal swap command using GraphQL
+execute_create_deal_swap() {
+    local command_name="$1"
+    local user_email="$2"
+    local user_password="$3"
+    local swap_id="$4"
+    local counterparty="$5"
+    local deal_id="$6"
+    local deadline="$7"
+    local expected_payments_amount="$8"
+    local expected_payments_denomination="$9"
+    local expected_payments_obligor="${10}"
+    local expected_payments_json="${11}"
+    local idempotency_key="${12}"
+    local group_name="${13}"  # Optional group name for delegation
+    
+    echo_with_color $CYAN "✅ Executing create deal swap command via GraphQL: $command_name"
+    
+    # Login to get JWT token (with optional group delegation)
+    local jwt_token=$(login_user "$user_email" "$user_password" "$group_name")
+    if [[ -z "$jwt_token" ]]; then
+        echo_with_color $RED "❌ Failed to get JWT token for user: $user_email"
+        return 1
+    fi
+    
+    if [[ -n "$group_name" ]]; then
+        echo_with_color $CYAN "  🏢 Using delegation JWT for group: $group_name"
+    fi
+    echo_with_color $BLUE "  📤 Sending GraphQL create deal swap mutation..."
+    
+    # Prepare GraphQL mutation
+    local graphql_mutation
+    local input_params="swapId: \\\"$swap_id\\\", counterparty: \\\"$counterparty\\\", dealId: \\\"$deal_id\\\", deadline: \\\"$deadline\\\""
+    
+    # Add idempotency_key if provided
+    if [[ -n "$idempotency_key" ]]; then
+        input_params="$input_params, idempotencyKey: \\\"$idempotency_key\\\""
+    fi
+    
+    # Add expected_payments if provided
+    if [[ -n "$expected_payments_amount" && -n "$expected_payments_json" && "$expected_payments_json" != "[]" ]]; then
+        local expected_payments_input="expectedPayments: { amount: \\\"$expected_payments_amount\\\""
+        
+        if [[ -n "$expected_payments_denomination" ]]; then
+            expected_payments_input="$expected_payments_input, denomination: \\\"$expected_payments_denomination\\\""
+        fi
+        
+        if [[ -n "$expected_payments_obligor" ]]; then
+            expected_payments_input="$expected_payments_input, obligor: \\\"$expected_payments_obligor\\\""
+        fi
+        
+        # Convert JSON array to GraphQL format - use proper escaping
+        local payments_array=$(echo "$expected_payments_json" | jq -r '.[] | "{ oracleAddress: \\\"" + (.oracle_address // "null") + "\\\", oracleOwner: \\\"" + (.oracle_owner // "null") + "\\\", oracleKeySender: \\\"" + (.oracle_key_sender // "null") + "\\\", oracleValueSenderSecret: \\\"" + (.oracle_value_sender_secret // "null") + "\\\", oracleKeyRecipient: \\\"" + (.oracle_key_recipient // "null") + "\\\", oracleValueRecipientSecret: \\\"" + (.oracle_value_recipient_secret // "null") + "\\\", unlockSender: \\\"" + (.unlock_sender // "null") + "\\\", unlockReceiver: \\\"" + (.unlock_receiver // "null") + "\\\" }"' | tr '\n' ',' | sed 's/,$//')
+        expected_payments_input="$expected_payments_input, payments: [$payments_array] }"
+        
+        input_params="$input_params, $expected_payments_input"
+    fi
+    
+    graphql_mutation="mutation { createDealSwap(input: { $input_params }) { success message accountAddress swapId counterparty dealId swapResult messageId transactionId signature timestamp } }"
+    
+    local graphql_payload="{\"query\": \"$graphql_mutation\"}"
+    
+    echo_with_color $BLUE "  📋 GraphQL mutation:"
+    echo_with_color $BLUE "    $graphql_mutation"
+    
+    # Send GraphQL request to payments service
+    echo_with_color $BLUE "  🌐 Making GraphQL request to: http://localhost:3002/graphql"
+    local http_response=$(curl -s -X POST "http://localhost:3002/graphql" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $jwt_token" \
+        -d "$graphql_payload")
+    
+    # Check if request was successful
+    if [[ $? -ne 0 ]]; then
+        echo_with_color $RED "❌ Failed to send GraphQL request"
+        return 1
+    fi
+    
+    # Parse and display response
+    local success=$(echo "$http_response" | jq -r '.data.createDealSwap.success // false')
+    local message=$(echo "$http_response" | jq -r '.data.createDealSwap.message // "No message"')
+    local swap_id_result=$(echo "$http_response" | jq -r '.data.createDealSwap.swapId // "No swap ID"')
+    local message_id=$(echo "$http_response" | jq -r '.data.createDealSwap.messageId // "No message ID"')
+    
+    if [[ "$success" == "true" ]]; then
+        echo_with_color $GREEN "✅ Create deal swap completed successfully"
+        echo_with_color $BLUE "  📊 Swap ID: $swap_id_result"
+        echo_with_color $BLUE "  📊 Message ID: $message_id"
+        echo_with_color $BLUE "  📊 Message: $message"
+    else
+        echo_with_color $RED "❌ Create deal swap failed"
+        local error_message=$(echo "$http_response" | jq -r '.errors[0].message // "Unknown error"')
+        echo_with_color $RED "  📊 Error: $error_message"
+        echo_with_color $BLUE "  📊 Full response: $http_response"
+        return 1
+    fi
+    
+    # Store command output for variable substitution
+    store_command_output "$command_name" "$http_response"
+    
+    return 0
+}
+
+# Function to execute complete swap command using GraphQL
+execute_complete_swap() {
+    local command_name="$1"
+    local user_email="$2"
+    local user_password="$3"
+    local swap_id="$4"
+    local expected_payments_amount="$5"
+    local expected_payments_denomination="$6"
+    local expected_payments_obligor="$7"
+    local expected_payments_json="$8"
+    local idempotency_key="$9"
+    local group_name="${10}"  # Optional group name for delegation
+    
+    echo_with_color $CYAN "✅ Executing complete swap command via GraphQL: $command_name"
+    
+    # Login to get JWT token (with optional group delegation)
+    local jwt_token=$(login_user "$user_email" "$user_password" "$group_name")
+    if [[ -z "$jwt_token" ]]; then
+        echo_with_color $RED "❌ Failed to get JWT token for user: $user_email"
+        return 1
+    fi
+    
+    if [[ -n "$group_name" ]]; then
+        echo_with_color $CYAN "  🏢 Using delegation JWT for group: $group_name"
+    fi
+    echo_with_color $BLUE "  📤 Sending GraphQL complete swap mutation..."
+    
+    # Prepare GraphQL mutation
+    local graphql_mutation
+    local input_params="swapId: \\\"$swap_id\\\""
+    
+    # Add idempotency_key if provided
+    if [[ -n "$idempotency_key" ]]; then
+        input_params="$input_params, idempotencyKey: \\\"$idempotency_key\\\""
+    fi
+    
+    # Add expected_payments if provided
+    if [[ -n "$expected_payments_amount" && -n "$expected_payments_json" && "$expected_payments_json" != "[]" ]]; then
+        local expected_payments_input="expectedPayments: { amount: \\\"$expected_payments_amount\\\""
+        
+        if [[ -n "$expected_payments_denomination" ]]; then
+            expected_payments_input="$expected_payments_input, denomination: \\\"$expected_payments_denomination\\\""
+        fi
+        
+        if [[ -n "$expected_payments_obligor" ]]; then
+            expected_payments_input="$expected_payments_input, obligor: \\\"$expected_payments_obligor\\\""
+        fi
+        
+        # Convert JSON array to GraphQL format - use proper escaping
+        local payments_array=$(echo "$expected_payments_json" | jq -r '.[] | "{ oracleAddress: \\\"" + (.oracle_address // "null") + "\\\", oracleOwner: \\\"" + (.oracle_owner // "null") + "\\\", oracleKeySender: \\\"" + (.oracle_key_sender // "null") + "\\\", oracleValueSenderSecret: \\\"" + (.oracle_value_sender_secret // "null") + "\\\", oracleKeyRecipient: \\\"" + (.oracle_key_recipient // "null") + "\\\", oracleValueRecipientSecret: \\\"" + (.oracle_value_recipient_secret // "null") + "\\\", unlockSender: \\\"" + (.unlock_sender // "null") + "\\\", unlockReceiver: \\\"" + (.unlock_receiver // "null") + "\\\" }"' | tr '\n' ',' | sed 's/,$//')
+        expected_payments_input="$expected_payments_input, payments: [$payments_array] }"
+        
+        input_params="$input_params, $expected_payments_input"
+    fi
+    
+    graphql_mutation="mutation { completeSwap(input: { $input_params }) { success message accountAddress swapId completeResult messageId transactionId signature timestamp } }"
+    
+    local graphql_payload="{\"query\": \"$graphql_mutation\"}"
+    
+    echo_with_color $BLUE "  📋 GraphQL mutation:"
+    echo_with_color $BLUE "    $graphql_mutation"
+    
+    # Send GraphQL request to payments service
+    echo_with_color $BLUE "  🌐 Making GraphQL request to: http://localhost:3002/graphql"
+    local http_response=$(curl -s -X POST "http://localhost:3002/graphql" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $jwt_token" \
+        -d "$graphql_payload")
+    
+    # Check if request was successful
+    if [[ $? -ne 0 ]]; then
+        echo_with_color $RED "❌ Failed to send GraphQL request"
+        return 1
+    fi
+    
+    # Parse and display response
+    local success=$(echo "$http_response" | jq -r '.data.completeSwap.success // false')
+    local message=$(echo "$http_response" | jq -r '.data.completeSwap.message // "No message"')
+    local swap_id_result=$(echo "$http_response" | jq -r '.data.completeSwap.swapId // "No swap ID"')
+    local message_id=$(echo "$http_response" | jq -r '.data.completeSwap.messageId // "No message ID"')
+    
+    if [[ "$success" == "true" ]]; then
+        echo_with_color $GREEN "✅ Complete swap completed successfully"
+        echo_with_color $BLUE "  📊 Swap ID: $swap_id_result"
+        echo_with_color $BLUE "  📊 Message ID: $message_id"
+        echo_with_color $BLUE "  📊 Message: $message"
+    else
+        echo_with_color $RED "❌ Complete swap failed"
+        local error_message=$(echo "$http_response" | jq -r '.errors[0].message // "Unknown error"')
+        echo_with_color $RED "  📊 Error: $error_message"
+        echo_with_color $BLUE "  📊 Full response: $http_response"
+        return 1
+    fi
+    
+    # Store command output for variable substitution
+    store_command_output "$command_name" "$http_response"
+    
+    return 0
+}
+
+# Function to execute cancel swap command using GraphQL
+execute_cancel_swap() {
+    local command_name="$1"
+    local user_email="$2"
+    local user_password="$3"
+    local swap_id="$4"
+    local key="$5"
+    local value="$6"
+    local idempotency_key="$7"
+    local group_name="$8"  # Optional group name for delegation
+    
+    echo_with_color $CYAN "✅ Executing cancel swap command via GraphQL: $command_name"
+    
+    # Login to get JWT token (with optional group delegation)
+    local jwt_token=$(login_user "$user_email" "$user_password" "$group_name")
+    if [[ -z "$jwt_token" ]]; then
+        echo_with_color $RED "❌ Failed to get JWT token for user: $user_email"
+        return 1
+    fi
+    
+    if [[ -n "$group_name" ]]; then
+        echo_with_color $CYAN "  🏢 Using delegation JWT for group: $group_name"
+    fi
+    echo_with_color $BLUE "  📤 Sending GraphQL cancel swap mutation..."
+    
+    # Prepare GraphQL mutation
+    local graphql_mutation
+    local input_params="swapId: \\\"$swap_id\\\", key: \\\"$key\\\", value: \\\"$value\\\""
+    
+    # Add idempotency_key if provided
+    if [[ -n "$idempotency_key" ]]; then
+        input_params="$input_params, idempotencyKey: \\\"$idempotency_key\\\""
+    fi
+    
+    graphql_mutation="mutation { cancelSwap(input: { $input_params }) { success message accountAddress swapId cancelResult messageId transactionId signature timestamp } }"
+    
+    local graphql_payload="{\"query\": \"$graphql_mutation\"}"
+    
+    echo_with_color $BLUE "  📋 GraphQL mutation:"
+    echo_with_color $BLUE "    $graphql_mutation"
+    
+    # Send GraphQL request to payments service
+    echo_with_color $BLUE "  🌐 Making GraphQL request to: http://localhost:3002/graphql"
+    local http_response=$(curl -s -X POST "http://localhost:3002/graphql" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $jwt_token" \
+        -d "$graphql_payload")
+    
+    # Check if request was successful
+    if [[ $? -ne 0 ]]; then
+        echo_with_color $RED "❌ Failed to send GraphQL request"
+        return 1
+    fi
+    
+    # Parse and display response
+    local success=$(echo "$http_response" | jq -r '.data.cancelSwap.success // false')
+    local message=$(echo "$http_response" | jq -r '.data.cancelSwap.message // "No message"')
+    local swap_id_result=$(echo "$http_response" | jq -r '.data.cancelSwap.swapId // "No swap ID"')
+    local message_id=$(echo "$http_response" | jq -r '.data.cancelSwap.messageId // "No message ID"')
+    
+    if [[ "$success" == "true" ]]; then
+        echo_with_color $GREEN "✅ Cancel swap completed successfully"
+        echo_with_color $BLUE "  📊 Swap ID: $swap_id_result"
+        echo_with_color $BLUE "  📊 Message ID: $message_id"
+        echo_with_color $BLUE "  📊 Message: $message"
+    else
+        echo_with_color $RED "❌ Cancel swap failed"
+        local error_message=$(echo "$http_response" | jq -r '.errors[0].message // "Unknown error"')
+        echo_with_color $RED "  📊 Error: $error_message"
+        echo_with_color $BLUE "  📊 Full response: $http_response"
+        return 1
+    fi
+    
+    # Store command output for variable substitution
+    store_command_output "$command_name" "$http_response"
+    
+    return 0
+}

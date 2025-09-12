@@ -190,9 +190,63 @@ validate_commands_file() {
                     return 1
                 fi
                 ;;
+            "create_deal_swap")
+                local swap_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.swap_id")
+                local counterparty=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.counterparty")
+                local deal_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.deal_id")
+                local deadline=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.deadline")
+                
+                if [[ -z "$swap_id" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.swap_id' field"
+                    return 1
+                fi
+                
+                if [[ -z "$counterparty" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.counterparty' field"
+                    return 1
+                fi
+                
+                if [[ -z "$deal_id" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.deal_id' field"
+                    return 1
+                fi
+                
+                if [[ -z "$deadline" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.deadline' field"
+                    return 1
+                fi
+                ;;
+            "complete_swap")
+                local swap_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.swap_id")
+                
+                if [[ -z "$swap_id" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.swap_id' field"
+                    return 1
+                fi
+                ;;
+            "cancel_swap")
+                local swap_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.swap_id")
+                local key=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.key")
+                local value=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.value")
+                
+                if [[ -z "$swap_id" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.swap_id' field"
+                    return 1
+                fi
+                
+                if [[ -z "$key" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.key' field"
+                    return 1
+                fi
+                
+                if [[ -z "$value" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.value' field"
+                    return 1
+                fi
+                ;;
             *)
                 echo_with_color $RED "Error: Command '$command_name' has unsupported type: '$command_type'"
-                echo_with_color $YELLOW "Supported types: deposit, instant, accept, balance, create_deal, accept_deal, deals, total_supply, mint, burn"
+                echo_with_color $YELLOW "Supported types: deposit, instant, accept, balance, create_deal, accept_deal, deals, total_supply, mint, burn, create_deal_swap, complete_swap, cancel_swap"
                 return 1
                 ;;
         esac

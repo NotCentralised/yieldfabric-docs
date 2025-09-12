@@ -74,6 +74,18 @@ execute_command() {
     # Parse treasury specific parameters
     local policy_secret=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.policy_secret")
     
+    # Parse swap specific parameters
+    local swap_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.swap_id")
+    local counterparty=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.counterparty")
+    local deal_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.deal_id")
+    local deadline=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.deadline")
+    local expected_payments_amount=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.expected_payments.amount")
+    local expected_payments_denomination=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.expected_payments.denomination")
+    local expected_payments_obligor=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.expected_payments.obligor")
+    local expected_payments_json=$(yq eval -o json -I 0 ".commands[$command_index].parameters.expected_payments.payments" "$COMMANDS_FILE" 2>/dev/null || echo "[]")
+    local key=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.key")
+    local value=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.value")
+    
     # Apply variable substitution to parameters
     echo_with_color $CYAN "  🔄 Applying variable substitution to parameters..."
     denomination=$(substitute_variables "$denomination")
@@ -99,6 +111,17 @@ execute_command() {
     
     # Apply variable substitution to treasury specific parameters
     policy_secret=$(substitute_variables "$policy_secret")
+    
+    # Apply variable substitution to swap specific parameters
+    swap_id=$(substitute_variables "$swap_id")
+    counterparty=$(substitute_variables "$counterparty")
+    deal_id=$(substitute_variables "$deal_id")
+    deadline=$(substitute_variables "$deadline")
+    expected_payments_amount=$(substitute_variables "$expected_payments_amount")
+    expected_payments_denomination=$(substitute_variables "$expected_payments_denomination")
+    expected_payments_obligor=$(substitute_variables "$expected_payments_obligor")
+    key=$(substitute_variables "$key")
+    value=$(substitute_variables "$value")
     
     echo_with_color $PURPLE "🚀 Executing command $((command_index + 1)): $command_name"
     echo_with_color $BLUE "  Type: $command_type"
@@ -128,6 +151,17 @@ execute_command() {
     
     # Display treasury specific parameters
     if [[ -n "$policy_secret" ]]; then echo_with_color $BLUE "    policy_secret: ${policy_secret:0:8}..."; fi
+    
+    # Display swap specific parameters
+    if [[ -n "$swap_id" ]]; then echo_with_color $BLUE "    swap_id: $swap_id"; fi
+    if [[ -n "$counterparty" ]]; then echo_with_color $BLUE "    counterparty: $counterparty"; fi
+    if [[ -n "$deal_id" ]]; then echo_with_color $BLUE "    deal_id: $deal_id"; fi
+    if [[ -n "$deadline" ]]; then echo_with_color $BLUE "    deadline: $deadline"; fi
+    if [[ -n "$expected_payments_amount" ]]; then echo_with_color $BLUE "    expected_payments_amount: $expected_payments_amount"; fi
+    if [[ -n "$expected_payments_denomination" ]]; then echo_with_color $BLUE "    expected_payments_denomination: $expected_payments_denomination"; fi
+    if [[ -n "$expected_payments_obligor" ]]; then echo_with_color $BLUE "    expected_payments_obligor: $expected_payments_obligor"; fi
+    if [[ -n "$key" ]]; then echo_with_color $BLUE "    key: $key"; fi
+    if [[ -n "$value" ]]; then echo_with_color $BLUE "    value: $value"; fi
     
     # Execute command based on type
     case "$command_type" in
@@ -160,6 +194,15 @@ execute_command() {
             ;;
         "burn")
             execute_burn "$command_name" "$user_email" "$user_password" "$denomination" "$amount" "$policy_secret" "$group_name"
+            ;;
+        "create_deal_swap")
+            execute_create_deal_swap "$command_name" "$user_email" "$user_password" "$swap_id" "$counterparty" "$deal_id" "$deadline" "$expected_payments_amount" "$expected_payments_denomination" "$expected_payments_obligor" "$expected_payments_json" "$idempotency_key" "$group_name"
+            ;;
+        "complete_swap")
+            execute_complete_swap "$command_name" "$user_email" "$user_password" "$swap_id" "$expected_payments_amount" "$expected_payments_denomination" "$expected_payments_obligor" "$expected_payments_json" "$idempotency_key" "$group_name"
+            ;;
+        "cancel_swap")
+            execute_cancel_swap "$command_name" "$user_email" "$user_password" "$swap_id" "$key" "$value" "$idempotency_key" "$group_name"
             ;;
         *)
             echo_with_color $RED "❌ Unknown command type: $command_type"
