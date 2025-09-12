@@ -1,0 +1,262 @@
+#!/bin/bash
+
+# YieldFabric Validation Module
+# Contains functions for validating commands and showing status
+
+# Function to validate commands.yaml file
+validate_commands_file() {
+    echo_with_color $CYAN "Validating $YAML_FILE..."
+    
+    if [[ ! -f "$COMMANDS_FILE" ]]; then
+        echo_with_color $RED "Commands file not found: $COMMANDS_FILE"
+        return 1
+    fi
+    
+    if ! check_yq_available; then
+        echo_with_color $RED "yq is required for YAML validation"
+        return 1
+    fi
+    
+    # Basic structure validation
+    local has_commands=$(parse_yaml "$COMMANDS_FILE" '.commands | length > 0')
+    
+    if [[ "$has_commands" != "true" ]]; then
+        echo_with_color $RED "No commands defined in $YAML_FILE"
+        return 1
+    fi
+    
+    # Validate each command structure
+    local command_count=$(parse_yaml "$COMMANDS_FILE" '.commands | length')
+    for ((i=0; i<$command_count; i++)); do
+        local command_name=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].name")
+        local command_type=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].type")
+        local user_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].user.id")
+        local user_password=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].user.password")
+        
+        if [[ -z "$command_name" ]]; then
+            echo_with_color $RED "Error: Command $i missing 'name' field"
+            return 1
+        fi
+        
+        if [[ -z "$command_type" ]]; then
+            echo_with_color $RED "Error: Command '$command_name' missing 'type' field"
+            return 1
+        fi
+        
+        if [[ -z "$user_id" ]]; then
+            echo_with_color $RED "Error: Command '$command_name' missing 'user.id' field"
+            return 1
+        fi
+        
+        if [[ -z "$user_password" ]]; then
+            echo_with_color $RED "Error: Command '$command_name' missing 'user.password' field"
+            return 1
+        fi
+        
+        # Validate command type
+        case "$command_type" in
+            "deposit")
+                local denomination=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.denomination")
+                local amount=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.amount")
+                
+                if [[ -z "$denomination" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.denomination' field"
+                    return 1
+                fi
+                
+                if [[ -z "$amount" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.amount' field"
+                    return 1
+                fi
+                ;;
+            "instant")
+                local denomination=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.denomination")
+                local amount=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.amount")
+                local destination_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.destination_id")
+                
+                if [[ -z "$denomination" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.denomination' field"
+                    return 1
+                fi
+                
+                if [[ -z "$amount" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.amount' field"
+                    return 1
+                fi
+                
+                if [[ -z "$destination_id" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.destination_id' field"
+                    return 1
+                fi
+                ;;
+            "accept")
+                local payment_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.payment_id")
+                
+                if [[ -z "$payment_id" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.payment_id' field"
+                    return 1
+                fi
+                ;;
+            "balance")
+                local denomination=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.denomination")
+                local obligor=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.obligor")
+                local group_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.group_id")
+                
+                if [[ -z "$denomination" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.denomination' field"
+                    return 1
+                fi
+                
+                if [[ -z "$obligor" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.obligor' field"
+                    return 1
+                fi
+                
+                if [[ -z "$group_id" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.group_id' field"
+                    return 1
+                fi
+                ;;
+            "create_deal")
+                local counterpart=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.counterpart")
+                local denomination=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.denomination")
+                
+                if [[ -z "$counterpart" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.counterpart' field"
+                    return 1
+                fi
+                
+                if [[ -z "$denomination" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.denomination' field"
+                    return 1
+                fi
+                ;;
+            "accept_deal")
+                local contract_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.contract_id")
+                
+                if [[ -z "$contract_id" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.contract_id' field"
+                    return 1
+                fi
+                ;;
+            "deals")
+                # Deals command doesn't require any specific parameters
+                ;;
+            "total_supply")
+                local denomination=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.denomination")
+                
+                if [[ -z "$denomination" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.denomination' field"
+                    return 1
+                fi
+                ;;
+            "mint")
+                local denomination=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.denomination")
+                local amount=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.amount")
+                local policy_secret=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.policy_secret")
+                
+                if [[ -z "$denomination" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.denomination' field"
+                    return 1
+                fi
+                
+                if [[ -z "$amount" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.amount' field"
+                    return 1
+                fi
+                
+                if [[ -z "$policy_secret" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.policy_secret' field"
+                    return 1
+                fi
+                ;;
+            "burn")
+                local denomination=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.denomination")
+                local amount=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.amount")
+                local policy_secret=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.policy_secret")
+                
+                if [[ -z "$denomination" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.denomination' field"
+                    return 1
+                fi
+                
+                if [[ -z "$amount" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.amount' field"
+                    return 1
+                fi
+                
+                if [[ -z "$policy_secret" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.policy_secret' field"
+                    return 1
+                fi
+                ;;
+            *)
+                echo_with_color $RED "Error: Command '$command_name' has unsupported type: '$command_type'"
+                echo_with_color $YELLOW "Supported types: deposit, instant, accept, balance, create_deal, accept_deal, deals, total_supply, mint, burn"
+                return 1
+                ;;
+        esac
+    done
+    
+    echo_with_color $GREEN "Commands file validation passed"
+    return 0
+}
+
+# Function to show commands status
+show_commands_status() {
+    echo_with_color $CYAN "YieldFabric GraphQL Commands Execution Status"
+    echo "====================================================="
+    
+    # Check services
+    echo_with_color $BLUE "Service Status:"
+    if check_service_running "Auth Service" "3000"; then
+        echo_with_color $GREEN "   Auth Service (port 3000) - Running"
+    else
+        echo_with_color $RED "   Auth Service (port 3000) - Not running"
+        echo_with_color $YELLOW "   Start the auth service first: cd ../yieldfabric-auth && cargo run"
+        return 1
+    fi
+    
+    if check_service_running "Payments Service" "3002"; then
+        echo_with_color $GREEN "   Payments Service (port 3002) - Running"
+        echo_with_color $BLUE "   GraphQL endpoint available at: http://localhost:3002/graphql"
+    else
+        echo_with_color $RED "   Payments Service (port 3002) - Not running"
+        echo_with_color $YELLOW "   Start the payments service first: cd ../yieldfabric-payments && cargo run"
+        return 1
+    fi
+    
+    # Check commands file
+    echo_with_color $BLUE "Commands File:"
+    if [[ -f "$COMMANDS_FILE" ]]; then
+        echo_with_color $GREEN "   $YAML_FILE - Found"
+        
+        if check_yq_available; then
+            local command_count=$(parse_yaml "$COMMANDS_FILE" '.commands | length')
+            echo_with_color $BLUE "   Commands defined: $command_count"
+            
+            # Show command details
+            for ((i=0; i<$command_count; i++)); do
+                local command_name=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].name")
+                local command_type=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].type")
+                local user_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].user.id")
+                echo_with_color $BLUE "   Command $((i+1)): '$command_name' ($command_type) - User: $user_id"
+            done
+        else
+            echo_with_color $YELLOW "   yq not available - cannot parse YAML"
+        fi
+    else
+        echo_with_color $RED "   $YAML_FILE - Not found"
+        return 1
+    fi
+    
+    # Check yq availability
+    echo_with_color $BLUE "YAML Parser:"
+    if check_yq_available; then
+        echo_with_color $GREEN "   yq - Available"
+    else
+        echo_with_color $RED "   yq - Not available"
+        echo_with_color $YELLOW "   Install yq: brew install yq (macOS) or see https://github.com/mikefarah/yq"
+        return 1
+    fi
+}
