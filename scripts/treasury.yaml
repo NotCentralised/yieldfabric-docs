@@ -1,0 +1,360 @@
+commands:
+  # - name: issuer_deposit
+  #   type: deposit
+  #   user: 
+  #     id: issuer@yieldfabric.com
+  #     password: issuerpass456
+  #   parameters:
+  #     asset_id: aud-token-asset
+  #     amount: 75
+  #     idempotency_key: deposit-1
+
+  # - name: issuer_balance_1
+  #   type: balance
+  #   user: 
+  #     id: issuer@yieldfabric.com
+  #     password: issuerpass456
+  #   parameters:
+  #     denomination: aud-token-asset
+
+
+
+  # - name: issuer_send_1
+  #   type: instant
+  #   user: 
+  #     id: issuer@yieldfabric.com
+  #     password: issuerpass456
+  #   parameters:
+  #     asset_id: aud-token-asset
+  #     amount: 5
+  #     idempotency_key: instant-1
+  #     # destination_id: counterpart@yieldfabric.com
+  #     destination_id: Admin Group
+      
+  # - name: issuer_balance_2
+  #   type: balance
+  #   user: 
+  #     id: issuer@yieldfabric.com
+  #     password: issuerpass456
+  #   parameters:
+  #     denomination: aud-token-asset
+
+
+
+  # - name: issuer_send_2
+  #   type: instant
+  #   user: 
+  #     id: issuer@yieldfabric.com
+  #     password: issuerpass456
+  #   parameters:
+  #     asset_id: aud-token-asset
+  #     amount: 5
+  #     idempotency_key: instant-2
+  #     destination_id: Admin Group
+
+  # - name: issuer_balance_3
+  #   type: balance
+  #   user: 
+  #     id: issuer@yieldfabric.com
+  #     password: issuerpass456
+  #   parameters:
+  #     denomination: aud-token-asset
+
+
+  # #     # - name: counterpart_accept
+  # #     #   type: accept
+  # #     #   user: 
+  # #     #     id: counterpart@yieldfabric.com
+  # #     #     password: counterpass789
+  # #     #   parameters:
+  # #     #     idempotency_key: accept-1
+  # #     #     payment_id: $issuer_send_1.payment_id
+
+  # #     # - name: counterpart_balance_1
+  # #     #   type: balance
+  # #     #   user: 
+  # #     #     id: counterpart@yieldfabric.com
+  # #     #     password: counterpass789
+  # #     #   parameters:
+  # #     #     denomination: aud-token-asset
+
+
+
+  # - name: counterpart_accept_1
+  #   type: accept
+  #   user: 
+  #     # id: admin2@yieldfabric.com
+  #     # password: testpass123
+  #     id: counterpart@yieldfabric.com
+  #     password: counterpass789
+  #     group: Admin Group
+  #   parameters:
+  #     idempotency_key: accept-2
+  #     payment_id: $issuer_send_1.payment_id
+
+  # - name: counterpart_balance_1
+  #   type: balance
+  #   user: 
+  #     id: counterpart@yieldfabric.com
+  #     password: counterpass789
+  #     group: Admin Group
+  #   parameters:
+  #     denomination: aud-token-asset
+
+
+
+  # - name: admin2_accept_2
+  #   type: accept
+  #   user: 
+  #     id: admin2@yieldfabric.com
+  #     password: testpass123
+  #     group: Admin Group
+  #   parameters:
+  #     idempotency_key: accept-3
+  #     payment_id: $issuer_send_2.payment_id
+
+  # - name: admin2_balance_2
+  #   type: balance
+  #   user: 
+  #     id: admin2@yieldfabric.com
+  #     password: testpass123
+  #     group: Admin Group
+  #   parameters:
+  #     denomination: aud-token-asset
+
+
+
+  
+  # - name: admin2_create_deal_1
+  #   type: create_deal
+  #   user: 
+  #     id: admin2@yieldfabric.com
+  #     password: testpass123
+  #     group: Admin Group
+  #   parameters:
+  #     idempotency_key: create_deal-1
+  #     counterpart: issuer@yieldfabric.com
+  #     denomination: aud-token-asset
+  #     notional: 10 
+  #     expiry: 2025-10-10
+  #     data: 
+  #       name: "Test Deal"
+  #       description: "Test Deal Description"
+  #     initial_payments:
+  #       amount: 10
+  #       payments:
+
+  #         - id: payment-1
+  #           owner: Admin Group #oracle_owner
+  #           payer: #sender
+  #             key: "1"
+  #             valueSecret: "1"
+  #           payee: #recipient
+  #             key: "1"
+  #             valueSecret: "2"
+
+  #         - id: payment-2
+  #           owner: Admin Group #oracle_owner
+  #           payer: #sender
+  #             unlock: 2025-12-31 #unlock_sender
+  #           payee: #recipient
+  #             unlock: 2025-12-31 #unlock_receiver
+            
+
+  # - name: issuer_accept_deal_1
+  #   type: accept_deal
+  #   user: 
+  #     id: issuer@yieldfabric.com
+  #     password: issuerpass456
+  #     # group: Admin Group
+  #   parameters:
+  #     idempotency_key: accept_deal-1
+  #     contract_id: $admin2_create_deal_1.contract_id
+
+
+
+  
+  # - name: admin2_create_deal_2
+  #   type: create_deal
+  #   user: 
+  #     id: admin2@yieldfabric.com
+  #     password: testpass123
+  #     group: Admin Group
+  #   parameters:
+  #     idempotency_key: create_deal-2
+  #     counterpart: issuer@yieldfabric.com
+  #     denomination: aud-token-asset
+  #     # obligor: "0x1ACcBD355245AbA93CE46D33ab1D0152CE33Fd00"
+  #     notional: 10 
+  #     expiry: 2025-10-10
+  #     data: 
+  #       name: "Test Deal"
+  #       description: "Test Deal Description"
+  #     initial_payments:
+  #       amount: 10
+  #       payments:
+
+  #         - id: payment-1
+  #           owner: Admin Group #oracle_owner
+  #           payer: #sender
+  #             key: "1"
+  #             valueSecret: "1"
+  #           payee: #recipient
+  #             key: "1"
+  #             valueSecret: "2"
+
+  #         - id: payment-2
+  #           owner: Admin Group #oracle_owner
+  #           payer: #sender
+  #             unlock: 2025-12-31 #unlock_sender
+  #           payee: #recipient
+  #             unlock: 2025-12-31 #unlock_receiver
+            
+
+  # - name: issuer_accept_deal_2
+  #   type: accept_deal
+  #   user: 
+  #     id: issuer@yieldfabric.com
+  #     password: issuerpass456
+  #     # group: Admin Group
+  #   parameters:
+  #     idempotency_key: accept_deal-2
+  #     contract_id: $admin2_create_deal_2.contract_id
+
+
+
+
+
+  # - name: admin2_create_deal_obligor_1
+  #   type: create_deal
+  #   user: 
+  #     id: admin2@yieldfabric.com
+  #     password: testpass123
+  #     group: Admin Group
+  #   parameters:
+  #     idempotency_key: create_deal-obligor-1
+  #     counterpart: issuer@yieldfabric.com
+  #     denomination: aud-token-asset
+  #     obligor:  issuer@yieldfabric.com
+  #     notional: 5 
+  #     expiry: 2025-10-10
+  #     data: 
+  #       name: "Test Deal"
+  #       description: "Test Deal Description"
+  #     initial_payments:
+  #       amount: 5
+  #       payments:
+
+  #         - id: payment-1
+  #           owner: Admin Group #oracle_owner
+  #           payer: #sender
+  #             key: "1"
+  #             valueSecret: "1"
+  #           payee: #recipient
+  #             key: "1"
+  #             valueSecret: "2"
+
+  #         - id: payment-2
+  #           owner: Admin Group #oracle_owner
+  #           payer: #sender
+  #             unlock: 2025-12-31 #unlock_sender
+  #           payee: #recipient
+  #             unlock: 2025-12-31 #unlock_receiver
+            
+
+  # - name: issuer_accept_deal_obligor_1
+  #   type: accept_deal
+  #   user: 
+  #     id: issuer@yieldfabric.com
+  #     password: issuerpass456
+  #     # group: Admin Group
+  #   parameters:
+  #     idempotency_key: accept_deal-obligor-1
+  #     contract_id: $admin2_create_deal_obligor_1.contract_id
+
+
+
+  
+  # - name: admin2_create_deal_obligor_2
+  #   type: create_deal
+  #   user: 
+  #     id: admin2@yieldfabric.com
+  #     password: testpass123
+  #     group: Admin Group
+  #   parameters:
+  #     idempotency_key: create_deal-obligor-2
+  #     counterpart: issuer@yieldfabric.com
+  #     denomination: aud-token-asset
+  #     obligor:  issuer@yieldfabric.com
+  #     notional: 5 
+  #     expiry: 2025-10-10
+  #     data: 
+  #       name: "Test Deal"
+  #       description: "Test Deal Description"
+  #     initial_payments:
+  #       amount: 5
+  #       payments:
+
+  #         - id: payment-1
+  #           owner: Admin Group #oracle_owner
+  #           payer: #sender
+  #             key: "1"
+  #             valueSecret: "1"
+  #           payee: #recipient
+  #             key: "1"
+  #             valueSecret: "2"
+
+  #         - id: payment-2
+  #           owner: Admin Group #oracle_owner
+  #           payer: #sender
+  #             unlock: 2025-12-31 #unlock_sender
+  #           payee: #recipient
+  #             unlock: 2025-12-31 #unlock_receiver
+            
+
+  # - name: issuer_accept_deal_obligor_2
+  #   type: accept_deal
+  #   user: 
+  #     id: issuer@yieldfabric.com
+  #     password: issuerpass456
+  #     # group: Admin Group
+  #   parameters:
+  #     idempotency_key: accept_deal-obligor-2
+  #     contract_id: $admin2_create_deal_obligor_2.contract_id
+
+
+
+
+
+
+  
+  - name: admin2_balance_3
+    type: balance
+    user: 
+      id: admin2@yieldfabric.com
+      password: testpass123
+      group: Admin Group
+    parameters:
+      denomination: aud-token-asset
+
+
+  - name: admin2_balance_4
+    type: balance
+    user: 
+      id: admin2@yieldfabric.com
+      password: testpass123
+      group: Admin Group
+    parameters:
+      denomination: aud-token-asset
+      obligor: issuer@yieldfabric.com
+
+  
+  
+  - name: admin2_deals
+    type: deals
+    user: 
+      id: admin2@yieldfabric.com
+      password: testpass123
+      group: Admin Group
+    parameters:
+      denomination: aud-token-asset

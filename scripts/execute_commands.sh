@@ -1,12 +1,15 @@
 #!/bin/bash
 
 # YieldFabric GraphQL Commands Execution Script
-# Reads commands.yaml and executes each command sequentially using GraphQL mutations
+# Reads a YAML file (default: commands.yaml) and executes each command sequentially using GraphQL mutations
 # Gets JWT tokens for users and makes GraphQL API calls based on command type
 
 # Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-COMMANDS_FILE="$SCRIPT_DIR/commands.yaml"
+
+# Parse command line arguments to get the YAML file
+YAML_FILE="${1:-commands.yaml}"
+COMMANDS_FILE="$SCRIPT_DIR/$YAML_FILE"
 AUTH_SCRIPT="$SCRIPT_DIR/yieldfabric-auth.sh"
 TOKENS_DIR="$SCRIPT_DIR/tokens"
 
@@ -1312,7 +1315,7 @@ execute_command() {
 
 # Function to validate commands.yaml file
 validate_commands_file() {
-    echo_with_color $CYAN "Validating commands.yaml..."
+    echo_with_color $CYAN "Validating $YAML_FILE..."
     
     if [[ ! -f "$COMMANDS_FILE" ]]; then
         echo_with_color $RED "Commands file not found: $COMMANDS_FILE"
@@ -1328,7 +1331,7 @@ validate_commands_file() {
     local has_commands=$(parse_yaml "$COMMANDS_FILE" '.commands | length > 0')
     
     if [[ "$has_commands" != "true" ]]; then
-        echo_with_color $RED "No commands defined in commands.yaml"
+        echo_with_color $RED "No commands defined in $YAML_FILE"
         return 1
     fi
     
@@ -1493,7 +1496,7 @@ show_commands_status() {
     # Check commands file
     echo_with_color $BLUE "Commands File:"
     if [[ -f "$COMMANDS_FILE" ]]; then
-        echo_with_color $GREEN "   commands.yaml - Found"
+        echo_with_color $GREEN "   $YAML_FILE - Found"
         
         if check_yq_available; then
             local command_count=$(parse_yaml "$COMMANDS_FILE" '.commands | length')
@@ -1510,7 +1513,7 @@ show_commands_status() {
             echo_with_color $YELLOW "   yq not available - cannot parse YAML"
         fi
     else
-        echo_with_color $RED "   commands.yaml - Not found"
+        echo_with_color $RED "   $YAML_FILE - Not found"
         return 1
     fi
     
@@ -1629,12 +1632,16 @@ show_help() {
     echo_with_color $CYAN "YieldFabric GraphQL Commands Execution Script"
     echo "====================================================="
     echo ""
-    echo "Usage: $0 [command]"
+    echo "Usage: $0 [yaml_file] [command]"
+    echo ""
+    echo "Arguments:"
+    echo_with_color $GREEN "  yaml_file" " - YAML file containing commands (default: commands.yaml)"
+    echo_with_color $GREEN "  command" "   - Command to execute (default: execute)"
     echo ""
     echo "Commands:"
-    echo_with_color $GREEN "  execute" "  - Execute all commands from commands.yaml using GraphQL mutations"
+    echo_with_color $GREEN "  execute" "  - Execute all commands from the specified YAML file using GraphQL mutations"
     echo_with_color $GREEN "  status" "   - Show current status and requirements"
-    echo_with_color $GREEN "  validate" " - Validate commands.yaml file structure"
+    echo_with_color $GREEN "  validate" " - Validate YAML file structure"
     echo_with_color $GREEN "  variables" " - Show currently stored variables for command chaining"
     echo_with_color $GREEN "  help" "     - Show this help message"
     echo ""
@@ -1673,16 +1680,30 @@ show_help() {
     echo "  • deals_json: \$admin2_balance_2.deals_json # Use deals JSON from 'admin2_balance_2' command"
     echo ""
     echo "Examples:"
-    echo "  $0 execute    # Execute all commands via GraphQL"
-    echo "  $0 status     # Check requirements"
-    echo "  $0 validate   # Validate commands.yaml structure"
-    echo "  $0 variables  # Show stored variables"
+    echo "  $0                    # Execute commands from commands.yaml"
+    echo "  $0 treasury.yaml      # Execute commands from treasury.yaml"
+    echo "  $0 commands.yaml status     # Check requirements for commands.yaml"
+    echo "  $0 treasury.yaml validate   # Validate treasury.yaml structure"
+    echo "  $0 commands.yaml variables  # Show stored variables"
     echo ""
-    echo_with_color $YELLOW "For first-time users, run: $0 execute"
+    echo_with_color $YELLOW "For first-time users, run: $0"
 }
 
 # Main execution
-case "${1:-execute}" in
+# Parse arguments: first argument is YAML file, second is command
+# Handle special case where first argument is a command (help, status, etc.)
+if [[ "$1" == "help" || "$1" == "-h" || "$1" == "--help" || "$1" == "status" || "$1" == "variables" ]]; then
+    YAML_FILE="commands.yaml"
+    COMMAND="$1"
+else
+    YAML_FILE="${1:-commands.yaml}"
+    COMMAND="${2:-execute}"
+fi
+
+# Update COMMANDS_FILE with the parsed YAML file
+COMMANDS_FILE="$SCRIPT_DIR/$YAML_FILE"
+
+case "$COMMAND" in
     "execute")
         execute_all_commands
         ;;
@@ -1699,7 +1720,7 @@ case "${1:-execute}" in
         show_help
         ;;
     *)
-        echo_with_color $RED "Unknown command: $1"
+        echo_with_color $RED "Unknown command: $COMMAND"
         echo ""
         show_help
         exit 1
