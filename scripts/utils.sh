@@ -100,6 +100,15 @@ get_command_output() {
 substitute_variables() {
     local value="$1"
     
+    # Check if the value contains shell command substitution
+    if [[ "$value" == *'$(date +%s)'* ]]; then
+        # Evaluate shell command substitution
+        local evaluated_value=$(eval "echo \"$value\"")
+        echo_with_color $CYAN "    🔄 Substituting $value -> $evaluated_value" >&2
+        echo "$evaluated_value"
+        return 0
+    fi
+    
     # Check if the value contains variable references
     if [[ "$value" =~ \$[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]* ]]; then
         # Extract command name and field name

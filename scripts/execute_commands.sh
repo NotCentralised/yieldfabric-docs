@@ -82,7 +82,7 @@ execute_command() {
     local expected_payments_amount=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.expected_payments.amount")
     local expected_payments_denomination=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.expected_payments.denomination")
     local expected_payments_obligor=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.expected_payments.obligor")
-    local expected_payments_json=$(yq eval -o json -I 0 ".commands[$command_index].parameters.expected_payments.payments" "$COMMANDS_FILE" 2>/dev/null || echo "[]")
+    local expected_payments_json=$(yq eval -o json -I 0 ".commands[$command_index].parameters.expected_payments" "$COMMANDS_FILE" 2>/dev/null || echo "{}")
     local key=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.key")
     local value=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.value")
     
@@ -197,6 +197,9 @@ execute_command() {
             ;;
         "create_deal_swap")
             execute_create_deal_swap "$command_name" "$user_email" "$user_password" "$swap_id" "$counterparty" "$deal_id" "$deadline" "$expected_payments_amount" "$expected_payments_denomination" "$expected_payments_obligor" "$expected_payments_json" "$idempotency_key" "$group_name"
+            ;;
+        "create_deal_swap_ergonomic")
+            execute_create_deal_swap_ergonomic "$command_name" "$user_email" "$user_password" "$swap_id" "$counterparty" "$deal_id" "$deadline" "$expected_payments_amount" "$expected_payments_denomination" "$expected_payments_obligor" "$expected_payments_json" "$idempotency_key" "$group_name"
             ;;
         "complete_swap")
             execute_complete_swap "$command_name" "$user_email" "$user_password" "$swap_id" "$expected_payments_amount" "$expected_payments_denomination" "$expected_payments_obligor" "$expected_payments_json" "$idempotency_key" "$group_name"

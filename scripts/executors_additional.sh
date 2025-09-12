@@ -423,15 +423,15 @@ execute_create_deal_swap() {
         input_params="$input_params, idempotencyKey: \\\"$idempotency_key\\\""
     fi
     
-    # Add expected_payments if provided
-    if [[ -n "$expected_payments_amount" && -n "$expected_payments_json" && "$expected_payments_json" != "[]" ]]; then
+    # Add expected_payments if provided (check for null values from YAML parsing)
+    if [[ -n "$expected_payments_amount" && "$expected_payments_amount" != "null" && -n "$expected_payments_json" && "$expected_payments_json" != "[]" && "$expected_payments_json" != "null" ]]; then
         local expected_payments_input="expectedPayments: { amount: \\\"$expected_payments_amount\\\""
         
-        if [[ -n "$expected_payments_denomination" ]]; then
+        if [[ -n "$expected_payments_denomination" && "$expected_payments_denomination" != "null" ]]; then
             expected_payments_input="$expected_payments_input, denomination: \\\"$expected_payments_denomination\\\""
         fi
         
-        if [[ -n "$expected_payments_obligor" ]]; then
+        if [[ -n "$expected_payments_obligor" && "$expected_payments_obligor" != "null" ]]; then
             expected_payments_input="$expected_payments_input, obligor: \\\"$expected_payments_obligor\\\""
         fi
         
@@ -523,15 +523,15 @@ execute_complete_swap() {
         input_params="$input_params, idempotencyKey: \\\"$idempotency_key\\\""
     fi
     
-    # Add expected_payments if provided
-    if [[ -n "$expected_payments_amount" && -n "$expected_payments_json" && "$expected_payments_json" != "[]" ]]; then
+    # Add expected_payments if provided (check for null values from YAML parsing)
+    if [[ -n "$expected_payments_amount" && "$expected_payments_amount" != "null" && -n "$expected_payments_json" && "$expected_payments_json" != "[]" && "$expected_payments_json" != "null" ]]; then
         local expected_payments_input="expectedPayments: { amount: \\\"$expected_payments_amount\\\""
         
-        if [[ -n "$expected_payments_denomination" ]]; then
+        if [[ -n "$expected_payments_denomination" && "$expected_payments_denomination" != "null" ]]; then
             expected_payments_input="$expected_payments_input, denomination: \\\"$expected_payments_denomination\\\""
         fi
         
-        if [[ -n "$expected_payments_obligor" ]]; then
+        if [[ -n "$expected_payments_obligor" && "$expected_payments_obligor" != "null" ]]; then
             expected_payments_input="$expected_payments_input, obligor: \\\"$expected_payments_obligor\\\""
         fi
         
@@ -664,4 +664,131 @@ execute_cancel_swap() {
     store_command_output "$command_name" "$http_response"
     
     return 0
+}
+
+
+# Function to execute create deal swap ergonomic command using GraphQL
+execute_create_deal_swap_ergonomic() {
+    local command_name="$1"
+    local user_email="$2"
+    local user_password="$3"
+    local swap_id="$4"
+    local counterparty="$5"
+    local deal_id="$6"
+    local deadline="$7"
+    local expected_payments_amount="$8"
+    local expected_payments_denomination="$9"
+    local expected_payments_obligor="${10}"
+    local expected_payments_json="${11}"
+    local idempotency_key="${12}"
+    local group_name="${13}"
+    
+    echo "✅ Executing create deal swap ergonomic command via GraphQL: $command_name"
+    
+    # Login to get JWT token (with optional group delegation)
+    local jwt_token=$(login_user "$user_email" "$user_password" "$group_name")
+    if [[ -z "$jwt_token" ]]; then
+        echo "❌ Failed to get JWT token for user: $user_email"
+        return 1
+    fi
+    
+    echo "  🔑 JWT token obtained (first 50 chars): ${jwt_token:0:50}..."
+    if [[ -n "$group_name" && "$group_name" != "null" ]]; then
+        echo "  🏢 Using delegation JWT for group: $group_name"
+    fi
+    
+    # Build expected payments input for ergonomic version using GraphQL variables
+    local expected_payments_variable=""
+    if [[ -n "$expected_payments_amount" && "$expected_payments_amount" != "null" ]]; then
+        # Convert user-friendly payments to VaultPaymentInput format using the same approach as create_deal
+        local vault_payments="[]"
+        if [[ -n "$expected_payments_json" && "$expected_payments_json" != "null" && "$expected_payments_json" != "{}" ]]; then
+            echo "  🔍 DEBUG: expected_payments_json = $expected_payments_json"
+            vault_payments=$(echo "$expected_payments_json" | jq '.payments // [] | map({
+                oracleAddress: null,
+                oracleOwner: .owner,
+                oracleKeySender: (.payer.key // "1"),
+                oracleValueSenderSecret: (.payer.valueSecret // "1"),
+                oracleKeyRecipient: (.payee.key // "1"),
+                oracleValueRecipientSecret: (.payee.valueSecret // "2"),
+                unlockSender: .payer.unlock,
+                unlockReceiver: .payee.unlock
+            })')
+            echo "  🔍 DEBUG: vault_payments = $vault_payments"
+        fi
+        
+           # Create the expected payments variable (InitialPaymentsInput only has amount and payments)
+           expected_payments_variable=$(echo "$vault_payments" | jq --arg amount "$expected_payments_amount" '{
+               amount: $amount,
+               payments: .
+           }')
+        echo "  🔍 DEBUG: expected_payments_variable = $expected_payments_variable"
+    fi
+    
+    # Build GraphQL mutation with variables
+    local mutation="mutation"
+    local variables=""
+    if [[ -n "$expected_payments_variable" && "$expected_payments_variable" != "null" && "$expected_payments_variable" != "{}" ]]; then
+        mutation="$mutation(\$expectedPayments: InitialPaymentsInput)"
+        variables="\"expectedPayments\": $expected_payments_variable"
+    fi
+    
+    mutation="$mutation { createDealSwapErgonomic(input: { swapId: \"$swap_id\", counterparty: \"$counterparty\", dealId: \"$deal_id\", deadline: \"$deadline\", idempotencyKey: \"$idempotency_key\""
+    if [[ -n "$expected_payments_variable" && "$expected_payments_variable" != "null" && "$expected_payments_variable" != "{}" ]]; then
+        mutation="$mutation, expectedPayments: \$expectedPayments"
+    fi
+    mutation="$mutation }) { success message accountAddress swapId counterparty dealId swapResult messageId transactionId signature timestamp } }"
+    
+    echo "  📤 Sending GraphQL create deal swap ergonomic mutation..."
+    echo "  📋 GraphQL mutation:"
+    echo "    $mutation"
+    
+    # Make GraphQL request using proper JSON construction
+    local request_body
+    if [[ -n "$variables" ]]; then
+        request_body=$(jq -n --arg query "$mutation" --argjson variables "$expected_payments_variable" '{
+            query: $query,
+            variables: {
+                expectedPayments: $variables
+            }
+        }')
+    else
+        request_body=$(jq -n --arg query "$mutation" '{
+            query: $query
+        }')
+    fi
+    
+    echo "  🔍 DEBUG: request_body = $request_body"
+    
+    local response=$(curl -s -X POST http://localhost:3002/graphql \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $jwt_token" \
+        -d "$request_body")
+    
+    echo "  🌐 Making GraphQL request to: http://localhost:3002/graphql"
+    
+    # Check for errors in response
+    local error_message=$(echo "$response" | jq -r ".errors[0].message // empty")
+    if [[ -n "$error_message" && "$error_message" != "null" ]]; then
+        echo "❌ Create deal swap ergonomic failed"
+        echo "  📊 Error: $error_message"
+        echo "  📊 Full response: $response"
+        return 1
+    fi
+    
+    # Extract success status
+    local success=$(echo "$response" | jq -r ".data.createDealSwapErgonomic.success // false")
+    if [[ "$success" == "true" ]]; then
+        echo "✅ Create deal swap ergonomic successful"
+        local message=$(echo "$response" | jq -r ".data.createDealSwapErgonomic.message // \"No message\"")
+        local swap_id=$(echo "$response" | jq -r ".data.createDealSwapErgonomic.swapId // \"No swap ID\"")
+        local message_id=$(echo "$response" | jq -r ".data.createDealSwapErgonomic.messageId // \"No message ID\"")
+        echo "  📊 Message: $message"
+        echo "  📊 Swap ID: $swap_id"
+        echo "  📊 Message ID: $message_id"
+    else
+        echo "❌ Create deal swap ergonomic failed"
+        echo "  📊 Full response: $response"
+        return 1
+    fi
 }
