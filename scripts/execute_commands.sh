@@ -271,7 +271,7 @@ execute_deposit() {
     local command_name="$1"
     local user_email="$2"
     local user_password="$3"
-    local asset_id="$4"
+    local denomination="$4"
     local amount="$5"
     local idempotency_key="$6"
     local group_name="$7"  # Optional group name for delegation
@@ -294,9 +294,9 @@ execute_deposit() {
     # Prepare GraphQL mutation
     local graphql_mutation
     if [[ -n "$idempotency_key" ]]; then
-        graphql_mutation="mutation { deposit(input: { assetId: \\\"$asset_id\\\", amount: \\\"$amount\\\", idempotencyKey: \\\"$idempotency_key\\\" }) { success message accountAddress depositResult messageId timestamp } }"
+        graphql_mutation="mutation { deposit(input: { assetId: \\\"$denomination\\\", amount: \\\"$amount\\\", idempotencyKey: \\\"$idempotency_key\\\" }) { success message accountAddress depositResult messageId timestamp } }"
     else
-        graphql_mutation="mutation { deposit(input: { assetId: \\\"$asset_id\\\", amount: \\\"$amount\\\" }) { success message accountAddress depositResult messageId timestamp } }"
+        graphql_mutation="mutation { deposit(input: { assetId: \\\"$denomination\\\", amount: \\\"$amount\\\" }) { success message accountAddress depositResult messageId timestamp } }"
     fi
     
     local graphql_payload="{\"query\": \"$graphql_mutation\"}"
@@ -348,7 +348,7 @@ execute_instant() {
     local command_name="$1"
     local user_email="$2"
     local user_password="$3"
-    local asset_id="$4"
+    local denomination="$4"
     local amount="$5"
     local destination_id="$6"
     local idempotency_key="$7"
@@ -371,9 +371,9 @@ execute_instant() {
     # Prepare GraphQL mutation
     local graphql_mutation
     if [[ -n "$idempotency_key" ]]; then
-        graphql_mutation="mutation { instant(input: { assetId: \\\"$asset_id\\\", amount: \\\"$amount\\\", destinationId: \\\"$destination_id\\\", idempotencyKey: \\\"$idempotency_key\\\" }) { success message accountAddress destinationId idHash messageId paymentId sendResult timestamp } }"
+        graphql_mutation="mutation { instant(input: { assetId: \\\"$denomination\\\", amount: \\\"$amount\\\", destinationId: \\\"$destination_id\\\", idempotencyKey: \\\"$idempotency_key\\\" }) { success message accountAddress destinationId idHash messageId paymentId sendResult timestamp } }"
     else
-        graphql_mutation="mutation { instant(input: { assetId: \\\"$asset_id\\\", amount: \\\"$amount\\\", destinationId: \\\"$destination_id\\\" }) { success message accountAddress destinationId idHash messageId paymentId sendResult timestamp } }"
+        graphql_mutation="mutation { instant(input: { assetId: \\\"$denomination\\\", amount: \\\"$amount\\\", destinationId: \\\"$destination_id\\\" }) { success message accountAddress destinationId idHash messageId paymentId sendResult timestamp } }"
     fi
     
     local graphql_payload="{\"query\": \"$graphql_mutation\"}"
@@ -957,6 +957,234 @@ execute_accept_deal() {
     fi
 }
 
+# Function to execute total_supply command using REST API
+execute_total_supply() {
+    local command_name="$1"
+    local user_email="$2"
+    local user_password="$3"
+    local denomination="$4"
+    local group_name="$5"  # Optional group name for delegation
+    
+    echo_with_color $CYAN "💰 Executing total_supply command via REST API: $command_name"
+    
+    # Login to get JWT token (with optional group delegation)
+    local jwt_token=$(login_user "$user_email" "$user_password" "$group_name")
+    if [[ -z "$jwt_token" ]]; then
+        echo_with_color $RED "❌ Failed to get JWT token for user: $user_email"
+        return 1
+    fi
+    
+    echo_with_color $BLUE "  🔑 JWT token obtained (first 50 chars): ${jwt_token:0:50}..."
+    if [[ -n "$group_name" ]]; then
+        echo_with_color $CYAN "  🏢 Using delegation JWT for group: $group_name"
+    fi
+    echo_with_color $BLUE "  📤 Sending REST API total_supply request..."
+    
+    # Prepare query parameters
+    local query_params="asset_id=${denomination}"
+    
+    echo_with_color $BLUE "  📋 Query parameters:"
+    echo_with_color $BLUE "    asset_id: $denomination"
+    
+    # Send REST API request to payments service
+    echo_with_color $BLUE "  🌐 Making REST API request to: http://localhost:3002/total_supply?$query_params"
+    local http_response=$(curl -s -X GET "http://localhost:3002/total_supply?$query_params" \
+        -H "Authorization: Bearer $jwt_token")
+    
+    echo_with_color $BLUE "  📡 Raw REST API response: '$http_response'"
+    
+    # Parse REST API response
+    local status=$(echo "$http_response" | jq -r '.status // empty')
+    if [[ "$status" == "success" ]]; then
+        local total_supply=$(echo "$http_response" | jq -r '.total_supply // empty')
+        local treasury_address=$(echo "$http_response" | jq -r '.treasury_address // empty')
+        local timestamp=$(echo "$http_response" | jq -r '.timestamp // empty')
+        
+        # Store outputs for variable substitution in future commands
+        store_command_output "$command_name" "total_supply" "$total_supply"
+        store_command_output "$command_name" "treasury_address" "$treasury_address"
+        store_command_output "$command_name" "denomination" "$denomination"
+        store_command_output "$command_name" "timestamp" "$timestamp"
+        
+        echo_with_color $GREEN "    ✅ Total supply retrieved successfully!"
+        
+        echo_with_color $BLUE "  📋 Total Supply Information:"
+        echo_with_color $BLUE "      Total Supply: $total_supply"
+        echo_with_color $BLUE "      Treasury Address: $treasury_address"
+        echo_with_color $BLUE "      Asset ID: $denomination"
+        echo_with_color $BLUE "      Timestamp: $timestamp"
+        
+        echo_with_color $CYAN "      📝 Stored outputs for variable substitution:"
+        echo_with_color $CYAN "        ${command_name}_total_supply, ${command_name}_treasury_address, ${command_name}_denomination, ${command_name}_timestamp"
+        return 0
+    else
+        local error_message=$(echo "$http_response" | jq -r '.error // "Unknown error"')
+        echo_with_color $RED "    ❌ Total supply retrieval failed: $error_message"
+        echo_with_color $BLUE "      Full response: $http_response"
+        return 1
+    fi
+}
+
+# Function to execute mint command using REST API
+execute_mint() {
+    local command_name="$1"
+    local user_email="$2"
+    local user_password="$3"
+    local denomination="$4"
+    local amount="$5"
+    local policy_secret="$6"
+    local group_name="$7"  # Optional group name for delegation
+    
+    echo_with_color $CYAN "🪙 Executing mint command via REST API: $command_name"
+    
+    # Login to get JWT token (with optional group delegation)
+    local jwt_token=$(login_user "$user_email" "$user_password" "$group_name")
+    if [[ -z "$jwt_token" ]]; then
+        echo_with_color $RED "❌ Failed to get JWT token for user: $user_email"
+        return 1
+    fi
+    
+    echo_with_color $BLUE "  🔑 JWT token obtained (first 50 chars): ${jwt_token:0:50}..."
+    if [[ -n "$group_name" ]]; then
+        echo_with_color $CYAN "  🏢 Using delegation JWT for group: $group_name"
+    fi
+    echo_with_color $BLUE "  📤 Sending REST API mint request..."
+    
+    # Prepare query parameters
+    local query_params="asset_id=${denomination}&amount=${amount}&policy_secret=${policy_secret}"
+    
+    echo_with_color $BLUE "  📋 Query parameters:"
+    echo_with_color $BLUE "    asset_id: $denomination"
+    echo_with_color $BLUE "    amount: $amount"
+    echo_with_color $BLUE "    policy_secret: ${policy_secret:0:8}..."
+    
+    # Send REST API request to payments service
+    echo_with_color $BLUE "  🌐 Making REST API request to: http://localhost:3002/mint?$query_params"
+    local http_response=$(curl -s -X POST "http://localhost:3002/mint?$query_params" \
+        -H "Authorization: Bearer $jwt_token")
+    
+    echo_with_color $BLUE "  📡 Raw REST API response: '$http_response'"
+    
+    # Parse REST API response
+    local status=$(echo "$http_response" | jq -r '.status // empty')
+    if [[ "$status" == "success" ]]; then
+        local mint_result=$(echo "$http_response" | jq -r '.mint_result // empty')
+        local message_id=$(echo "$mint_result" | jq -r '.message_id // empty')
+        local execution_id=$(echo "$mint_result" | jq -r '.execution_id // empty')
+        local transaction_id=$(echo "$mint_result" | jq -r '.transaction_id // empty')
+        local account_address=$(echo "$mint_result" | jq -r '.account_address // empty')
+        local confidential_treasury=$(echo "$mint_result" | jq -r '.confidential_treasury // empty')
+        local timestamp=$(echo "$http_response" | jq -r '.timestamp // empty')
+        
+        # Store outputs for variable substitution in future commands
+        store_command_output "$command_name" "message_id" "$message_id"
+        store_command_output "$command_name" "execution_id" "$execution_id"
+        store_command_output "$command_name" "transaction_id" "$transaction_id"
+        store_command_output "$command_name" "account_address" "$account_address"
+        store_command_output "$command_name" "confidential_treasury" "$confidential_treasury"
+        store_command_output "$command_name" "amount" "$amount"
+        store_command_output "$command_name" "denomination" "$denomination"
+        store_command_output "$command_name" "timestamp" "$timestamp"
+        
+        echo_with_color $GREEN "    ✅ Mint successful!"
+        echo_with_color $BLUE "      Message ID: $message_id"
+        echo_with_color $BLUE "      Execution ID: $execution_id"
+        echo_with_color $BLUE "      Transaction ID: $transaction_id"
+        echo_with_color $BLUE "      Account Address: $account_address"
+        echo_with_color $BLUE "      Confidential Treasury: $confidential_treasury"
+        echo_with_color $BLUE "      Amount: $amount"
+        echo_with_color $BLUE "      Asset ID: $denomination"
+        echo_with_color $CYAN "      📝 Stored outputs for variable substitution:"
+        echo_with_color $CYAN "        ${command_name}_message_id, ${command_name}_execution_id, ${command_name}_transaction_id, ${command_name}_account_address, ${command_name}_confidential_treasury, ${command_name}_amount, ${command_name}_denomination, ${command_name}_timestamp"
+        return 0
+    else
+        local error_message=$(echo "$http_response" | jq -r '.error // "Unknown error"')
+        echo_with_color $RED "    ❌ Mint failed: $error_message"
+        echo_with_color $BLUE "      Full response: $http_response"
+        return 1
+    fi
+}
+
+# Function to execute burn command using REST API
+execute_burn() {
+    local command_name="$1"
+    local user_email="$2"
+    local user_password="$3"
+    local denomination="$4"
+    local amount="$5"
+    local policy_secret="$6"
+    local group_name="$7"  # Optional group name for delegation
+    
+    echo_with_color $CYAN "🔥 Executing burn command via REST API: $command_name"
+    
+    # Login to get JWT token (with optional group delegation)
+    local jwt_token=$(login_user "$user_email" "$user_password" "$group_name")
+    if [[ -z "$jwt_token" ]]; then
+        echo_with_color $RED "❌ Failed to get JWT token for user: $user_email"
+        return 1
+    fi
+    
+    echo_with_color $BLUE "  🔑 JWT token obtained (first 50 chars): ${jwt_token:0:50}..."
+    if [[ -n "$group_name" ]]; then
+        echo_with_color $CYAN "  🏢 Using delegation JWT for group: $group_name"
+    fi
+    echo_with_color $BLUE "  📤 Sending REST API burn request..."
+    
+    # Prepare query parameters
+    local query_params="asset_id=${denomination}&amount=${amount}&policy_secret=${policy_secret}"
+    
+    echo_with_color $BLUE "  📋 Query parameters:"
+    echo_with_color $BLUE "    asset_id: $denomination"
+    echo_with_color $BLUE "    amount: $amount"
+    echo_with_color $BLUE "    policy_secret: ${policy_secret:0:8}..."
+    
+    # Send REST API request to payments service
+    echo_with_color $BLUE "  🌐 Making REST API request to: http://localhost:3002/burn?$query_params"
+    local http_response=$(curl -s -X POST "http://localhost:3002/burn?$query_params" \
+        -H "Authorization: Bearer $jwt_token")
+    
+    echo_with_color $BLUE "  📡 Raw REST API response: '$http_response'"
+    
+    # Parse REST API response
+    local status=$(echo "$http_response" | jq -r '.status // empty')
+    if [[ "$status" == "success" ]]; then
+        local burn_result=$(echo "$http_response" | jq -r '.burn_result // empty')
+        local message_id=$(echo "$burn_result" | jq -r '.message_id // empty')
+        local execution_id=$(echo "$burn_result" | jq -r '.execution_id // empty')
+        local transaction_id=$(echo "$burn_result" | jq -r '.transaction_id // empty')
+        local account_address=$(echo "$burn_result" | jq -r '.account_address // empty')
+        local confidential_treasury=$(echo "$burn_result" | jq -r '.confidential_treasury // empty')
+        local timestamp=$(echo "$http_response" | jq -r '.timestamp // empty')
+        
+        # Store outputs for variable substitution in future commands
+        store_command_output "$command_name" "message_id" "$message_id"
+        store_command_output "$command_name" "execution_id" "$execution_id"
+        store_command_output "$command_name" "transaction_id" "$transaction_id"
+        store_command_output "$command_name" "account_address" "$account_address"
+        store_command_output "$command_name" "confidential_treasury" "$confidential_treasury"
+        store_command_output "$command_name" "amount" "$amount"
+        store_command_output "$command_name" "denomination" "$denomination"
+        store_command_output "$command_name" "timestamp" "$timestamp"
+        
+        echo_with_color $GREEN "    ✅ Burn successful!"
+        echo_with_color $BLUE "      Message ID: $message_id"
+        echo_with_color $BLUE "      Execution ID: $execution_id"
+        echo_with_color $BLUE "      Transaction ID: $transaction_id"
+        echo_with_color $BLUE "      Account Address: $account_address"
+        echo_with_color $BLUE "      Confidential Treasury: $confidential_treasury"
+        echo_with_color $BLUE "      Amount: $amount"
+        echo_with_color $BLUE "      Asset ID: $denomination"
+        echo_with_color $CYAN "      📝 Stored outputs for variable substitution:"
+        echo_with_color $CYAN "        ${command_name}_message_id, ${command_name}_execution_id, ${command_name}_transaction_id, ${command_name}_account_address, ${command_name}_confidential_treasury, ${command_name}_amount, ${command_name}_denomination, ${command_name}_timestamp"
+        return 0
+    else
+        local error_message=$(echo "$http_response" | jq -r '.error // "Unknown error"')
+        echo_with_color $RED "    ❌ Burn failed: $error_message"
+        echo_with_color $BLUE "      Full response: $http_response"
+        return 1
+    fi
+}
+
 # Function to execute deals command using REST API
 execute_deals() {
     local command_name="$1"
@@ -1211,7 +1439,7 @@ execute_command() {
     local group_name=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].user.group")
     
     # Parse command parameters
-    local asset_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.asset_id")
+    local denomination=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.denomination")
     local amount=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.amount")
     local destination_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.destination_id")
     local payment_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.payment_id")
@@ -1233,14 +1461,16 @@ execute_command() {
     # Parse accept_deal specific parameters
     local contract_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.contract_id")
     
+    # Parse treasury specific parameters
+    local policy_secret=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.policy_secret")
+    
     # Apply variable substitution to parameters
     echo_with_color $CYAN "  🔄 Applying variable substitution to parameters..."
-    asset_id=$(substitute_variables "$asset_id")
+    denomination=$(substitute_variables "$denomination")
     amount=$(substitute_variables "$amount")
     destination_id=$(substitute_variables "$destination_id")
     payment_id=$(substitute_variables "$payment_id")
     idempotency_key=$(substitute_variables "$idempotency_key")
-    denomination=$(substitute_variables "$denomination")
     obligor=$(substitute_variables "$obligor")
     group_id=$(substitute_variables "$group_id")
     group_name=$(substitute_variables "$group_name")
@@ -1257,12 +1487,15 @@ execute_command() {
     # Apply variable substitution to accept_deal specific parameters
     contract_id=$(substitute_variables "$contract_id")
     
+    # Apply variable substitution to treasury specific parameters
+    policy_secret=$(substitute_variables "$policy_secret")
+    
     echo_with_color $PURPLE "🚀 Executing command $((command_index + 1)): $command_name"
     echo_with_color $BLUE "  Type: $command_type"
     echo_with_color $BLUE "  User: $user_email"
     if [[ -n "$group_name" ]]; then echo_with_color $CYAN "  Group: $group_name (delegation)"; fi
     echo_with_color $BLUE "  Parameters after substitution:"
-    if [[ -n "$asset_id" ]]; then echo_with_color $BLUE "    asset_id: $asset_id"; fi
+    if [[ -n "$denomination" ]]; then echo_with_color $BLUE "    denomination: $denomination"; fi
     if [[ -n "$amount" ]]; then echo_with_color $BLUE "    amount: $amount"; fi
     if [[ -n "$destination_id" ]]; then echo_with_color $BLUE "    destination_id: $destination_id"; fi
     if [[ -n "$payment_id" ]]; then echo_with_color $BLUE "    payment_id: $payment_id"; fi
@@ -1283,13 +1516,16 @@ execute_command() {
     # Display accept_deal specific parameters
     if [[ -n "$contract_id" ]]; then echo_with_color $BLUE "    contract_id: $contract_id"; fi
     
+    # Display treasury specific parameters
+    if [[ -n "$policy_secret" ]]; then echo_with_color $BLUE "    policy_secret: ${policy_secret:0:8}..."; fi
+    
     # Execute command based on type
     case "$command_type" in
         "deposit")
-            execute_deposit "$command_name" "$user_email" "$user_password" "$asset_id" "$amount" "$idempotency_key" "$group_name"
+            execute_deposit "$command_name" "$user_email" "$user_password" "$denomination" "$amount" "$idempotency_key" "$group_name"
             ;;
         "instant")
-            execute_instant "$command_name" "$user_email" "$user_password" "$asset_id" "$amount" "$destination_id" "$idempotency_key" "$group_name"
+            execute_instant "$command_name" "$user_email" "$user_password" "$denomination" "$amount" "$destination_id" "$idempotency_key" "$group_name"
             ;;
         "accept")
             execute_accept "$command_name" "$user_email" "$user_password" "$payment_id" "$idempotency_key" "$group_name"
@@ -1305,6 +1541,15 @@ execute_command() {
             ;;
         "deals")
             execute_deals "$command_name" "$user_email" "$user_password" "$group_name"
+            ;;
+        "total_supply")
+            execute_total_supply "$command_name" "$user_email" "$user_password" "$denomination" "$group_name"
+            ;;
+        "mint")
+            execute_mint "$command_name" "$user_email" "$user_password" "$denomination" "$amount" "$policy_secret" "$group_name"
+            ;;
+        "burn")
+            execute_burn "$command_name" "$user_email" "$user_password" "$denomination" "$amount" "$policy_secret" "$group_name"
             ;;
         *)
             echo_with_color $RED "❌ Unknown command type: $command_type"
@@ -1366,11 +1611,11 @@ validate_commands_file() {
         # Validate command type
         case "$command_type" in
             "deposit")
-                local asset_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.asset_id")
+                local denomination=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.denomination")
                 local amount=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.amount")
                 
-                if [[ -z "$asset_id" ]]; then
-                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.asset_id' field"
+                if [[ -z "$denomination" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.denomination' field"
                     return 1
                 fi
                 
@@ -1380,12 +1625,12 @@ validate_commands_file() {
                 fi
                 ;;
             "instant")
-                local asset_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.asset_id")
+                local denomination=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.denomination")
                 local amount=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.amount")
                 local destination_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.destination_id")
                 
-                if [[ -z "$asset_id" ]]; then
-                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.asset_id' field"
+                if [[ -z "$denomination" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.denomination' field"
                     return 1
                 fi
                 
@@ -1457,9 +1702,57 @@ validate_commands_file() {
                 # Deals command doesn't require any specific parameters
                 # It will list all deals for the authenticated user
                 ;;
+            "total_supply")
+                local denomination=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.denomination")
+                
+                if [[ -z "$denomination" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.denomination' field"
+                    return 1
+                fi
+                ;;
+            "mint")
+                local denomination=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.denomination")
+                local amount=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.amount")
+                local policy_secret=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.policy_secret")
+                
+                if [[ -z "$denomination" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.denomination' field"
+                    return 1
+                fi
+                
+                if [[ -z "$amount" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.amount' field"
+                    return 1
+                fi
+                
+                if [[ -z "$policy_secret" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.policy_secret' field"
+                    return 1
+                fi
+                ;;
+            "burn")
+                local denomination=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.denomination")
+                local amount=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.amount")
+                local policy_secret=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.policy_secret")
+                
+                if [[ -z "$denomination" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.denomination' field"
+                    return 1
+                fi
+                
+                if [[ -z "$amount" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.amount' field"
+                    return 1
+                fi
+                
+                if [[ -z "$policy_secret" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.policy_secret' field"
+                    return 1
+                fi
+                ;;
             *)
                 echo_with_color $RED "Error: Command '$command_name' has unsupported type: '$command_type'"
-                echo_with_color $YELLOW "Supported types: deposit, instant, accept, balance, create_deal, accept_deal, deals"
+                echo_with_color $YELLOW "Supported types: deposit, instant, accept, balance, create_deal, accept_deal, deals, total_supply, mint, burn"
                 return 1
                 ;;
         esac
@@ -1659,10 +1952,13 @@ show_help() {
     echo "  • createDeal: Creates deals via GraphQL"
     echo "  • acceptDeal: Accepts deals using contract_id via GraphQL"
     echo "  • deals: Lists all deals for a user via REST API"
+    echo "  • total_supply: Gets total supply of a treasury token via REST API"
+    echo "  • mint: Mints new treasury tokens via REST API"
+    echo "  • burn: Burns treasury tokens via REST API"
     echo ""
     echo "Commands.yaml Structure:"
     echo "  • commands: array of commands with type, user, and parameters"
-    echo "  • Supported command types: deposit, instant, accept, balance, create_deal, accept_deal, deals"
+    echo "  • Supported command types: deposit, instant, accept, balance, create_deal, accept_deal, deals, total_supply, mint, burn"
     echo "  • Each command must have user.id, user.password, and parameters"
     echo "  • Variables can be referenced using: \$command_name.field_name"
     echo ""
@@ -1678,6 +1974,10 @@ show_help() {
     echo "  • locked_in: \$issuer_balance.locked_in # Use locked_in transactions from 'issuer_balance' command"
     echo "  • deals_count: \$admin2_balance_2.deals_count # Use deals count from 'admin2_balance_2' command"
     echo "  • deals_json: \$admin2_balance_2.deals_json # Use deals JSON from 'admin2_balance_2' command"
+    echo "  • total_supply: \$total_supply_1.total_supply # Use total supply from 'total_supply_1' command"
+    echo "  • treasury_address: \$total_supply_1.treasury_address # Use treasury address from 'total_supply_1' command"
+    echo "  • mint_amount: \$mint_1.amount # Use amount from 'mint_1' command"
+    echo "  • burn_transaction_id: \$burn_1.transaction_id # Use transaction ID from 'burn_1' command"
     echo ""
     echo "Examples:"
     echo "  $0                    # Execute commands from commands.yaml"
