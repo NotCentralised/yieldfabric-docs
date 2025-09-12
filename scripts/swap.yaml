@@ -7,7 +7,7 @@ commands:
     parameters:
       asset_id: aud-token-asset
       amount: 75
-      idempotency_key: deposit-1
+      idempotency_key: deposit-ergonomic-$(date +%s)
 
   - name: issuer_balance_1
     type: balance
@@ -17,8 +17,6 @@ commands:
     parameters:
       denomination: aud-token-asset
 
-
-
   - name: admin2_create_deal_obligor_1
     type: create_deal
     user: 
@@ -26,7 +24,7 @@ commands:
       password: testpass123
       group: Admin Group
     parameters:
-      idempotency_key: create_deal-obligor-1
+      idempotency_key: create_deal-ergonomic-$(date +%s)
       counterpart: issuer@yieldfabric.com
       denomination: aud-token-asset
       obligor:  issuer@yieldfabric.com
@@ -54,7 +52,6 @@ commands:
               unlock: 2025-12-31 #unlock_sender
             payee: #recipient
               unlock: 2025-12-31 #unlock_receiver
-            
 
   - name: issuer_accept_deal_obligor_1
     type: accept_deal
@@ -63,9 +60,8 @@ commands:
       password: issuerpass456
       # group: Admin Group
     parameters:
-      idempotency_key: accept_deal-obligor-1
+      idempotency_key: accept_deal-ergonomic-$(date +%s)
       contract_id: $admin2_create_deal_obligor_1.contract_id
-
 
   - name: create_deal_swap-1
     type: create_deal_swap
@@ -75,41 +71,46 @@ commands:
       group: Admin Group
     parameters:
       swap_id: "1234567890"
-      idempotency_key: swap-1
+      idempotency_key: swap-ergonomic-$(date +%s)
       deal_id: $admin2_create_deal_obligor_1.contract_id
       counterparty: counterpart@yieldfabric.com
       deadline: 2025-10-10
       expected_payments:
         amount: 5
-        denomination: aud-token-asset
-        obligor: issuer@yieldfabric.com
         payments:
-          - oracle_address: "0x9A9f2CCfdE556A7E9Ff0848998Aa4a0CFD8863AE"
-            oracle_owner: "Admin Group"
-            oracle_key_sender: "1"
-            oracle_value_sender_secret: "1"
-            oracle_key_recipient: "1"
-            oracle_value_recipient_secret: "2"
-            unlock_sender: 2025-01-01
-            unlock_receiver: 2025-01-01
+          - id: swap-payment-1
+            owner: Admin Group #oracle_owner
+            payer: #sender
+              key: "1"
+              valueSecret: "1"
+            payee: #recipient
+              key: "1"
+              valueSecret: "2"
+          - id: swap-payment-2
+            owner: Admin Group #oracle_owner
+            payer: #sender
+              unlock: 2025-12-31 #unlock_sender
+            payee: #recipient
+              unlock: 2025-12-31 #unlock_receiver
 
-  # - name: admin2_balance_4
-  #   type: balance
+  # - name: complete_swap-1
+  #   type: complete_swap
   #   user: 
   #     id: admin2@yieldfabric.com
   #     password: testpass123
   #     group: Admin Group
   #   parameters:
-  #     denomination: aud-token-asset
-  #     obligor: issuer@yieldfabric.com
+  #     swap_id: "1234567890"
+  #     idempotency_key: complete-swap-ergonomic-$(date +%s)
 
-  
-  
-  # - name: admin2_deals
-    type: deals
-    user: 
-      id: admin2@yieldfabric.com
-      password: testpass123
-      group: Admin Group
-    parameters:
-      denomination: aud-token-asset
+  # - name: cancel_swap-1
+  #   type: cancel_swap
+  #   user: 
+  #     id: admin2@yieldfabric.com
+  #     password: testpass123
+  #     group: Admin Group
+  #   parameters:
+  #     swap_id: "1234567890"
+  #     key: "cancel_key"
+  #     value: "cancel_value"
+  #     idempotency_key: cancel-swap-ergonomic-$(date +%s)
