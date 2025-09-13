@@ -443,7 +443,7 @@ execute_create_deal_swap() {
         fi
         
         # Convert JSON array to GraphQL format - use proper escaping
-        local payments_array=$(echo "$expected_payments_json" | jq -r '.[] | "{ oracleAddress: \\\"" + (.oracle_address // "null") + "\\\", oracleOwner: \\\"" + (.oracle_owner // "null") + "\\\", oracleKeySender: \\\"" + (.oracle_key_sender // "null") + "\\\", oracleValueSenderSecret: \\\"" + (.oracle_value_sender_secret // "null") + "\\\", oracleKeyRecipient: \\\"" + (.oracle_key_recipient // "null") + "\\\", oracleValueRecipientSecret: \\\"" + (.oracle_value_recipient_secret // "null") + "\\\", unlockSender: \\\"" + (.unlock_sender // "null") + "\\\", unlockReceiver: \\\"" + (.unlock_receiver // "null") + "\\\" }"' | tr '\n' ',' | sed 's/,$//')
+        local payments_array=$(echo "$expected_payments_json" | jq -r '.[] | "{ oracleAddress: \\\"" + (null | tostring) + "\\\", oracleOwner: \\\"" + (null | tostring) + "\\\", oracleKeySender: \\\"" + (.payer.key // "1") + "\\\", oracleValueSenderSecret: \\\"" + (.payer.valueSecret // "1") + "\\\", oracleKeyRecipient: \\\"" + (.payee.key // "1") + "\\\", oracleValueRecipientSecret: \\\"" + (.payee.valueSecret // "2") + "\\\", unlockSender: \\\"" + (.payer.unlock // "null") + "\\\", unlockReceiver: \\\"" + (.payee.unlock // "null") + "\\\" }"' | tr '\n' ',' | sed 's/,$//')
         expected_payments_input="$expected_payments_input, payments: [$payments_array] }"
         
         input_params="$input_params, $expected_payments_input"
@@ -525,6 +525,13 @@ execute_complete_swap() {
     fi
     echo_with_color $BLUE "  📤 Sending GraphQL complete swap mutation..."
     
+    # Debug: Show parsed values
+    echo_with_color $PURPLE "  🔍 DEBUG: Parsed values:"
+    echo_with_color $PURPLE "    expected_payments_amount: '$expected_payments_amount'"
+    echo_with_color $PURPLE "    expected_payments_denomination: '$expected_payments_denomination'"
+    echo_with_color $PURPLE "    expected_payments_obligor: '$expected_payments_obligor'"
+    echo_with_color $PURPLE "    expected_payments_json: '$expected_payments_json'"
+    
     # Prepare GraphQL mutation
     local graphql_mutation
     local input_params="swapId: \\\"$swap_id\\\""
@@ -547,7 +554,7 @@ execute_complete_swap() {
         fi
         
         # Convert JSON array to GraphQL format - use proper escaping
-        local payments_array=$(echo "$expected_payments_json" | jq -r '.[] | "{ oracleAddress: \\\"" + (.oracle_address // "null") + "\\\", oracleOwner: \\\"" + (.oracle_owner // "null") + "\\\", oracleKeySender: \\\"" + (.oracle_key_sender // "null") + "\\\", oracleValueSenderSecret: \\\"" + (.oracle_value_sender_secret // "null") + "\\\", oracleKeyRecipient: \\\"" + (.oracle_key_recipient // "null") + "\\\", oracleValueRecipientSecret: \\\"" + (.oracle_value_recipient_secret // "null") + "\\\", unlockSender: \\\"" + (.unlock_sender // "null") + "\\\", unlockReceiver: \\\"" + (.unlock_receiver // "null") + "\\\" }"' | tr '\n' ',' | sed 's/,$//')
+        local payments_array=$(echo "$expected_payments_json" | jq -r '.[] | "{ oracleAddress: null, oracleOwner: null, oracleKeySender: \\\"" + (.payer.key // "1") + "\\\", oracleValueSenderSecret: \\\"" + (.payer.valueSecret // "1") + "\\\", oracleKeyRecipient: \\\"" + (.payee.key // "1") + "\\\", oracleValueRecipientSecret: \\\"" + (.payee.valueSecret // "2") + "\\\", unlockSender: " + (if .payer.unlock then "\\\"" + .payer.unlock + "\\\"" else "null" end) + ", unlockReceiver: " + (if .payee.unlock then "\\\"" + .payee.unlock + "\\\"" else "null" end) + " }"' | tr '\n' ',' | sed 's/,$//')
         expected_payments_input="$expected_payments_input, payments: [$payments_array] }"
         
         input_params="$input_params, $expected_payments_input"
@@ -715,7 +722,7 @@ execute_create_deal_swap() {
         local vault_payments="[]"
         if [[ -n "$expected_payments_json" && "$expected_payments_json" != "null" && "$expected_payments_json" != "{}" ]]; then
             echo "  🔍 DEBUG: expected_payments_json = $expected_payments_json"
-            vault_payments=$(echo "$expected_payments_json" | jq '.payments // [] | map({
+            vault_payments=$(echo "$expected_payments_json" | jq '. // [] | map({
                 oracleAddress: null,
                 oracleOwner: .owner,
                 oracleKeySender: (.payer.key // "1"),

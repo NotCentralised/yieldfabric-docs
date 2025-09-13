@@ -1,0 +1,111 @@
+commands:
+  - name: issuer_deposit
+    type: deposit
+    user: 
+      id: issuer@yieldfabric.com
+      password: issuerpass456
+    parameters:
+      asset_id: aud-token-asset
+      amount: 75
+      idempotency_key: deposit-ergonomic-$(date +%s)
+
+  - name: issuer_balance_1
+    type: balance
+    user: 
+      id: issuer@yieldfabric.com
+      password: issuerpass456
+    parameters:
+      denomination: aud-token-asset
+
+  - name: issuer_send_1
+    type: instant
+    user: 
+      id: issuer@yieldfabric.com
+      password: issuerpass456
+    parameters:
+      asset_id: aud-token-asset
+      amount: 20
+      idempotency_key: deposit-ergonomic-$(date +%s)
+      # destination_id: counterpart@yieldfabric.com
+      destination_id: counterpart@yieldfabric.com
+
+  - name: counterpart_accept_1
+    type: accept
+    user: 
+      id: counterpart@yieldfabric.com
+      password: counterpass789
+    parameters:
+      idempotency_key: deposit-ergonomic-$(date +%s)
+      payment_id: $issuer_send_1.payment_id
+      
+
+
+  - name: create_payment_swap-1
+    type: create_payment_swap
+    user: 
+      id: admin2@yieldfabric.com
+      password: testpass123
+      group: Admin Group
+    parameters:
+      swap_id: "1234567890"
+      idempotency_key: swap-ergonomic-$(date +%s)
+      counterparty: counterpart@yieldfabric.com
+      deadline: 2025-10-10
+      initial_payments:
+        denomination: aud-token-asset
+        obligor: counterpart@yieldfabric.com
+        amount: 10
+        payments:
+          - id: swap-payment-1
+            payer: #sender
+              key: "1"
+              valueSecret: "1"
+            payee: #recipient
+              key: "1"
+              valueSecret: "2"
+      expected_payments:
+        denomination: aud-token-asset
+        obligor: counterpart@yieldfabric.com
+        amount: 5
+        payments:
+          - id: swap-payment-1
+            payer: #sender
+              key: "1"
+              valueSecret: "1"
+            payee: #recipient
+              key: "1"
+              valueSecret: "2"
+
+
+  - name: complete_swap-1
+    type: complete_swap
+    user: 
+      id: counterpart@yieldfabric.com
+      password: counterpass789
+    parameters:
+      swap_id: "1234567890"
+      expected_payments:
+        denomination: aud-token-asset
+        obligor: counterpart@yieldfabric.com
+        amount: 5
+        payments:
+          - id: swap-payment-1
+            payer: #sender
+              key: "1"
+              valueSecret: "1"
+            payee: #recipient
+              key: "1"
+              valueSecret: "2"
+      idempotency_key: complete-swap-ergonomic-$(date +%s)
+
+  # - name: cancel_swap-1
+  #   type: cancel_swap
+  #   user: 
+  #     id: admin2@yieldfabric.com
+  #     password: testpass123
+  #     group: Admin Group
+  #   parameters:
+  #     swap_id: "1234567890"
+  #     key: "cancel_key"
+  #     value: "cancel_value"
+  #     idempotency_key: cancel-swap-ergonomic-$(date +%s)
