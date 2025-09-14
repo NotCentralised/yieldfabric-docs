@@ -563,7 +563,7 @@ execute_balance() {
         if [[ "$beneficial_balance" != "0" && "$beneficial_balance" != "" ]]; then
             echo_with_color $GREEN "  💎 Beneficial Balance Details:"
             echo_with_color $GREEN "      Total Beneficial Value: $beneficial_balance"
-            echo_with_color $CYAN "      This represents the total notional value from deals where you are the owner"
+            echo_with_color $CYAN "      This represents the total notional value from obligations where you are the owner"
             
             # Show beneficial transaction IDs if available
             local beneficial_ids_count=$(echo "$beneficial_transaction_ids" | jq 'length')
@@ -573,31 +573,31 @@ execute_balance() {
                     echo_with_color $YELLOW "        ID Hash: $id_hash"
                 done
             else
-                echo_with_color $CYAN "      💡 Note: No locked transactions found in deal cashflows"
-                echo_with_color $CYAN "         The beneficial balance shows deal notional values as fallback"
+                echo_with_color $CYAN "      💡 Note: No locked transactions found in obligation cashflows"
+                echo_with_color $CYAN "         The beneficial balance shows obligation notional values as fallback"
                 echo_with_color $CYAN "         When locked transactions exist, they will show ID hashes"
                 echo_with_color $CYAN "         and the beneficial balance will be calculated from those transactions"
             fi
             
             # Show beneficial transaction details if available
             if echo "$http_response" | jq -e '.balance.locked_out' >/dev/null 2>&1; then
-                local beneficial_out_count=$(echo "$http_response" | jq '[.balance.locked_out[] | select(.deal_id != "0")] | length')
-                local beneficial_in_count=$(echo "$http_response" | jq '[.balance.locked_in[] | select(.deal_id != "0")] | length')
+                local beneficial_out_count=$(echo "$http_response" | jq '[.balance.locked_out[] | select(.obligation_id != "0")] | length')
+                local beneficial_in_count=$(echo "$http_response" | jq '[.balance.locked_in[] | select(.obligation_id != "0")] | length')
                 
                 if [[ "$beneficial_out_count" -gt 0 || "$beneficial_in_count" -gt 0 ]]; then
                     echo_with_color $CYAN "      Beneficial Transactions:"
-                    echo_with_color $CYAN "        Locked Out (from deals): $beneficial_out_count"
-                    echo_with_color $CYAN "        Locked In (from deals): $beneficial_in_count"
+                    echo_with_color $CYAN "        Locked Out (from obligations): $beneficial_out_count"
+                    echo_with_color $CYAN "        Locked In (from obligations): $beneficial_in_count"
                     
-                    # Show beneficial transaction IDs with deal information
+                    # Show beneficial transaction IDs with obligation information
                     if [[ "$beneficial_out_count" -gt 0 ]]; then
                         echo_with_color $YELLOW "        Beneficial Locked Out Transaction Details:"
-                        echo "$http_response" | jq -r '.balance.locked_out[] | select(.deal_id != "0") | "          ID Hash: " + .id_hash + " (Deal ID: " + .deal_id + ", Amount: " + .amount + ")"' 2>/dev/null | sed 's/^/        /'
+                        echo "$http_response" | jq -r '.balance.locked_out[] | select(.obligation_id != "0") | "          ID Hash: " + .id_hash + " (Obligation ID: " + .obligation_id + ", Amount: " + .amount + ")"' 2>/dev/null | sed 's/^/        /'
                     fi
                     
                     if [[ "$beneficial_in_count" -gt 0 ]]; then
                         echo_with_color $YELLOW "        Beneficial Locked In Transaction Details:"
-                        echo "$http_response" | jq -r '.balance.locked_in[] | select(.deal_id != "0") | "          ID Hash: " + .id_hash + " (Deal ID: " + .deal_id + ", Amount: " + .amount + ")"' 2>/dev/null | sed 's/^/        /'
+                        echo "$http_response" | jq -r '.balance.locked_in[] | select(.obligation_id != "0") | "          ID Hash: " + .id_hash + " (Obligation ID: " + .obligation_id + ", Amount: " + .amount + ")"' 2>/dev/null | sed 's/^/        /'
                     fi
                 fi
             fi
@@ -694,14 +694,14 @@ execute_accept() {
     fi
 }
 
-# Function to execute create deal command using GraphQL (with ergonomic input)
-execute_create_deal_ergonomic() {
+# Function to execute create obligation command using GraphQL (with ergonomic input)
+execute_create_obligation_ergonomic() {
     local command_name="$1"
     local user_email="$2"
     local user_password="$3"
     local counterpart="$4"
-    local deal_address="$5"
-    local deal_group_id="$6"
+    local obligation_address="$5"
+    local obligation_group_id="$6"
     local denomination="$7"
     local obligor="$8"
     local notional="$9"
@@ -712,7 +712,7 @@ execute_create_deal_ergonomic() {
     local idempotency_key="${14}"
     local group_name="${15}"  # Optional group name for delegation
     
-    echo_with_color $CYAN "🤝 Executing create deal command via GraphQL: $command_name"
+    echo_with_color $CYAN "🤝 Executing create obligation command via GraphQL: $command_name"
     
     # Login to get JWT token (with optional group delegation)
     local jwt_token=$(login_user "$user_email" "$user_password" "$group_name")
@@ -724,21 +724,21 @@ execute_create_deal_ergonomic() {
     if [[ -n "$group_name" ]]; then
         echo_with_color $CYAN "  🏢 Using delegation JWT for group: $group_name"
     fi
-    echo_with_color $BLUE "  📤 Sending GraphQL create deal mutation..."
+    echo_with_color $BLUE "  📤 Sending GraphQL create obligation mutation..."
     
     # Prepare GraphQL mutation with required fields
     local graphql_mutation
     local graphql_variables=""
     local input_params="counterpart: \\\"$counterpart\\\", denomination: \\\"$denomination\\\""
     
-    # Add optional deal_address if provided (and not "null")
-    if [[ -n "$deal_address" && "$deal_address" != "null" ]]; then
-        input_params="$input_params, dealAddress: \\\"$deal_address\\\""
+    # Add optional obligation_address if provided (and not "null")
+    if [[ -n "$obligation_address" && "$obligation_address" != "null" ]]; then
+        input_params="$input_params, obligationAddress: \\\"$obligation_address\\\""
     fi
     
-    # Add optional deal_group_id if provided (and not "null")
-    if [[ -n "$deal_group_id" && "$deal_group_id" != "null" ]]; then
-        input_params="$input_params, dealGroupId: \\\"$deal_group_id\\\""
+    # Add optional obligation_group_id if provided (and not "null")
+    if [[ -n "$obligation_group_id" && "$obligation_group_id" != "null" ]]; then
+        input_params="$input_params, obligationGroupId: \\\"$obligation_group_id\\\""
     fi
     
     # Add optional fields if provided (and not "null")
@@ -798,17 +798,17 @@ execute_create_deal_ergonomic() {
     if [[ -n "$graphql_variables" ]]; then
         # Check if we have both data and initialPayments variables
         if echo "$graphql_variables" | grep -q "initialPayments" && echo "$graphql_variables" | grep -q "data"; then
-            graphql_mutation="mutation(\$initialPayments: InitialPaymentsInput, \$data: JSON) { createDeal(input: { $input_params }) { success message accountAddress dealResult messageId contractId transactionId signature timestamp idHash } }"
+            graphql_mutation="mutation(\$initialPayments: InitialPaymentsInput, \$data: JSON) { createObligation(input: { $input_params }) { success message accountAddress obligationResult messageId contractId transactionId signature timestamp idHash } }"
         elif echo "$graphql_variables" | grep -q "initialPayments"; then
-            graphql_mutation="mutation(\$initialPayments: InitialPaymentsInput) { createDeal(input: { $input_params }) { success message accountAddress dealResult messageId contractId transactionId signature timestamp idHash } }"
+            graphql_mutation="mutation(\$initialPayments: InitialPaymentsInput) { createObligation(input: { $input_params }) { success message accountAddress obligationResult messageId contractId transactionId signature timestamp idHash } }"
         elif echo "$graphql_variables" | grep -q "data"; then
-            graphql_mutation="mutation(\$data: JSON) { createDeal(input: { $input_params }) { success message accountAddress dealResult messageId contractId transactionId signature timestamp idHash } }"
+            graphql_mutation="mutation(\$data: JSON) { createObligation(input: { $input_params }) { success message accountAddress obligationResult messageId contractId transactionId signature timestamp idHash } }"
         else
-            graphql_mutation="mutation { createDeal(input: { $input_params }) { success message accountAddress dealResult messageId contractId transactionId signature timestamp idHash } }"
+            graphql_mutation="mutation { createObligation(input: { $input_params }) { success message accountAddress obligationResult messageId contractId transactionId signature timestamp idHash } }"
         fi
         local graphql_payload="{\"query\": \"$graphql_mutation\", \"variables\": {$graphql_variables}}"
     else
-        graphql_mutation="mutation { createDeal(input: { $input_params }) { success message accountAddress dealResult messageId contractId transactionId signature timestamp idHash } }"
+        graphql_mutation="mutation { createObligation(input: { $input_params }) { success message accountAddress obligationResult messageId contractId transactionId signature timestamp idHash } }"
         local graphql_payload="{\"query\": \"$graphql_mutation\"}"
     fi
     
@@ -825,22 +825,22 @@ execute_create_deal_ergonomic() {
     echo_with_color $BLUE "  📡 Raw GraphQL response: '$http_response'"
     
     # Parse GraphQL response
-    local success=$(echo "$http_response" | jq -r '.data.createDeal.success // empty')
+    local success=$(echo "$http_response" | jq -r '.data.createObligation.success // empty')
     if [[ "$success" == "true" ]]; then
-        local account_address=$(echo "$http_response" | jq -r '.data.createDeal.accountAddress // empty')
-        local message=$(echo "$http_response" | jq -r '.data.createDeal.message // empty')
-        local deal_result=$(echo "$http_response" | jq -r '.data.createDeal.dealResult // empty')
-        local message_id=$(echo "$http_response" | jq -r '.data.createDeal.messageId // empty')
-        local contract_id=$(echo "$http_response" | jq -r '.data.createDeal.contractId // empty')
-        local transaction_id=$(echo "$http_response" | jq -r '.data.createDeal.transactionId // empty')
-        local signature=$(echo "$http_response" | jq -r '.data.createDeal.signature // empty')
-        local timestamp=$(echo "$http_response" | jq -r '.data.createDeal.timestamp // empty')
-        local id_hash=$(echo "$http_response" | jq -r '.data.createDeal.idHash // empty')
+        local account_address=$(echo "$http_response" | jq -r '.data.createObligation.accountAddress // empty')
+        local message=$(echo "$http_response" | jq -r '.data.createObligation.message // empty')
+        local obligation_result=$(echo "$http_response" | jq -r '.data.createObligation.obligationResult // empty')
+        local message_id=$(echo "$http_response" | jq -r '.data.createObligation.messageId // empty')
+        local contract_id=$(echo "$http_response" | jq -r '.data.createObligation.contractId // empty')
+        local transaction_id=$(echo "$http_response" | jq -r '.data.createObligation.transactionId // empty')
+        local signature=$(echo "$http_response" | jq -r '.data.createObligation.signature // empty')
+        local timestamp=$(echo "$http_response" | jq -r '.data.createObligation.timestamp // empty')
+        local id_hash=$(echo "$http_response" | jq -r '.data.createObligation.idHash // empty')
         
         # Store outputs for variable substitution in future commands
         store_command_output "$command_name" "account_address" "$account_address"
         store_command_output "$command_name" "message" "$message"
-        store_command_output "$command_name" "deal_result" "$deal_result"
+        store_command_output "$command_name" "obligation_result" "$obligation_result"
         store_command_output "$command_name" "message_id" "$message_id"
         store_command_output "$command_name" "contract_id" "$contract_id"
         store_command_output "$command_name" "transaction_id" "$transaction_id"
@@ -848,29 +848,29 @@ execute_create_deal_ergonomic() {
         store_command_output "$command_name" "timestamp" "$timestamp"
         store_command_output "$command_name" "id_hash" "$id_hash"
         
-        echo_with_color $GREEN "    ✅ Create deal successful!"
+        echo_with_color $GREEN "    ✅ Create obligation successful!"
         echo_with_color $BLUE "      Account: $account_address"
         echo_with_color $BLUE "      Contract ID: $contract_id"
         echo_with_color $BLUE "      Transaction ID: $transaction_id"
         echo_with_color $BLUE "      Message: $message"
         echo_with_color $BLUE "      Message ID: $message_id"
-        echo_with_color $BLUE "      Deal Result: $deal_result"
+        echo_with_color $BLUE "      Obligation Result: $obligation_result"
         if [[ -n "$id_hash" ]]; then
             echo_with_color $CYAN "      ID Hash: $id_hash"
         fi
         echo_with_color $CYAN "      📝 Stored outputs for variable substitution:"
-        echo_with_color $CYAN "        ${command_name}_account_address, ${command_name}_message, ${command_name}_deal_result, ${command_name}_message_id, ${command_name}_contract_id, ${command_name}_transaction_id, ${command_name}_signature, ${command_name}_timestamp, ${command_name}_id_hash"
+        echo_with_color $CYAN "        ${command_name}_account_address, ${command_name}_message, ${command_name}_obligation_result, ${command_name}_message_id, ${command_name}_contract_id, ${command_name}_transaction_id, ${command_name}_signature, ${command_name}_timestamp, ${command_name}_id_hash"
         return 0
     else
         local error_message=$(echo "$http_response" | jq -r '.errors[0].message // "Unknown error"')
-        echo_with_color $RED "    ❌ Create deal failed: $error_message"
+        echo_with_color $RED "    ❌ Create obligation failed: $error_message"
         echo_with_color $BLUE "      Full response: $http_response"
         return 1
     fi
 }
 
-# Function to execute accept deal command using GraphQL
-execute_accept_deal() {
+# Function to execute accept obligation command using GraphQL
+execute_accept_obligation() {
     local command_name="$1"
     local user_email="$2"
     local user_password="$3"
@@ -878,7 +878,7 @@ execute_accept_deal() {
     local idempotency_key="$5"
     local group_name="$6"  # Optional group name for delegation
     
-    echo_with_color $CYAN "✅ Executing accept deal command via GraphQL: $command_name"
+    echo_with_color $CYAN "✅ Executing accept obligation command via GraphQL: $command_name"
     
     # Login to get JWT token (with optional group delegation)
     local jwt_token=$(login_user "$user_email" "$user_password" "$group_name")
@@ -890,7 +890,7 @@ execute_accept_deal() {
     if [[ -n "$group_name" ]]; then
         echo_with_color $CYAN "  🏢 Using delegation JWT for group: $group_name"
     fi
-    echo_with_color $BLUE "  📤 Sending GraphQL accept deal mutation..."
+    echo_with_color $BLUE "  📤 Sending GraphQL accept obligation mutation..."
     
     # Prepare GraphQL mutation
     local graphql_mutation
@@ -901,7 +901,7 @@ execute_accept_deal() {
         input_params="$input_params, idempotencyKey: \\\"$idempotency_key\\\""
     fi
     
-    graphql_mutation="mutation { acceptDeal(input: { $input_params }) { success message accountAddress dealId acceptResult messageId transactionId signature timestamp } }"
+    graphql_mutation="mutation { acceptObligation(input: { $input_params }) { success message accountAddress obligationId acceptResult messageId transactionId signature timestamp } }"
     
     local graphql_payload="{\"query\": \"$graphql_mutation\"}"
     
@@ -918,40 +918,40 @@ execute_accept_deal() {
     echo_with_color $BLUE "  📡 Raw GraphQL response: '$http_response'"
     
     # Parse GraphQL response
-    local success=$(echo "$http_response" | jq -r '.data.acceptDeal.success // empty')
+    local success=$(echo "$http_response" | jq -r '.data.acceptObligation.success // empty')
     if [[ "$success" == "true" ]]; then
-        local account_address=$(echo "$http_response" | jq -r '.data.acceptDeal.accountAddress // empty')
-        local message=$(echo "$http_response" | jq -r '.data.acceptDeal.message // empty')
-        local deal_id=$(echo "$http_response" | jq -r '.data.acceptDeal.dealId // empty')
-        local message_id=$(echo "$http_response" | jq -r '.data.acceptDeal.messageId // empty')
-        local transaction_id=$(echo "$http_response" | jq -r '.data.acceptDeal.transactionId // empty')
-        local signature=$(echo "$http_response" | jq -r '.data.acceptDeal.signature // empty')
-        local timestamp=$(echo "$http_response" | jq -r '.data.acceptDeal.timestamp // empty')
-        local accept_result=$(echo "$http_response" | jq -r '.data.acceptDeal.acceptResult // empty')
+        local account_address=$(echo "$http_response" | jq -r '.data.acceptObligation.accountAddress // empty')
+        local message=$(echo "$http_response" | jq -r '.data.acceptObligation.message // empty')
+        local obligation_id=$(echo "$http_response" | jq -r '.data.acceptObligation.obligationId // empty')
+        local message_id=$(echo "$http_response" | jq -r '.data.acceptObligation.messageId // empty')
+        local transaction_id=$(echo "$http_response" | jq -r '.data.acceptObligation.transactionId // empty')
+        local signature=$(echo "$http_response" | jq -r '.data.acceptObligation.signature // empty')
+        local timestamp=$(echo "$http_response" | jq -r '.data.acceptObligation.timestamp // empty')
+        local accept_result=$(echo "$http_response" | jq -r '.data.acceptObligation.acceptResult // empty')
         
         # Store outputs for variable substitution in future commands
         store_command_output "$command_name" "account_address" "$account_address"
         store_command_output "$command_name" "message" "$message"
-        store_command_output "$command_name" "deal_id" "$deal_id"
+        store_command_output "$command_name" "obligation_id" "$obligation_id"
         store_command_output "$command_name" "message_id" "$message_id"
         store_command_output "$command_name" "transaction_id" "$transaction_id"
         store_command_output "$command_name" "signature" "$signature"
         store_command_output "$command_name" "timestamp" "$timestamp"
         store_command_output "$command_name" "accept_result" "$accept_result"
         
-        echo_with_color $GREEN "    ✅ Accept deal successful!"
+        echo_with_color $GREEN "    ✅ Accept obligation successful!"
         echo_with_color $BLUE "      Account: $account_address"
-        echo_with_color $BLUE "      Deal ID: $deal_id"
+        echo_with_color $BLUE "      Obligation ID: $obligation_id"
         echo_with_color $BLUE "      Message: $message"
         echo_with_color $BLUE "      Message ID: $message_id"
         echo_with_color $BLUE "      Transaction ID: $transaction_id"
         echo_with_color $BLUE "      Accept Result: $accept_result"
         echo_with_color $CYAN "      📝 Stored outputs for variable substitution:"
-        echo_with_color $CYAN "        ${command_name}_account_address, ${command_name}_message, ${command_name}_deal_id, ${command_name}_message_id, ${command_name}_transaction_id, ${command_name}_signature, ${command_name}_timestamp, ${command_name}_accept_result"
+        echo_with_color $CYAN "        ${command_name}_account_address, ${command_name}_message, ${command_name}_obligation_id, ${command_name}_message_id, ${command_name}_transaction_id, ${command_name}_signature, ${command_name}_timestamp, ${command_name}_accept_result"
         return 0
     else
         local error_message=$(echo "$http_response" | jq -r '.errors[0].message // "Unknown error"')
-        echo_with_color $RED "    ❌ Accept deal failed: $error_message"
+        echo_with_color $RED "    ❌ Accept obligation failed: $error_message"
         echo_with_color $BLUE "      Full response: $http_response"
         return 1
     fi
@@ -1185,14 +1185,14 @@ execute_burn() {
     fi
 }
 
-# Function to execute deals command using REST API
-execute_deals() {
+# Function to execute obligations command using REST API
+execute_obligations() {
     local command_name="$1"
     local user_email="$2"
     local user_password="$3"
     local group_name="$4"  # Optional group name for delegation
     
-    echo_with_color $CYAN "🤝 Executing deals command via REST API: $command_name"
+    echo_with_color $CYAN "🤝 Executing obligations command via REST API: $command_name"
     
     # Login to get JWT token (with optional group delegation)
     local jwt_token=$(login_user "$user_email" "$user_password" "$group_name")
@@ -1205,11 +1205,11 @@ execute_deals() {
     if [[ -n "$group_name" ]]; then
         echo_with_color $CYAN "  🏢 Using delegation JWT for group: $group_name"
     fi
-    echo_with_color $BLUE "  📤 Sending REST API deals request..."
+    echo_with_color $BLUE "  📤 Sending REST API obligations request..."
     
     # Send REST API request to payments service
-    echo_with_color $BLUE "  🌐 Making REST API request to: http://localhost:3002/deals"
-    local http_response=$(curl -s -X GET "http://localhost:3002/deals" \
+    echo_with_color $BLUE "  🌐 Making REST API request to: http://localhost:3002/obligations"
+    local http_response=$(curl -s -X GET "http://localhost:3002/obligations" \
         -H "Authorization: Bearer $jwt_token")
     
     echo_with_color $BLUE "  📡 Raw REST API response: '$http_response'"
@@ -1217,47 +1217,47 @@ execute_deals() {
     # Parse REST API response
     local status=$(echo "$http_response" | jq -r '.status // empty')
     if [[ "$status" == "success" ]]; then
-        local deals_count=$(echo "$http_response" | jq -r '.deals | length // 0')
+        local obligations_count=$(echo "$http_response" | jq -r '.obligations | length // 0')
         local timestamp=$(echo "$http_response" | jq -r '.timestamp // empty')
         
         # Store outputs for variable substitution in future commands
-        store_command_output "$command_name" "deals_count" "$deals_count"
+        store_command_output "$command_name" "obligations_count" "$obligations_count"
         store_command_output "$command_name" "timestamp" "$timestamp"
-        store_command_output "$command_name" "deals_json" "$(echo "$http_response" | jq -c '.deals // []')"
+        store_command_output "$command_name" "obligations_json" "$(echo "$http_response" | jq -c '.obligations // []')"
         
-        echo_with_color $GREEN "    ✅ Deals retrieved successfully!"
+        echo_with_color $GREEN "    ✅ Obligations retrieved successfully!"
         
-        echo_with_color $BLUE "  📋 Deals Information:"
-        echo_with_color $BLUE "      Total Deals: $deals_count"
+        echo_with_color $BLUE "  📋 Obligations Information:"
+        echo_with_color $BLUE "      Total Obligations: $obligations_count"
         echo_with_color $BLUE "      Timestamp: $timestamp"
         
-        # Display deals if they exist
-        if [[ "$deals_count" -gt 0 ]]; then
-            echo_with_color $YELLOW "  🤝 Deals Details:"
-            echo "$http_response" | jq '.deals[]' 2>/dev/null | sed 's/^/      /'
+        # Display obligations if they exist
+        if [[ "$obligations_count" -gt 0 ]]; then
+            echo_with_color $YELLOW "  🤝 Obligations Details:"
+            echo "$http_response" | jq '.obligations[]' 2>/dev/null | sed 's/^/      /'
         else
-            echo_with_color $YELLOW "  📭 No deals found for this user"
+            echo_with_color $YELLOW "  📭 No obligations found for this user"
         fi
         
         echo_with_color $CYAN "      📝 Stored outputs for variable substitution:"
-        echo_with_color $CYAN "        ${command_name}_deals_count, ${command_name}_timestamp, ${command_name}_deals_json"
+        echo_with_color $CYAN "        ${command_name}_obligations_count, ${command_name}_timestamp, ${command_name}_obligations_json"
         return 0
     else
         local error_message=$(echo "$http_response" | jq -r '.error // "Unknown error"')
-        echo_with_color $RED "    ❌ Deals retrieval failed: $error_message"
+        echo_with_color $RED "    ❌ Obligations retrieval failed: $error_message"
         echo_with_color $BLUE "      Full response: $http_response"
         return 1
     fi
 }
 
-# Function to execute create deal command using GraphQL
-execute_create_deal() {
+# Function to execute create obligation command using GraphQL
+execute_create_obligation() {
     local command_name="$1"
     local user_email="$2"
     local user_password="$3"
     local counterpart="$4"
-    local deal_address="$5"
-    local deal_group_id="$6"
+    local obligation_address="$5"
+    local obligation_group_id="$6"
     local denomination="$7"
     local obligor="$8"
     local notional="$9"
@@ -1268,7 +1268,7 @@ execute_create_deal() {
     local idempotency_key="${14}"
     local group_name="${15}"  # Optional group name for delegation
     
-    echo_with_color $CYAN "🤝 Executing create deal command via GraphQL: $command_name"
+    echo_with_color $CYAN "🤝 Executing create obligation command via GraphQL: $command_name"
     
     # Login to get JWT token (with optional group delegation)
     local jwt_token=$(login_user "$user_email" "$user_password" "$group_name")
@@ -1280,21 +1280,21 @@ execute_create_deal() {
     if [[ -n "$group_name" ]]; then
         echo_with_color $CYAN "  🏢 Using delegation JWT for group: $group_name"
     fi
-    echo_with_color $BLUE "  📤 Sending GraphQL create deal mutation..."
+    echo_with_color $BLUE "  📤 Sending GraphQL create obligation mutation..."
     
     # Prepare GraphQL mutation with required fields
     local graphql_mutation
     local graphql_variables=""
     local input_params="counterpart: \\\"$counterpart\\\", denomination: \\\"$denomination\\\""
     
-    # Add optional deal_address if provided (and not "null")
-    if [[ -n "$deal_address" && "$deal_address" != "null" ]]; then
-        input_params="$input_params, dealAddress: \\\"$deal_address\\\""
+    # Add optional obligation_address if provided (and not "null")
+    if [[ -n "$obligation_address" && "$obligation_address" != "null" ]]; then
+        input_params="$input_params, obligationAddress: \\\"$obligation_address\\\""
     fi
     
-    # Add optional deal_group_id if provided (and not "null")
-    if [[ -n "$deal_group_id" && "$deal_group_id" != "null" ]]; then
-        input_params="$input_params, dealGroupId: \\\"$deal_group_id\\\""
+    # Add optional obligation_group_id if provided (and not "null")
+    if [[ -n "$obligation_group_id" && "$obligation_group_id" != "null" ]]; then
+        input_params="$input_params, obligationGroupId: \\\"$obligation_group_id\\\""
     fi
     
     # Add optional fields if provided (and not "null")
@@ -1353,17 +1353,17 @@ execute_create_deal() {
     if [[ -n "$graphql_variables" ]]; then
         # Check if we have both data and initialPayments variables
         if echo "$graphql_variables" | grep -q "initialPayments" && echo "$graphql_variables" | grep -q "data"; then
-            graphql_mutation="mutation(\$initialPayments: InitialPaymentsInput, \$data: JSON) { createDeal(input: { $input_params }) { success message accountAddress dealResult messageId contractId transactionId signature timestamp idHash } }"
+            graphql_mutation="mutation(\$initialPayments: InitialPaymentsInput, \$data: JSON) { createObligation(input: { $input_params }) { success message accountAddress obligationResult messageId contractId transactionId signature timestamp idHash } }"
         elif echo "$graphql_variables" | grep -q "initialPayments"; then
-            graphql_mutation="mutation(\$initialPayments: InitialPaymentsInput) { createDeal(input: { $input_params }) { success message accountAddress dealResult messageId contractId transactionId signature timestamp idHash } }"
+            graphql_mutation="mutation(\$initialPayments: InitialPaymentsInput) { createObligation(input: { $input_params }) { success message accountAddress obligationResult messageId contractId transactionId signature timestamp idHash } }"
         elif echo "$graphql_variables" | grep -q "data"; then
-            graphql_mutation="mutation(\$data: JSON) { createDeal(input: { $input_params }) { success message accountAddress dealResult messageId contractId transactionId signature timestamp idHash } }"
+            graphql_mutation="mutation(\$data: JSON) { createObligation(input: { $input_params }) { success message accountAddress obligationResult messageId contractId transactionId signature timestamp idHash } }"
         else
-            graphql_mutation="mutation { createDeal(input: { $input_params }) { success message accountAddress dealResult messageId contractId transactionId signature timestamp idHash } }"
+            graphql_mutation="mutation { createObligation(input: { $input_params }) { success message accountAddress obligationResult messageId contractId transactionId signature timestamp idHash } }"
         fi
         local graphql_payload="{\"query\": \"$graphql_mutation\", \"variables\": {$graphql_variables}}"
     else
-        graphql_mutation="mutation { createDeal(input: { $input_params }) { success message accountAddress dealResult messageId contractId transactionId signature timestamp idHash } }"
+        graphql_mutation="mutation { createObligation(input: { $input_params }) { success message accountAddress obligationResult messageId contractId transactionId signature timestamp idHash } }"
         local graphql_payload="{\"query\": \"$graphql_mutation\"}"
     fi
     
@@ -1380,22 +1380,22 @@ execute_create_deal() {
     echo_with_color $BLUE "  📡 Raw GraphQL response: '$http_response'"
     
     # Parse GraphQL response
-    local success=$(echo "$http_response" | jq -r '.data.createDeal.success // empty')
+    local success=$(echo "$http_response" | jq -r '.data.createObligation.success // empty')
     if [[ "$success" == "true" ]]; then
-        local account_address=$(echo "$http_response" | jq -r '.data.createDeal.accountAddress // empty')
-        local message=$(echo "$http_response" | jq -r '.data.createDeal.message // empty')
-        local deal_result=$(echo "$http_response" | jq -r '.data.createDeal.dealResult // empty')
-        local message_id=$(echo "$http_response" | jq -r '.data.createDeal.messageId // empty')
-        local contract_id=$(echo "$http_response" | jq -r '.data.createDeal.contractId // empty')
-        local transaction_id=$(echo "$http_response" | jq -r '.data.createDeal.transactionId // empty')
-        local signature=$(echo "$http_response" | jq -r '.data.createDeal.signature // empty')
-        local timestamp=$(echo "$http_response" | jq -r '.data.createDeal.timestamp // empty')
-        local id_hash=$(echo "$http_response" | jq -r '.data.createDeal.idHash // empty')
+        local account_address=$(echo "$http_response" | jq -r '.data.createObligation.accountAddress // empty')
+        local message=$(echo "$http_response" | jq -r '.data.createObligation.message // empty')
+        local obligation_result=$(echo "$http_response" | jq -r '.data.createObligation.obligationResult // empty')
+        local message_id=$(echo "$http_response" | jq -r '.data.createObligation.messageId // empty')
+        local contract_id=$(echo "$http_response" | jq -r '.data.createObligation.contractId // empty')
+        local transaction_id=$(echo "$http_response" | jq -r '.data.createObligation.transactionId // empty')
+        local signature=$(echo "$http_response" | jq -r '.data.createObligation.signature // empty')
+        local timestamp=$(echo "$http_response" | jq -r '.data.createObligation.timestamp // empty')
+        local id_hash=$(echo "$http_response" | jq -r '.data.createObligation.idHash // empty')
         
         # Store outputs for variable substitution in future commands
         store_command_output "$command_name" "account_address" "$account_address"
         store_command_output "$command_name" "message" "$message"
-        store_command_output "$command_name" "deal_result" "$deal_result"
+        store_command_output "$command_name" "obligation_result" "$obligation_result"
         store_command_output "$command_name" "message_id" "$message_id"
         store_command_output "$command_name" "contract_id" "$contract_id"
         store_command_output "$command_name" "transaction_id" "$transaction_id"
@@ -1403,22 +1403,22 @@ execute_create_deal() {
         store_command_output "$command_name" "timestamp" "$timestamp"
         store_command_output "$command_name" "id_hash" "$id_hash"
         
-        echo_with_color $GREEN "    ✅ Create deal successful!"
+        echo_with_color $GREEN "    ✅ Create obligation successful!"
         echo_with_color $BLUE "      Account: $account_address"
         echo_with_color $BLUE "      Contract ID: $contract_id"
         echo_with_color $BLUE "      Transaction ID: $transaction_id"
         echo_with_color $BLUE "      Message: $message"
         echo_with_color $BLUE "      Message ID: $message_id"
-        echo_with_color $BLUE "      Deal Result: $deal_result"
+        echo_with_color $BLUE "      Obligation Result: $obligation_result"
         if [[ -n "$id_hash" ]]; then
             echo_with_color $CYAN "      ID Hash: $id_hash"
         fi
         echo_with_color $CYAN "      📝 Stored outputs for variable substitution:"
-        echo_with_color $CYAN "        ${command_name}_account_address, ${command_name}_message, ${command_name}_deal_result, ${command_name}_message_id, ${command_name}_contract_id, ${command_name}_transaction_id, ${command_name}_signature, ${command_name}_timestamp, ${command_name}_id_hash"
+        echo_with_color $CYAN "        ${command_name}_account_address, ${command_name}_message, ${command_name}_obligation_result, ${command_name}_message_id, ${command_name}_contract_id, ${command_name}_transaction_id, ${command_name}_signature, ${command_name}_timestamp, ${command_name}_id_hash"
         return 0
     else
         local error_message=$(echo "$http_response" | jq -r '.errors[0].message // "Unknown error"')
-        echo_with_color $RED "    ❌ Create deal failed: $error_message"
+        echo_with_color $RED "    ❌ Create obligation failed: $error_message"
         echo_with_color $BLUE "      Full response: $http_response"
         return 1
     fi
@@ -1448,17 +1448,17 @@ execute_command() {
     local obligor=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.obligor")
     local group_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.group_id")
     
-    # Parse create_deal specific parameters
+    # Parse create_obligation specific parameters
     local counterpart=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.counterpart")
-    local deal_address=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.deal_address")
-    local deal_group_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.deal_group_id")
+    local obligation_address=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.obligation_address")
+    local obligation_group_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.obligation_group_id")
     local notional=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.notional")
     local expiry=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.expiry")
     local data=$(yq eval -o json -I 0 ".commands[$command_index].parameters.data" "$COMMANDS_FILE" 2>/dev/null || echo "null")
     local initial_payments_amount=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.initial_payments.amount")
     local initial_payments_json=$(yq eval -o json -I 0 ".commands[$command_index].parameters.initial_payments.payments" "$COMMANDS_FILE" 2>/dev/null || echo "[]")
     
-    # Parse accept_deal specific parameters
+    # Parse accept_obligation specific parameters
     local contract_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.contract_id")
     
     # Parse treasury specific parameters
@@ -1475,16 +1475,16 @@ execute_command() {
     group_id=$(substitute_variables "$group_id")
     group_name=$(substitute_variables "$group_name")
     
-    # Apply variable substitution to create_deal specific parameters
+    # Apply variable substitution to create_obligation specific parameters
     counterpart=$(substitute_variables "$counterpart")
-    deal_address=$(substitute_variables "$deal_address")
-    deal_group_id=$(substitute_variables "$deal_group_id")
+    obligation_address=$(substitute_variables "$obligation_address")
+    obligation_group_id=$(substitute_variables "$obligation_group_id")
     notional=$(substitute_variables "$notional")
     expiry=$(substitute_variables "$expiry")
     data=$(substitute_variables "$data")
     initial_payments_amount=$(substitute_variables "$initial_payments_amount")
     
-    # Apply variable substitution to accept_deal specific parameters
+    # Apply variable substitution to accept_obligation specific parameters
     contract_id=$(substitute_variables "$contract_id")
     
     # Apply variable substitution to treasury specific parameters
@@ -1504,16 +1504,16 @@ execute_command() {
     if [[ -n "$obligor" ]]; then echo_with_color $BLUE "    obligor: $obligor"; fi
     if [[ -n "$group_id" ]]; then echo_with_color $BLUE "    group_id: $group_id"; fi
     
-    # Display create_deal specific parameters
+    # Display create_obligation specific parameters
     if [[ -n "$counterpart" ]]; then echo_with_color $BLUE "    counterpart: $counterpart"; fi
-    if [[ -n "$deal_address" && "$deal_address" != "null" ]]; then echo_with_color $BLUE "    deal_address: $deal_address"; fi
-    if [[ -n "$deal_group_id" && "$deal_group_id" != "null" ]]; then echo_with_color $BLUE "    deal_group_id: $deal_group_id"; fi
+    if [[ -n "$obligation_address" && "$obligation_address" != "null" ]]; then echo_with_color $BLUE "    obligation_address: $obligation_address"; fi
+    if [[ -n "$obligation_group_id" && "$obligation_group_id" != "null" ]]; then echo_with_color $BLUE "    obligation_group_id: $obligation_group_id"; fi
     if [[ -n "$notional" && "$notional" != "null" ]]; then echo_with_color $BLUE "    notional: $notional"; fi
     if [[ -n "$expiry" && "$expiry" != "null" ]]; then echo_with_color $BLUE "    expiry: $expiry"; fi
     if [[ -n "$data" && "$data" != "null" ]]; then echo_with_color $BLUE "    data: $data"; fi
     if [[ -n "$initial_payments_amount" ]]; then echo_with_color $BLUE "    initial_payments_amount: $initial_payments_amount"; fi
     
-    # Display accept_deal specific parameters
+    # Display accept_obligation specific parameters
     if [[ -n "$contract_id" ]]; then echo_with_color $BLUE "    contract_id: $contract_id"; fi
     
     # Display treasury specific parameters
@@ -1533,14 +1533,14 @@ execute_command() {
         "balance")
             execute_balance "$command_name" "$user_email" "$user_password" "$denomination" "$obligor" "$group_id" "$group_name"
             ;;
-        "create_deal")
-            execute_create_deal_ergonomic "$command_name" "$user_email" "$user_password" "$counterpart" "$deal_address" "$deal_group_id" "$denomination" "$obligor" "$notional" "$expiry" "$data" "$initial_payments_amount" "$initial_payments_json" "$idempotency_key" "$group_name"
+        "create_obligation")
+            execute_create_obligation_ergonomic "$command_name" "$user_email" "$user_password" "$counterpart" "$obligation_address" "$obligation_group_id" "$denomination" "$obligor" "$notional" "$expiry" "$data" "$initial_payments_amount" "$initial_payments_json" "$idempotency_key" "$group_name"
             ;;
-        "accept_deal")
-            execute_accept_deal "$command_name" "$user_email" "$user_password" "$contract_id" "$idempotency_key" "$group_name"
+        "accept_obligation")
+            execute_accept_obligation "$command_name" "$user_email" "$user_password" "$contract_id" "$idempotency_key" "$group_name"
             ;;
-        "deals")
-            execute_deals "$command_name" "$user_email" "$user_password" "$group_name"
+        "obligations")
+            execute_obligations "$command_name" "$user_email" "$user_password" "$group_name"
             ;;
         "total_supply")
             execute_total_supply "$command_name" "$user_email" "$user_password" "$denomination" "$group_name"
@@ -1672,10 +1672,10 @@ validate_commands_file() {
                     return 1
                 fi
                 ;;
-            "create_deal")
+            "create_obligation")
                 local counterpart=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.counterpart")
-                local deal_address=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.deal_address")
-                local deal_group_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.deal_group_id")
+                local obligation_address=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.obligation_address")
+                local obligation_group_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.obligation_group_id")
                 local denomination=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.denomination")
                 
                 if [[ -z "$counterpart" ]]; then
@@ -1683,14 +1683,14 @@ validate_commands_file() {
                     return 1
                 fi
                 
-                # deal_address and deal_group_id are now optional - no validation needed
+                # obligation_address and obligation_group_id are now optional - no validation needed
                 
                 if [[ -z "$denomination" ]]; then
                     echo_with_color $RED "Error: Command '$command_name' missing 'parameters.denomination' field"
                     return 1
                 fi
                 ;;
-            "accept_deal")
+            "accept_obligation")
                 local contract_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.contract_id")
                 
                 if [[ -z "$contract_id" ]]; then
@@ -1698,9 +1698,9 @@ validate_commands_file() {
                     return 1
                 fi
                 ;;
-            "deals")
-                # Deals command doesn't require any specific parameters
-                # It will list all deals for the authenticated user
+            "obligations")
+                # Obligations command doesn't require any specific parameters
+                # It will list all obligations for the authenticated user
                 ;;
             "total_supply")
                 local denomination=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.denomination")
@@ -1752,7 +1752,7 @@ validate_commands_file() {
                 ;;
             *)
                 echo_with_color $RED "Error: Command '$command_name' has unsupported type: '$command_type'"
-                echo_with_color $YELLOW "Supported types: deposit, instant, accept, balance, create_deal, accept_deal, deals, total_supply, mint, burn"
+                echo_with_color $YELLOW "Supported types: deposit, instant, accept, balance, create_obligation, accept_obligation, obligations, total_supply, mint, burn"
                 return 1
                 ;;
         esac
@@ -1949,16 +1949,16 @@ show_help() {
     echo "  • instantSend: Sends instant payments via GraphQL"
     echo "  • accept: Accepts payments using id_hash via GraphQL"
     echo "  • balance: Retrieves balance information via REST API"
-    echo "  • createDeal: Creates deals via GraphQL"
-    echo "  • acceptDeal: Accepts deals using contract_id via GraphQL"
-    echo "  • deals: Lists all deals for a user via REST API"
+    echo "  • createObligation: Creates obligations via GraphQL"
+    echo "  • acceptObligation: Accepts obligations using contract_id via GraphQL"
+    echo "  • obligations: Lists all obligations for a user via REST API"
     echo "  • total_supply: Gets total supply of a treasury token via REST API"
     echo "  • mint: Mints new treasury tokens via REST API"
     echo "  • burn: Burns treasury tokens via REST API"
     echo ""
     echo "Commands.yaml Structure:"
     echo "  • commands: array of commands with type, user, and parameters"
-    echo "  • Supported command types: deposit, instant, accept, balance, create_deal, accept_deal, deals, total_supply, mint, burn"
+    echo "  • Supported command types: deposit, instant, accept, balance, create_obligation, accept_obligation, obligations, total_supply, mint, burn"
     echo "  • Each command must have user.id, user.password, and parameters"
     echo "  • Variables can be referenced using: \$command_name.field_name"
     echo ""
@@ -1972,8 +1972,8 @@ show_help() {
     echo "  • denomination: \$issuer_balance.denomination # Use denomination from 'issuer_balance' command"
     echo "  • locked_out: \$issuer_balance.locked_out # Use locked_out transactions from 'issuer_balance' command"
     echo "  • locked_in: \$issuer_balance.locked_in # Use locked_in transactions from 'issuer_balance' command"
-    echo "  • deals_count: \$admin2_balance_2.deals_count # Use deals count from 'admin2_balance_2' command"
-    echo "  • deals_json: \$admin2_balance_2.deals_json # Use deals JSON from 'admin2_balance_2' command"
+    echo "  • obligations_count: \$admin2_balance_2.obligations_count # Use obligations count from 'admin2_balance_2' command"
+    echo "  • obligations_json: \$admin2_balance_2.obligations_json # Use obligations JSON from 'admin2_balance_2' command"
     echo "  • total_supply: \$total_supply_1.total_supply # Use total supply from 'total_supply_1' command"
     echo "  • treasury_address: \$total_supply_1.treasury_address # Use treasury address from 'total_supply_1' command"
     echo "  • mint_amount: \$mint_1.amount # Use amount from 'mint_1' command"

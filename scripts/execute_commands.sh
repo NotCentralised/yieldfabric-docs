@@ -58,17 +58,17 @@ execute_command() {
     fi
     local group_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.group_id")
     
-    # Parse create_deal specific parameters
+    # Parse create_obligation specific parameters
     local counterpart=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.counterpart")
-    local deal_address=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.deal_address")
-    local deal_group_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.deal_group_id")
+    local obligation_address=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.obligation_address")
+    local obligation_group_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.obligation_group_id")
     local notional=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.notional")
     local expiry=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.expiry")
     local data=$(yq eval -o json -I 0 ".commands[$command_index].parameters.data" "$COMMANDS_FILE" 2>/dev/null || echo "null")
     local initial_payments_amount=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.initial_payments.amount")
     local initial_payments_json=$(yq eval -o json -I 0 ".commands[$command_index].parameters.initial_payments.payments" "$COMMANDS_FILE" 2>/dev/null || echo "[]")
     
-    # Parse accept_deal specific parameters
+    # Parse accept_obligation specific parameters
     local contract_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.contract_id")
     
     # Parse treasury specific parameters
@@ -77,7 +77,7 @@ execute_command() {
     # Parse swap specific parameters
     local swap_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.swap_id")
     local counterparty=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.counterparty")
-    local deal_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.deal_id")
+    local obligation_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.obligation_id")
     local deadline=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.deadline")
     local expected_payments_amount=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.expected_payments.amount")
     local expected_payments_denomination=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.expected_payments.denomination")
@@ -103,16 +103,16 @@ execute_command() {
     group_id=$(substitute_variables "$group_id")
     group_name=$(substitute_variables "$group_name")
     
-    # Apply variable substitution to create_deal specific parameters
+    # Apply variable substitution to create_obligation specific parameters
     counterpart=$(substitute_variables "$counterpart")
-    deal_address=$(substitute_variables "$deal_address")
-    deal_group_id=$(substitute_variables "$deal_group_id")
+    obligation_address=$(substitute_variables "$obligation_address")
+    obligation_group_id=$(substitute_variables "$obligation_group_id")
     notional=$(substitute_variables "$notional")
     expiry=$(substitute_variables "$expiry")
     data=$(substitute_variables "$data")
     initial_payments_amount=$(substitute_variables "$initial_payments_amount")
     
-    # Apply variable substitution to accept_deal specific parameters
+    # Apply variable substitution to accept_obligation specific parameters
     contract_id=$(substitute_variables "$contract_id")
     
     # Apply variable substitution to treasury specific parameters
@@ -121,7 +121,7 @@ execute_command() {
     # Apply variable substitution to swap specific parameters
     swap_id=$(substitute_variables "$swap_id")
     counterparty=$(substitute_variables "$counterparty")
-    deal_id=$(substitute_variables "$deal_id")
+    obligation_id=$(substitute_variables "$obligation_id")
     deadline=$(substitute_variables "$deadline")
     expected_payments_amount=$(substitute_variables "$expected_payments_amount")
     expected_payments_denomination=$(substitute_variables "$expected_payments_denomination")
@@ -148,16 +148,16 @@ execute_command() {
     if [[ -n "$obligor" ]]; then echo_with_color $BLUE "    obligor: $obligor"; fi
     if [[ -n "$group_id" ]]; then echo_with_color $BLUE "    group_id: $group_id"; fi
     
-    # Display create_deal specific parameters
+    # Display create_obligation specific parameters
     if [[ -n "$counterpart" ]]; then echo_with_color $BLUE "    counterpart: $counterpart"; fi
-    if [[ -n "$deal_address" && "$deal_address" != "null" ]]; then echo_with_color $BLUE "    deal_address: $deal_address"; fi
-    if [[ -n "$deal_group_id" && "$deal_group_id" != "null" ]]; then echo_with_color $BLUE "    deal_group_id: $deal_group_id"; fi
+    if [[ -n "$obligation_address" && "$obligation_address" != "null" ]]; then echo_with_color $BLUE "    obligation_address: $obligation_address"; fi
+    if [[ -n "$obligation_group_id" && "$obligation_group_id" != "null" ]]; then echo_with_color $BLUE "    obligation_group_id: $obligation_group_id"; fi
     if [[ -n "$notional" && "$notional" != "null" ]]; then echo_with_color $BLUE "    notional: $notional"; fi
     if [[ -n "$expiry" && "$expiry" != "null" ]]; then echo_with_color $BLUE "    expiry: $expiry"; fi
     if [[ -n "$data" && "$data" != "null" ]]; then echo_with_color $BLUE "    data: $data"; fi
     if [[ -n "$initial_payments_amount" ]]; then echo_with_color $BLUE "    initial_payments_amount: $initial_payments_amount"; fi
     
-    # Display accept_deal specific parameters
+    # Display accept_obligation specific parameters
     if [[ -n "$contract_id" ]]; then echo_with_color $BLUE "    contract_id: $contract_id"; fi
     
     # Display treasury specific parameters
@@ -166,7 +166,7 @@ execute_command() {
     # Display swap specific parameters
     if [[ -n "$swap_id" ]]; then echo_with_color $BLUE "    swap_id: $swap_id"; fi
     if [[ -n "$counterparty" ]]; then echo_with_color $BLUE "    counterparty: $counterparty"; fi
-    if [[ -n "$deal_id" ]]; then echo_with_color $BLUE "    deal_id: $deal_id"; fi
+    if [[ -n "$obligation_id" ]]; then echo_with_color $BLUE "    obligation_id: $obligation_id"; fi
     if [[ -n "$deadline" ]]; then echo_with_color $BLUE "    deadline: $deadline"; fi
     if [[ -n "$expected_payments_amount" ]]; then echo_with_color $BLUE "    expected_payments_amount: $expected_payments_amount"; fi
     if [[ -n "$expected_payments_denomination" ]]; then echo_with_color $BLUE "    expected_payments_denomination: $expected_payments_denomination"; fi
@@ -193,14 +193,14 @@ execute_command() {
         "balance")
             execute_balance "$command_name" "$user_email" "$user_password" "$denomination" "$obligor" "$group_id" "$group_name"
             ;;
-        "create_deal")
-            execute_create_deal_ergonomic "$command_name" "$user_email" "$user_password" "$counterpart" "$deal_address" "$deal_group_id" "$denomination" "$obligor" "$notional" "$expiry" "$data" "$initial_payments_amount" "$initial_payments_json" "$idempotency_key" "$group_name"
+        "create_obligation")
+            execute_create_obligation_ergonomic "$command_name" "$user_email" "$user_password" "$counterpart" "$obligation_address" "$obligation_group_id" "$denomination" "$obligor" "$notional" "$expiry" "$data" "$initial_payments_amount" "$initial_payments_json" "$idempotency_key" "$group_name"
             ;;
-        "accept_deal")
-            execute_accept_deal "$command_name" "$user_email" "$user_password" "$contract_id" "$idempotency_key" "$group_name"
+        "accept_obligation")
+            execute_accept_obligation "$command_name" "$user_email" "$user_password" "$contract_id" "$idempotency_key" "$group_name"
             ;;
-        "deals")
-            execute_deals "$command_name" "$user_email" "$user_password" "$group_name"
+        "obligations")
+            execute_obligations "$command_name" "$user_email" "$user_password" "$group_name"
             ;;
         "total_supply")
             execute_total_supply "$command_name" "$user_email" "$user_password" "$denomination" "$group_name"
@@ -211,8 +211,8 @@ execute_command() {
         "burn")
             execute_burn "$command_name" "$user_email" "$user_password" "$denomination" "$amount" "$policy_secret" "$group_name"
             ;;
-        "create_deal_swap")
-            execute_create_deal_swap "$command_name" "$user_email" "$user_password" "$swap_id" "$counterparty" "$deal_id" "$deadline" "$expected_payments_amount" "$expected_payments_denomination" "$expected_payments_obligor" "$expected_payments_json" "$idempotency_key" "$group_name"
+        "create_obligation_swap")
+            execute_create_obligation_swap "$command_name" "$user_email" "$user_password" "$swap_id" "$counterparty" "$obligation_id" "$deadline" "$expected_payments_amount" "$expected_payments_denomination" "$expected_payments_obligor" "$expected_payments_json" "$idempotency_key" "$group_name"
             ;;
         "create_payment_swap")
             execute_create_payment_swap "$command_name" "$user_email" "$user_password" "$swap_id" "$counterparty" "$deadline" "$initial_payments_amount" "$initial_payments_denomination" "$initial_payments_obligor" "$initial_payments_json" "$expected_payments_amount" "$expected_payments_denomination" "$expected_payments_obligor" "$expected_payments_json" "$idempotency_key" "$group_name"

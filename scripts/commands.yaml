@@ -125,21 +125,21 @@ commands:
 
 
   
-  - name: admin2_create_deal_1
-    type: create_deal
+  - name: admin2_create_obligation_1
+    type: create_obligation
     user: 
       id: admin2@yieldfabric.com
       password: testpass123
       group: Admin Group
     parameters:
-      idempotency_key: create_deal-1
+      idempotency_key: create_obligation-1
       counterpart: issuer@yieldfabric.com
       denomination: aud-token-asset
       notional: 10 
       expiry: 2025-10-10
       data: 
-        name: "Test Deal"
-        description: "Test Deal Description"
+        name: "Test Obligation"
+        description: "Test Obligation Description"
       initial_payments:
         amount: 10
         payments:
@@ -161,35 +161,35 @@ commands:
               unlock: 2025-12-31 #unlock_receiver
             
 
-  - name: issuer_accept_deal_1
-    type: accept_deal
+  - name: issuer_accept_obligation_1
+    type: accept_obligation
     user: 
       id: issuer@yieldfabric.com
       password: issuerpass456
       # group: Admin Group
     parameters:
-      idempotency_key: accept_deal-1
-      contract_id: $admin2_create_deal_1.contract_id
+      idempotency_key: accept_obligation-1
+      contract_id: $admin2_create_obligation_1.contract_id
 
 
 
   
-  - name: admin2_create_deal_2
-    type: create_deal
+  - name: admin2_create_obligation_2
+    type: create_obligation
     user: 
       id: admin2@yieldfabric.com
       password: testpass123
       group: Admin Group
     parameters:
-      idempotency_key: create_deal-2
+      idempotency_key: create_obligation-2
       counterpart: issuer@yieldfabric.com
       denomination: aud-token-asset
       # obligor: "0x1ACcBD355245AbA93CE46D33ab1D0152CE33Fd00"
       notional: 10 
       expiry: 2025-10-10
       data: 
-        name: "Test Deal"
-        description: "Test Deal Description"
+        name: "Test Obligation"
+        description: "Test Obligation Description"
       initial_payments:
         amount: 10
         payments:
@@ -211,36 +211,36 @@ commands:
               unlock: 2025-12-31 #unlock_receiver
             
 
-  - name: issuer_accept_deal_2
-    type: accept_deal
+  - name: issuer_accept_obligation_2
+    type: accept_obligation
     user: 
       id: issuer@yieldfabric.com
       password: issuerpass456
       # group: Admin Group
     parameters:
-      idempotency_key: accept_deal-2
-      contract_id: $admin2_create_deal_2.contract_id
+      idempotency_key: accept_obligation-2
+      contract_id: $admin2_create_obligation_2.contract_id
 
 
 
 
 
-  - name: admin2_create_deal_obligor_1
-    type: create_deal
+  - name: admin2_create_obligation_obligor_1
+    type: create_obligation
     user: 
       id: admin2@yieldfabric.com
       password: testpass123
       group: Admin Group
     parameters:
-      idempotency_key: create_deal-obligor-1
+      idempotency_key: create_obligation-obligor-1
       counterpart: issuer@yieldfabric.com
       denomination: aud-token-asset
       obligor:  issuer@yieldfabric.com
       notional: 5 
       expiry: 2025-10-10
       data: 
-        name: "Test Deal"
-        description: "Test Deal Description"
+        name: "Test Obligation"
+        description: "Test Obligation Description"
       initial_payments:
         amount: 5
         payments:
@@ -262,35 +262,35 @@ commands:
               unlock: 2025-12-31 #unlock_receiver
             
 
-  - name: issuer_accept_deal_obligor_1
-    type: accept_deal
+  - name: issuer_accept_obligation_obligor_1
+    type: accept_obligation
     user: 
       id: issuer@yieldfabric.com
       password: issuerpass456
       # group: Admin Group
     parameters:
-      idempotency_key: accept_deal-obligor-1
-      contract_id: $admin2_create_deal_obligor_1.contract_id
+      idempotency_key: accept_obligation-obligor-1
+      contract_id: $admin2_create_obligation_obligor_1.contract_id
 
 
 
   
-  - name: admin2_create_deal_obligor_2
-    type: create_deal
+  - name: admin2_create_obligation_obligor_2
+    type: create_obligation
     user: 
       id: admin2@yieldfabric.com
       password: testpass123
       group: Admin Group
     parameters:
-      idempotency_key: create_deal-obligor-2
+      idempotency_key: create_obligation-obligor-2
       counterpart: issuer@yieldfabric.com
       denomination: aud-token-asset
       obligor:  issuer@yieldfabric.com
       notional: 5 
       expiry: 2025-10-10
       data: 
-        name: "Test Deal"
-        description: "Test Deal Description"
+        name: "Test Obligation"
+        description: "Test Obligation Description"
       initial_payments:
         amount: 5
         payments:
@@ -312,15 +312,15 @@ commands:
               unlock: 2025-12-31 #unlock_receiver
             
 
-  - name: issuer_accept_deal_obligor_2
-    type: accept_deal
+  - name: issuer_accept_obligation_obligor_2
+    type: accept_obligation
     user: 
       id: issuer@yieldfabric.com
       password: issuerpass456
       # group: Admin Group
     parameters:
-      idempotency_key: accept_deal-obligor-2
-      contract_id: $admin2_create_deal_obligor_2.contract_id
+      idempotency_key: accept_obligation-obligor-2
+      contract_id: $admin2_create_obligation_obligor_2.contract_id
 
 
 
@@ -350,8 +350,8 @@ commands:
 
   
   
-  - name: admin2_deals
-    type: deals
+  - name: admin2_obligations
+    type: obligations
     user: 
       id: admin2@yieldfabric.com
       password: testpass123

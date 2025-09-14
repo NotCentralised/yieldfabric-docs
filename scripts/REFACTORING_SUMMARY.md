@@ -11,8 +11,8 @@ The original `execute_commands.sh` script was 2029 lines long and contained all 
 ### Module Files
 - **`utils.sh`** - Common utility functions (colors, YAML parsing, variable substitution)
 - **`auth.sh`** - Authentication and group delegation functions
-- **`executors.sh`** - Core command execution functions (deposit, instant, balance, accept, create_deal)
-- **`executors_additional.sh`** - Additional command execution functions (accept_deal, total_supply, mint, burn, deals)
+- **`executors.sh`** - Core command execution functions (deposit, instant, balance, accept, create_obligation)
+- **`executors_additional.sh`** - Additional command execution functions (accept_obligation, total_supply, mint, burn, obligations)
 - **`validation.sh`** - Command validation and status checking functions
 - **`help.sh`** - Help text and variable display functions
 
@@ -64,14 +64,14 @@ The original `execute_commands.sh` script was 2029 lines long and contained all 
 ### executors.sh (600 lines)
 - Core payment operations (deposit, instant, balance)
 - Payment acceptance
-- Deal creation with complex GraphQL mutations
+- Obligation creation with complex GraphQL mutations
 - Response parsing and variable storage
 
 ### executors_additional.sh (400+ lines)
-- Additional operations (accept_deal, total_supply, mint, burn, deals)
+- Additional operations (accept_obligation, total_supply, mint, burn, obligations)
 - REST API interactions
 - Treasury operations
-- Deal listing
+- Obligation listing
 
 ### validation.sh (200+ lines)
 - YAML file validation

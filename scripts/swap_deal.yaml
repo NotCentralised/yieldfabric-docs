@@ -39,22 +39,22 @@ commands:
       payment_id: $issuer_send_1.payment_id
       
 
-  - name: admin2_create_deal_obligor_1
-    type: create_deal
+  - name: admin2_create_obligation_obligor_1
+    type: create_obligation
     user: 
       id: admin2@yieldfabric.com
       password: testpass123
       group: Admin Group
     parameters:
-      idempotency_key: create_deal-ergonomic-$(date +%s)
+      idempotency_key: create_obligation-ergonomic-$(date +%s)
       counterpart: issuer@yieldfabric.com
       denomination: aud-token-asset
       obligor:  issuer@yieldfabric.com
       notional: 5 
       expiry: 2025-10-10
       data: 
-        name: "Test Deal"
-        description: "Test Deal Description"
+        name: "Test Obligation"
+        description: "Test Obligation Description"
       initial_payments:
         amount: 5
         payments:
@@ -75,18 +75,18 @@ commands:
             payee: #recipient
               unlock: 2025-12-31 #unlock_receiver
 
-  - name: issuer_accept_deal_obligor_1
-    type: accept_deal
+  - name: issuer_accept_obligation_obligor_1
+    type: accept_obligation
     user: 
       id: issuer@yieldfabric.com
       password: issuerpass456
       # group: Admin Group
     parameters:
-      idempotency_key: accept_deal-ergonomic-$(date +%s)
-      contract_id: $admin2_create_deal_obligor_1.contract_id
+      idempotency_key: accept_obligation-ergonomic-$(date +%s)
+      contract_id: $admin2_create_obligation_obligor_1.contract_id
 
-  - name: create_deal_swap-1
-    type: create_deal_swap
+  - name: create_obligation_swap-1
+    type: create_obligation_swap
     user: 
       id: admin2@yieldfabric.com
       password: testpass123
@@ -94,7 +94,7 @@ commands:
     parameters:
       swap_id: "1234567890"
       idempotency_key: swap-ergonomic-$(date +%s)
-      deal_id: $admin2_create_deal_obligor_1.contract_id
+      obligation_id: $admin2_create_obligation_obligor_1.contract_id
       counterparty: counterpart@yieldfabric.com
       deadline: 2025-10-10
       expected_payments:

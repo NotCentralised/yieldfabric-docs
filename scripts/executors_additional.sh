@@ -3,8 +3,8 @@
 # YieldFabric Additional Command Executors Module
 # Contains additional executor functions that were too large for the main executors.sh
 
-# Function to execute accept deal command using GraphQL
-execute_accept_deal() {
+# Function to execute accept obligation command using GraphQL
+execute_accept_obligation() {
     local command_name="$1"
     local user_email="$2"
     local user_password="$3"
@@ -12,7 +12,7 @@ execute_accept_deal() {
     local idempotency_key="$5"
     local group_name="$6"  # Optional group name for delegation
     
-    echo_with_color $CYAN "✅ Executing accept deal command via GraphQL: $command_name"
+    echo_with_color $CYAN "✅ Executing accept obligation command via GraphQL: $command_name"
     
     # Login to get JWT token (with optional group delegation)
     local jwt_token=$(login_user "$user_email" "$user_password" "$group_name")
@@ -24,7 +24,7 @@ execute_accept_deal() {
     if [[ -n "$group_name" ]]; then
         echo_with_color $CYAN "  🏢 Using delegation JWT for group: $group_name"
     fi
-    echo_with_color $BLUE "  📤 Sending GraphQL accept deal mutation..."
+    echo_with_color $BLUE "  📤 Sending GraphQL accept obligation mutation..."
     
     # Prepare GraphQL mutation
     local graphql_mutation
@@ -35,7 +35,7 @@ execute_accept_deal() {
         input_params="$input_params, idempotencyKey: \\\"$idempotency_key\\\""
     fi
     
-    graphql_mutation="mutation { acceptDeal(input: { $input_params }) { success message accountAddress dealId acceptResult messageId transactionId signature timestamp } }"
+    graphql_mutation="mutation { acceptObligation(input: { $input_params }) { success message accountAddress obligationId acceptResult messageId transactionId signature timestamp } }"
     
     local graphql_payload="{\"query\": \"$graphql_mutation\"}"
     
@@ -52,40 +52,40 @@ execute_accept_deal() {
     echo_with_color $BLUE "  📡 Raw GraphQL response: '$http_response'"
     
     # Parse GraphQL response
-    local success=$(echo "$http_response" | jq -r '.data.acceptDeal.success // empty')
+    local success=$(echo "$http_response" | jq -r '.data.acceptObligation.success // empty')
     if [[ "$success" == "true" ]]; then
-        local account_address=$(echo "$http_response" | jq -r '.data.acceptDeal.accountAddress // empty')
-        local message=$(echo "$http_response" | jq -r '.data.acceptDeal.message // empty')
-        local deal_id=$(echo "$http_response" | jq -r '.data.acceptDeal.dealId // empty')
-        local message_id=$(echo "$http_response" | jq -r '.data.acceptDeal.messageId // empty')
-        local transaction_id=$(echo "$http_response" | jq -r '.data.acceptDeal.transactionId // empty')
-        local signature=$(echo "$http_response" | jq -r '.data.acceptDeal.signature // empty')
-        local timestamp=$(echo "$http_response" | jq -r '.data.acceptDeal.timestamp // empty')
-        local accept_result=$(echo "$http_response" | jq -r '.data.acceptDeal.acceptResult // empty')
+        local account_address=$(echo "$http_response" | jq -r '.data.acceptObligation.accountAddress // empty')
+        local message=$(echo "$http_response" | jq -r '.data.acceptObligation.message // empty')
+        local obligation_id=$(echo "$http_response" | jq -r '.data.acceptObligation.obligationId // empty')
+        local message_id=$(echo "$http_response" | jq -r '.data.acceptObligation.messageId // empty')
+        local transaction_id=$(echo "$http_response" | jq -r '.data.acceptObligation.transactionId // empty')
+        local signature=$(echo "$http_response" | jq -r '.data.acceptObligation.signature // empty')
+        local timestamp=$(echo "$http_response" | jq -r '.data.acceptObligation.timestamp // empty')
+        local accept_result=$(echo "$http_response" | jq -r '.data.acceptObligation.acceptResult // empty')
         
         # Store outputs for variable substitution in future commands
         store_command_output "$command_name" "account_address" "$account_address"
         store_command_output "$command_name" "message" "$message"
-        store_command_output "$command_name" "deal_id" "$deal_id"
+        store_command_output "$command_name" "obligation_id" "$obligation_id"
         store_command_output "$command_name" "message_id" "$message_id"
         store_command_output "$command_name" "transaction_id" "$transaction_id"
         store_command_output "$command_name" "signature" "$signature"
         store_command_output "$command_name" "timestamp" "$timestamp"
         store_command_output "$command_name" "accept_result" "$accept_result"
         
-        echo_with_color $GREEN "    ✅ Accept deal successful!"
+        echo_with_color $GREEN "    ✅ Accept obligation successful!"
         echo_with_color $BLUE "      Account: $account_address"
-        echo_with_color $BLUE "      Deal ID: $deal_id"
+        echo_with_color $BLUE "      Obligation ID: $obligation_id"
         echo_with_color $BLUE "      Message: $message"
         echo_with_color $BLUE "      Message ID: $message_id"
         echo_with_color $BLUE "      Transaction ID: $transaction_id"
         echo_with_color $BLUE "      Accept Result: $accept_result"
         echo_with_color $CYAN "      📝 Stored outputs for variable substitution:"
-        echo_with_color $CYAN "        ${command_name}_account_address, ${command_name}_message, ${command_name}_deal_id, ${command_name}_message_id, ${command_name}_transaction_id, ${command_name}_signature, ${command_name}_timestamp, ${command_name}_accept_result"
+        echo_with_color $CYAN "        ${command_name}_account_address, ${command_name}_message, ${command_name}_obligation_id, ${command_name}_message_id, ${command_name}_transaction_id, ${command_name}_signature, ${command_name}_timestamp, ${command_name}_accept_result"
         return 0
     else
         local error_message=$(echo "$http_response" | jq -r '.errors[0].message // "Unknown error"')
-        echo_with_color $RED "    ❌ Accept deal failed: $error_message"
+        echo_with_color $RED "    ❌ Accept obligation failed: $error_message"
         echo_with_color $BLUE "      Full response: $http_response"
         return 1
     fi
@@ -319,14 +319,14 @@ execute_burn() {
     fi
 }
 
-# Function to execute deals command using REST API
-execute_deals() {
+# Function to execute obligations command using REST API
+execute_obligations() {
     local command_name="$1"
     local user_email="$2"
     local user_password="$3"
     local group_name="$4"  # Optional group name for delegation
     
-    echo_with_color $CYAN "🤝 Executing deals command via REST API: $command_name"
+    echo_with_color $CYAN "🤝 Executing obligations command via REST API: $command_name"
     
     # Login to get JWT token (with optional group delegation)
     local jwt_token=$(login_user "$user_email" "$user_password" "$group_name")
@@ -339,11 +339,11 @@ execute_deals() {
     if [[ -n "$group_name" ]]; then
         echo_with_color $CYAN "  🏢 Using delegation JWT for group: $group_name"
     fi
-    echo_with_color $BLUE "  📤 Sending REST API deals request..."
+    echo_with_color $BLUE "  📤 Sending REST API obligations request..."
     
     # Send REST API request to payments service
-    echo_with_color $BLUE "  🌐 Making REST API request to: http://localhost:3002/deals"
-    local http_response=$(curl -s -X GET "http://localhost:3002/deals" \
+    echo_with_color $BLUE "  🌐 Making REST API request to: http://localhost:3002/obligations"
+    local http_response=$(curl -s -X GET "http://localhost:3002/obligations" \
         -H "Authorization: Bearer $jwt_token")
     
     echo_with_color $BLUE "  📡 Raw REST API response: '$http_response'"
@@ -351,47 +351,47 @@ execute_deals() {
     # Parse REST API response
     local status=$(echo "$http_response" | jq -r '.status // empty')
     if [[ "$status" == "success" ]]; then
-        local deals_count=$(echo "$http_response" | jq -r '.deals | length // 0')
+        local obligations_count=$(echo "$http_response" | jq -r '.obligations | length // 0')
         local timestamp=$(echo "$http_response" | jq -r '.timestamp // empty')
         
         # Store outputs for variable substitution in future commands
-        store_command_output "$command_name" "deals_count" "$deals_count"
+        store_command_output "$command_name" "obligations_count" "$obligations_count"
         store_command_output "$command_name" "timestamp" "$timestamp"
-        store_command_output "$command_name" "deals_json" "$(echo "$http_response" | jq -c '.deals // []')"
+        store_command_output "$command_name" "obligations_json" "$(echo "$http_response" | jq -c '.obligations // []')"
         
-        echo_with_color $GREEN "    ✅ Deals retrieved successfully!"
+        echo_with_color $GREEN "    ✅ Obligations retrieved successfully!"
         
-        echo_with_color $BLUE "  📋 Deals Information:"
-        echo_with_color $BLUE "      Total Deals: $deals_count"
+        echo_with_color $BLUE "  📋 Obligations Information:"
+        echo_with_color $BLUE "      Total Obligations: $obligations_count"
         echo_with_color $BLUE "      Timestamp: $timestamp"
         
-        # Display deals if they exist
-        if [[ "$deals_count" -gt 0 ]]; then
-            echo_with_color $YELLOW "  🤝 Deals Details:"
-            echo "$http_response" | jq '.deals[]' 2>/dev/null | sed 's/^/      /'
+        # Display obligations if they exist
+        if [[ "$obligations_count" -gt 0 ]]; then
+            echo_with_color $YELLOW "  🤝 Obligations Details:"
+            echo "$http_response" | jq '.obligations[]' 2>/dev/null | sed 's/^/      /'
         else
-            echo_with_color $YELLOW "  📭 No deals found for this user"
+            echo_with_color $YELLOW "  📭 No obligations found for this user"
         fi
         
         echo_with_color $CYAN "      📝 Stored outputs for variable substitution:"
-        echo_with_color $CYAN "        ${command_name}_deals_count, ${command_name}_timestamp, ${command_name}_deals_json"
+        echo_with_color $CYAN "        ${command_name}_obligations_count, ${command_name}_timestamp, ${command_name}_obligations_json"
         return 0
     else
         local error_message=$(echo "$http_response" | jq -r '.error // "Unknown error"')
-        echo_with_color $RED "    ❌ Deals retrieval failed: $error_message"
+        echo_with_color $RED "    ❌ Obligations retrieval failed: $error_message"
         echo_with_color $BLUE "      Full response: $http_response"
         return 1
     fi
 }
 
-# Function to execute create deal swap command using GraphQL
-execute_create_deal_swap() {
+# Function to execute create obligation swap command using GraphQL
+execute_create_obligation_swap() {
     local command_name="$1"
     local user_email="$2"
     local user_password="$3"
     local swap_id="$4"
     local counterparty="$5"
-    local deal_id="$6"
+    local obligation_id="$6"
     local deadline="$7"
     local expected_payments_amount="$8"
     local expected_payments_denomination="$9"
@@ -400,7 +400,7 @@ execute_create_deal_swap() {
     local idempotency_key="${12}"
     local group_name="${13}"  # Optional group name for delegation
     
-    echo_with_color $CYAN "✅ Executing create deal swap command via GraphQL: $command_name"
+    echo_with_color $CYAN "✅ Executing create obligation swap command via GraphQL: $command_name"
     
     # Login to get JWT token (with optional group delegation)
     local jwt_token=$(login_user "$user_email" "$user_password" "$group_name")
@@ -412,7 +412,7 @@ execute_create_deal_swap() {
     if [[ -n "$group_name" ]]; then
         echo_with_color $CYAN "  🏢 Using delegation JWT for group: $group_name"
     fi
-    echo_with_color $BLUE "  📤 Sending GraphQL create deal swap mutation..."
+    echo_with_color $BLUE "  📤 Sending GraphQL create obligation swap mutation..."
     
     # Debug: Show parsed values
     echo_with_color $PURPLE "  🔍 DEBUG: Parsed values:"
@@ -423,7 +423,7 @@ execute_create_deal_swap() {
     
     # Prepare GraphQL mutation
     local graphql_mutation
-    local input_params="swapId: \\\"$swap_id\\\", counterparty: \\\"$counterparty\\\", dealId: \\\"$deal_id\\\", deadline: \\\"$deadline\\\""
+    local input_params="swapId: \\\"$swap_id\\\", counterparty: \\\"$counterparty\\\", obligationId: \\\"$obligation_id\\\", deadline: \\\"$deadline\\\""
     
     # Add idempotency_key if provided
     if [[ -n "$idempotency_key" ]]; then
@@ -449,7 +449,7 @@ execute_create_deal_swap() {
         input_params="$input_params, $expected_payments_input"
     fi
     
-    graphql_mutation="mutation { createDealSwap(input: { $input_params }) { success message accountAddress swapId counterparty dealId swapResult messageId transactionId signature timestamp } }"
+    graphql_mutation="mutation { createObligationSwap(input: { $input_params }) { success message accountAddress swapId counterparty obligationId swapResult messageId transactionId signature timestamp } }"
     
     local graphql_payload="{\"query\": \"$graphql_mutation\"}"
     
@@ -474,18 +474,18 @@ execute_create_deal_swap() {
     fi
     
     # Parse and display response
-    local success=$(echo "$http_response" | jq -r '.data.createDealSwap.success // false')
-    local message=$(echo "$http_response" | jq -r '.data.createDealSwap.message // "No message"')
-    local swap_id_result=$(echo "$http_response" | jq -r '.data.createDealSwap.swapId // "No swap ID"')
-    local message_id=$(echo "$http_response" | jq -r '.data.createDealSwap.messageId // "No message ID"')
+    local success=$(echo "$http_response" | jq -r '.data.createObligationSwap.success // false')
+    local message=$(echo "$http_response" | jq -r '.data.createObligationSwap.message // "No message"')
+    local swap_id_result=$(echo "$http_response" | jq -r '.data.createObligationSwap.swapId // "No swap ID"')
+    local message_id=$(echo "$http_response" | jq -r '.data.createObligationSwap.messageId // "No message ID"')
     
     if [[ "$success" == "true" ]]; then
-        echo_with_color $GREEN "✅ Create deal swap completed successfully"
+        echo_with_color $GREEN "✅ Create obligation swap completed successfully"
         echo_with_color $BLUE "  📊 Swap ID: $swap_id_result"
         echo_with_color $BLUE "  📊 Message ID: $message_id"
         echo_with_color $BLUE "  📊 Message: $message"
     else
-        echo_with_color $RED "❌ Create deal swap failed"
+        echo_with_color $RED "❌ Create obligation swap failed"
         local error_message=$(echo "$http_response" | jq -r '.errors[0].message // "Unknown error"')
         echo_with_color $RED "  📊 Error: $error_message"
         echo_with_color $BLUE "  📊 Full response: $http_response"
@@ -685,14 +685,14 @@ execute_cancel_swap() {
 }
 
 
-# Function to execute create deal swap command using GraphQL (simplified approach)
-execute_create_deal_swap() {
+# Function to execute create obligation swap command using GraphQL (simplified approach)
+execute_create_obligation_swap() {
     local command_name="$1"
     local user_email="$2"
     local user_password="$3"
     local swap_id="$4"
     local counterparty="$5"
-    local deal_id="$6"
+    local obligation_id="$6"
     local deadline="$7"
     local expected_payments_amount="$8"
     local expected_payments_denomination="$9"
@@ -701,7 +701,7 @@ execute_create_deal_swap() {
     local idempotency_key="${12}"
     local group_name="${13}"
     
-    echo "✅ Executing create deal swap ergonomic command via GraphQL: $command_name"
+    echo "✅ Executing create obligation swap ergonomic command via GraphQL: $command_name"
     
     # Login to get JWT token (with optional group delegation)
     local jwt_token=$(login_user "$user_email" "$user_password" "$group_name")
@@ -718,7 +718,7 @@ execute_create_deal_swap() {
     # Build expected payments input for ergonomic version using GraphQL variables
     local expected_payments_variable=""
     if [[ -n "$expected_payments_amount" && "$expected_payments_amount" != "null" ]]; then
-        # Convert user-friendly payments to VaultPaymentInput format using the same approach as create_deal
+        # Convert user-friendly payments to VaultPaymentInput format using the same approach as create_obligation
         local vault_payments="[]"
         if [[ -n "$expected_payments_json" && "$expected_payments_json" != "null" && "$expected_payments_json" != "{}" ]]; then
             echo "  🔍 DEBUG: expected_payments_json = $expected_payments_json"
@@ -759,13 +759,13 @@ execute_create_deal_swap() {
     variables="\"expectedPayments\": $expected_payments_variable"
 fi
 
-mutation="$mutation { createDealSwap(input: { swapId: \"$swap_id\", counterparty: \"$counterparty\", dealId: \"$deal_id\", deadline: \"$deadline\", idempotencyKey: \"$idempotency_key\""
+mutation="$mutation { createObligationSwap(input: { swapId: \"$swap_id\", counterparty: \"$counterparty\", obligationId: \"$obligation_id\", deadline: \"$deadline\", idempotencyKey: \"$idempotency_key\""
     if [[ -n "$expected_payments_variable" && "$expected_payments_variable" != "null" && "$expected_payments_variable" != "{}" ]]; then
         mutation="$mutation, expectedPayments: \$expectedPayments"
     fi
-    mutation="$mutation }) { success message accountAddress swapId counterparty dealId swapResult messageId transactionId signature timestamp } }"
+    mutation="$mutation }) { success message accountAddress swapId counterparty obligationId swapResult messageId transactionId signature timestamp } }"
     
-    echo "  📤 Sending GraphQL create deal swap ergonomic mutation..."
+    echo "  📤 Sending GraphQL create obligation swap ergonomic mutation..."
     echo "  📋 GraphQL mutation:"
     echo "    $mutation"
     
@@ -796,24 +796,24 @@ mutation="$mutation { createDealSwap(input: { swapId: \"$swap_id\", counterparty
     # Check for errors in response
     local error_message=$(echo "$response" | jq -r ".errors[0].message // empty")
     if [[ -n "$error_message" && "$error_message" != "null" ]]; then
-        echo "❌ Create deal swap failed"
+        echo "❌ Create obligation swap failed"
         echo "  📊 Error: $error_message"
         echo "  📊 Full response: $response"
         return 1
     fi
     
     # Extract success status
-    local success=$(echo "$response" | jq -r ".data.createDealSwap.success // false")
+    local success=$(echo "$response" | jq -r ".data.createObligationSwap.success // false")
     if [[ "$success" == "true" ]]; then
-        echo "✅ Create deal swap successful"
-        local message=$(echo "$response" | jq -r ".data.createDealSwap.message // \"No message\"")
-        local swap_id=$(echo "$response" | jq -r ".data.createDealSwap.swapId // \"No swap ID\"")
-        local message_id=$(echo "$response" | jq -r ".data.createDealSwap.messageId // \"No message ID\"")
+        echo "✅ Create obligation swap successful"
+        local message=$(echo "$response" | jq -r ".data.createObligationSwap.message // \"No message\"")
+        local swap_id=$(echo "$response" | jq -r ".data.createObligationSwap.swapId // \"No swap ID\"")
+        local message_id=$(echo "$response" | jq -r ".data.createObligationSwap.messageId // \"No message ID\"")
         echo "  📊 Message: $message"
         echo "  📊 Swap ID: $swap_id"
         echo "  📊 Message ID: $message_id"
     else
-        echo "❌ Create deal swap failed"
+        echo "❌ Create obligation swap failed"
         echo "  📊 Full response: $response"
         return 1
     fi

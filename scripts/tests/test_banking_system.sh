@@ -260,7 +260,7 @@ case $FLOW in
                   -H "Content-Type: application/json" \
                   -H "Authorization: Bearer $TEST_TOKEN" \
                   -d "{
-                    \"deal_id\": \"$REFERENCE_ID\",
+                    \"obligation_id\": \"$REFERENCE_ID\",
                     \"payment_id\": \"$TEST_PAYMENT_ID\",
                     \"reference\": \"$TEST_PAYMENT_REFERENCE\",
                     \"amount\": \"$TEST_PAYMENT_AMOUNT\"

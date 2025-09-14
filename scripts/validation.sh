@@ -117,7 +117,7 @@ validate_commands_file() {
                     return 1
                 fi
                 ;;
-            "create_deal")
+            "create_obligation")
                 local counterpart=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.counterpart")
                 local denomination=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.denomination")
                 
@@ -131,7 +131,7 @@ validate_commands_file() {
                     return 1
                 fi
                 ;;
-            "accept_deal")
+            "accept_obligation")
                 local contract_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.contract_id")
                 
                 if [[ -z "$contract_id" ]]; then
@@ -139,8 +139,8 @@ validate_commands_file() {
                     return 1
                 fi
                 ;;
-            "deals")
-                # Deals command doesn't require any specific parameters
+            "obligations")
+                # Obligations command doesn't require any specific parameters
                 ;;
             "total_supply")
                 local denomination=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.denomination")
@@ -190,10 +190,10 @@ validate_commands_file() {
                     return 1
                 fi
                 ;;
-            "create_deal_swap")
+            "create_obligation_swap")
                 local swap_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.swap_id")
                 local counterparty=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.counterparty")
-                local deal_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.deal_id")
+                local obligation_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.obligation_id")
                 local deadline=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.deadline")
                 
                 if [[ -z "$swap_id" ]]; then
@@ -206,8 +206,8 @@ validate_commands_file() {
                     return 1
                 fi
                 
-                if [[ -z "$deal_id" ]]; then
-                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.deal_id' field"
+                if [[ -z "$obligation_id" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.obligation_id' field"
                     return 1
                 fi
                 
@@ -266,7 +266,7 @@ validate_commands_file() {
                 ;;
             *)
                 echo_with_color $RED "Error: Command '$command_name' has unsupported type: '$command_type'"
-                echo_with_color $YELLOW "Supported types: deposit, instant, accept, balance, create_deal, accept_deal, deals, total_supply, mint, burn, create_deal_swap, create_payment_swap, complete_swap, cancel_swap"
+                echo_with_color $YELLOW "Supported types: deposit, instant, accept, balance, create_obligation, accept_obligation, obligations, total_supply, mint, burn, create_obligation_swap, create_payment_swap, complete_swap, cancel_swap"
                 return 1
                 ;;
         esac
