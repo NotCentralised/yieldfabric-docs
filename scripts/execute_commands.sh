@@ -86,6 +86,12 @@ execute_command() {
     local key=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.key")
     local value=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.value")
     
+    # Parse create_payment_swap specific parameters
+    local initial_payments_amount=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.initial_payments.amount")
+    local initial_payments_denomination=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.initial_payments.denomination")
+    local initial_payments_obligor=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.initial_payments.obligor")
+    local initial_payments_json=$(yq eval -o json -I 0 ".commands[$command_index].parameters.initial_payments.payments" "$COMMANDS_FILE" 2>/dev/null || echo "[]")
+    
     # Apply variable substitution to parameters
     echo_with_color $CYAN "  🔄 Applying variable substitution to parameters..."
     denomination=$(substitute_variables "$denomination")
@@ -122,6 +128,11 @@ execute_command() {
     expected_payments_obligor=$(substitute_variables "$expected_payments_obligor")
     key=$(substitute_variables "$key")
     value=$(substitute_variables "$value")
+    
+    # Apply variable substitution to create_payment_swap specific parameters
+    initial_payments_amount=$(substitute_variables "$initial_payments_amount")
+    initial_payments_denomination=$(substitute_variables "$initial_payments_denomination")
+    initial_payments_obligor=$(substitute_variables "$initial_payments_obligor")
     
     echo_with_color $PURPLE "🚀 Executing command $((command_index + 1)): $command_name"
     echo_with_color $BLUE "  Type: $command_type"
@@ -163,6 +174,11 @@ execute_command() {
     if [[ -n "$key" ]]; then echo_with_color $BLUE "    key: $key"; fi
     if [[ -n "$value" ]]; then echo_with_color $BLUE "    value: $value"; fi
     
+    # Display create_payment_swap specific parameters
+    if [[ -n "$initial_payments_amount" ]]; then echo_with_color $BLUE "    initial_payments_amount: $initial_payments_amount"; fi
+    if [[ -n "$initial_payments_denomination" ]]; then echo_with_color $BLUE "    initial_payments_denomination: $initial_payments_denomination"; fi
+    if [[ -n "$initial_payments_obligor" ]]; then echo_with_color $BLUE "    initial_payments_obligor: $initial_payments_obligor"; fi
+    
     # Execute command based on type
     case "$command_type" in
         "deposit")
@@ -197,6 +213,9 @@ execute_command() {
             ;;
         "create_deal_swap")
             execute_create_deal_swap "$command_name" "$user_email" "$user_password" "$swap_id" "$counterparty" "$deal_id" "$deadline" "$expected_payments_amount" "$expected_payments_denomination" "$expected_payments_obligor" "$expected_payments_json" "$idempotency_key" "$group_name"
+            ;;
+        "create_payment_swap")
+            execute_create_payment_swap "$command_name" "$user_email" "$user_password" "$swap_id" "$counterparty" "$deadline" "$initial_payments_amount" "$initial_payments_denomination" "$initial_payments_obligor" "$initial_payments_json" "$expected_payments_amount" "$expected_payments_denomination" "$expected_payments_obligor" "$expected_payments_json" "$idempotency_key" "$group_name"
             ;;
         "complete_swap")
             execute_complete_swap "$command_name" "$user_email" "$user_password" "$swap_id" "$expected_payments_amount" "$expected_payments_denomination" "$expected_payments_obligor" "$expected_payments_json" "$idempotency_key" "$group_name"

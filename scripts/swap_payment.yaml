@@ -43,17 +43,16 @@ commands:
   - name: create_payment_swap-1
     type: create_payment_swap
     user: 
-      id: admin2@yieldfabric.com
-      password: testpass123
-      group: Admin Group
+      id: issuer@yieldfabric.com
+      password: issuerpass456
     parameters:
-      swap_id: "1234567890"
+      swap_id: "123456789"
       idempotency_key: swap-ergonomic-$(date +%s)
       counterparty: counterpart@yieldfabric.com
       deadline: 2025-10-10
       initial_payments:
         denomination: aud-token-asset
-        obligor: counterpart@yieldfabric.com
+        obligor: issuer@yieldfabric.com
         amount: 10
         payments:
           - id: swap-payment-1
@@ -83,7 +82,7 @@ commands:
       id: counterpart@yieldfabric.com
       password: counterpass789
     parameters:
-      swap_id: "1234567890"
+      swap_id: "123456789"
       expected_payments:
         denomination: aud-token-asset
         obligor: counterpart@yieldfabric.com
