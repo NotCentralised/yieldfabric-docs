@@ -1,0 +1,8 @@
+commands:
+  - name: list_groups
+    type: list_groups
+    user: 
+      id: issuer@yieldfabric.com
+      password: issuerpass456
+      group: null
+    parameters: {}

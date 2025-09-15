@@ -223,6 +223,9 @@ execute_command() {
         "cancel_swap")
             execute_cancel_swap "$command_name" "$user_email" "$user_password" "$swap_id" "$key" "$value" "$idempotency_key" "$group_name"
             ;;
+        "list_groups")
+            execute_list_groups "$command_name" "$user_email" "$user_password" "$group_name"
+            ;;
         *)
             echo_with_color $RED "❌ Unknown command type: $command_type"
             return 1

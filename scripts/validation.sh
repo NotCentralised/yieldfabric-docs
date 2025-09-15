@@ -264,9 +264,13 @@ validate_commands_file() {
                     return 1
                 fi
                 ;;
+            "list_groups")
+                # list_groups doesn't require any specific parameters
+                # It only needs user credentials which are already validated above
+                ;;
             *)
                 echo_with_color $RED "Error: Command '$command_name' has unsupported type: '$command_type'"
-                echo_with_color $YELLOW "Supported types: deposit, instant, accept, balance, create_obligation, accept_obligation, obligations, total_supply, mint, burn, create_obligation_swap, create_payment_swap, complete_swap, cancel_swap"
+                echo_with_color $YELLOW "Supported types: deposit, instant, accept, balance, create_obligation, accept_obligation, obligations, total_supply, mint, burn, create_obligation_swap, create_payment_swap, complete_swap, cancel_swap, list_groups"
                 return 1
                 ;;
         esac

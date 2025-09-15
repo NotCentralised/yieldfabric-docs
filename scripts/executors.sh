@@ -597,3 +597,62 @@ execute_create_obligation_ergonomic() {
         return 1
     fi
 }
+
+# Function to execute list_groups command using Auth Service
+execute_list_groups() {
+    local command_name="$1"
+    local user_email="$2"
+    local user_password="$3"
+    local group_name="$4"  # Optional group name for delegation
+    
+    echo_with_color $CYAN "👥 Executing list_groups command via Auth Service: $command_name"
+    
+    # Login to get JWT token (with optional group delegation)
+    local jwt_token=$(login_user "$user_email" "$user_password" "$group_name")
+    if [[ -z "$jwt_token" ]]; then
+        echo_with_color $RED "❌ Failed to get JWT token for user: $user_email"
+        return 1
+    fi
+    
+    echo_with_color $BLUE "  🔑 JWT token obtained (first 50 chars): ${jwt_token:0:50}..."
+    if [[ -n "$group_name" ]]; then
+        echo_with_color $CYAN "  🏢 Using delegation JWT for group: $group_name"
+    fi
+    echo_with_color $BLUE "  📤 Sending request to Auth Service..."
+    
+    # Make request to auth service to get user's groups
+    echo_with_color $BLUE "  🌐 Making request to: http://localhost:3000/auth/groups/user"
+    local http_response=$(curl -s -X GET "http://localhost:3000/auth/groups/user" \
+        -H "Authorization: Bearer $jwt_token")
+    
+    echo_with_color $BLUE "  📡 Response received:"
+    echo_with_color $BLUE "    $http_response"
+    
+    # Check if request was successful
+    if echo "$http_response" | jq -e '. | type == "array"' >/dev/null 2>&1; then
+        local group_count=$(echo "$http_response" | jq '. | length')
+        echo_with_color $GREEN "    ✅ List groups successful!"
+        echo_with_color $GREEN "    📊 Found $group_count groups for user"
+        
+        # Display groups in a formatted way
+        if [[ $group_count -gt 0 ]]; then
+            echo_with_color $CYAN "    📋 Groups:"
+            echo "$http_response" | jq -r '.[] | "      • \(.name) (ID: \(.id), Type: \(.group_type), Active: \(.is_active))"'
+        else
+            echo_with_color $YELLOW "    📋 No groups found for this user"
+        fi
+        
+        # Store command outputs for variable substitution
+        store_command_output "${command_name}_groups" "$http_response"
+        store_command_output "${command_name}_group_count" "$group_count"
+        
+        echo_with_color $CYAN "      📝 Stored outputs for variable substitution:"
+        echo_with_color $CYAN "        ${command_name}_groups, ${command_name}_group_count"
+        return 0
+    else
+        local error_message=$(echo "$http_response" | jq -r '.message // .error // "Unknown error"')
+        echo_with_color $RED "    ❌ List groups failed: $error_message"
+        echo_with_color $BLUE "      Full response: $http_response"
+        return 1
+    fi
+}
