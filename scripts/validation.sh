@@ -69,6 +69,20 @@ validate_commands_file() {
                     return 1
                 fi
                 ;;
+            "withdraw")
+                local denomination=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.denomination")
+                local amount=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.amount")
+                
+                if [[ -z "$denomination" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.denomination' field"
+                    return 1
+                fi
+                
+                if [[ -z "$amount" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.amount' field"
+                    return 1
+                fi
+                ;;
             "instant")
                 local denomination=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.denomination")
                 local amount=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.amount")
@@ -132,6 +146,28 @@ validate_commands_file() {
                 fi
                 ;;
             "accept_obligation")
+                local contract_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.contract_id")
+                
+                if [[ -z "$contract_id" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.contract_id' field"
+                    return 1
+                fi
+                ;;
+            "transfer_obligation")
+                local contract_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.contract_id")
+                local destination_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.destination_id")
+                
+                if [[ -z "$contract_id" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.contract_id' field"
+                    return 1
+                fi
+                
+                if [[ -z "$destination_id" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.destination_id' field"
+                    return 1
+                fi
+                ;;
+            "cancel_obligation")
                 local contract_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.contract_id")
                 
                 if [[ -z "$contract_id" ]]; then
@@ -270,7 +306,7 @@ validate_commands_file() {
                 ;;
             *)
                 echo_with_color $RED "Error: Command '$command_name' has unsupported type: '$command_type'"
-                echo_with_color $YELLOW "Supported types: deposit, instant, accept, balance, create_obligation, accept_obligation, obligations, total_supply, mint, burn, create_obligation_swap, create_payment_swap, complete_swap, cancel_swap, list_groups"
+                echo_with_color $YELLOW "Supported types: deposit, withdraw, instant, accept, balance, create_obligation, accept_obligation, transfer_obligation, cancel_obligation, obligations, total_supply, mint, burn, create_obligation_swap, create_payment_swap, complete_swap, cancel_swap, list_groups"
                 return 1
                 ;;
         esac

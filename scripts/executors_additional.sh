@@ -91,6 +91,201 @@ execute_accept_obligation() {
     fi
 }
 
+# Function to execute transfer obligation command using GraphQL
+execute_transfer_obligation() {
+    local command_name="$1"
+    local user_email="$2"
+    local user_password="$3"
+    local contract_id="$4"
+    local destination_id="$5"
+    local idempotency_key="$6"
+    local group_name="$7"  # Optional group name for delegation
+    
+    echo_with_color $CYAN "✅ Executing transfer obligation command via GraphQL: $command_name"
+    
+    # Login to get JWT token (with optional group delegation)
+    local jwt_token=$(login_user "$user_email" "$user_password" "$group_name")
+    if [[ -z "$jwt_token" ]]; then
+        echo_with_color $RED "❌ Failed to get JWT token for user: $user_email"
+        return 1
+    fi
+    
+    if [[ -n "$group_name" ]]; then
+        echo_with_color $CYAN "  🏢 Using delegation JWT for group: $group_name"
+    fi
+    echo_with_color $BLUE "  📤 Sending GraphQL transfer obligation mutation..."
+    
+    # Prepare GraphQL mutation
+    local graphql_mutation
+    local input_params="contractId: \\\"$contract_id\\\", destinationId: \\\"$destination_id\\\""
+    
+    # Add idempotency_key if provided
+    if [[ -n "$idempotency_key" ]]; then
+        input_params="$input_params, idempotencyKey: \\\"$idempotency_key\\\""
+    fi
+    
+    graphql_mutation="mutation { transferObligation(input: { $input_params }) { success message accountAddress obligationId destinationId destinationAddress transferResult messageId transactionId signature timestamp } }"
+    
+    local graphql_payload="{\"query\": \"$graphql_mutation\"}"
+    
+    echo_with_color $BLUE "  📋 GraphQL mutation:"
+    echo_with_color $BLUE "    $graphql_mutation"
+    
+    # Send GraphQL request to payments service
+    echo_with_color $BLUE "  🌐 Making GraphQL request to: http://localhost:3002/graphql"
+    local http_response=$(curl -s -X POST "http://localhost:3002/graphql" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $jwt_token" \
+        -d "$graphql_payload")
+    
+    echo_with_color $BLUE "  📡 Raw GraphQL response: '$http_response'"
+    
+    # Parse GraphQL response
+    local success=$(echo "$http_response" | jq -r '.data.transferObligation.success // empty')
+    if [[ "$success" == "true" ]]; then
+        local message=$(echo "$http_response" | jq -r '.data.transferObligation.message // empty')
+        local account_address=$(echo "$http_response" | jq -r '.data.transferObligation.accountAddress // empty')
+        local obligation_id=$(echo "$http_response" | jq -r '.data.transferObligation.obligationId // empty')
+        local destination_id_result=$(echo "$http_response" | jq -r '.data.transferObligation.destinationId // empty')
+        local destination_address=$(echo "$http_response" | jq -r '.data.transferObligation.destinationAddress // empty')
+        local transfer_result=$(echo "$http_response" | jq -r '.data.transferObligation.transferResult // empty')
+        local message_id=$(echo "$http_response" | jq -r '.data.transferObligation.messageId // empty')
+        local transaction_id=$(echo "$http_response" | jq -r '.data.transferObligation.transactionId // empty')
+        local signature=$(echo "$http_response" | jq -r '.data.transferObligation.signature // empty')
+        local timestamp=$(echo "$http_response" | jq -r '.data.transferObligation.timestamp // empty')
+        
+        # Store outputs for variable substitution in future commands
+        store_command_output "$command_name" "contract_id" "$contract_id"
+        store_command_output "$command_name" "destination_id" "$destination_id_result"
+        store_command_output "$command_name" "destination_address" "$destination_address"
+        store_command_output "$command_name" "obligation_id" "$obligation_id"
+        store_command_output "$command_name" "message_id" "$message_id"
+        store_command_output "$command_name" "transaction_id" "$transaction_id"
+        store_command_output "$command_name" "signature" "$signature"
+        store_command_output "$command_name" "timestamp" "$timestamp"
+        
+        echo_with_color $GREEN "    ✅ Transfer obligation submitted successfully!"
+        
+        echo_with_color $BLUE "  📋 Transfer Obligation Information:"
+        echo_with_color $BLUE "      Contract ID: $contract_id"
+        echo_with_color $BLUE "      Destination ID: $destination_id_result"
+        echo_with_color $BLUE "      Destination Address: $destination_address"
+        echo_with_color $BLUE "      Obligation ID: $obligation_id"
+        echo_with_color $BLUE "      Message ID: $message_id"
+        echo_with_color $BLUE "      Transaction ID: $transaction_id"
+        echo_with_color $BLUE "      Signature: ${signature:0:20}..."
+        echo_with_color $BLUE "      Timestamp: $timestamp"
+        if [[ -n "$transfer_result" ]]; then
+            echo_with_color $BLUE "      Transfer Result: $transfer_result"
+        fi
+        
+        return 0
+    else
+        local error_message=$(echo "$http_response" | jq -r '.errors[0].message // .data.transferObligation.message // "Unknown error"')
+        echo_with_color $RED "    ❌ Transfer obligation failed: $error_message"
+        echo_with_color $RED "    📋 Full response: $http_response"
+        return 1
+    fi
+}
+
+# Function to execute cancel obligation command using GraphQL
+execute_cancel_obligation() {
+    local command_name="$1"
+    local user_email="$2"
+    local user_password="$3"
+    local contract_id="$4"
+    local idempotency_key="$5"
+    local group_name="$6"  # Optional group name for delegation
+    
+    echo_with_color $CYAN "❌ Executing cancel obligation command via GraphQL: $command_name"
+    
+    # Login to get JWT token (with optional group delegation)
+    local jwt_token=$(login_user "$user_email" "$user_password" "$group_name")
+    if [[ -z "$jwt_token" ]]; then
+        echo_with_color $RED "❌ Failed to get JWT token for user: $user_email"
+        return 1
+    fi
+    
+    if [[ -n "$group_name" ]]; then
+        echo_with_color $CYAN "  🏢 Using delegation JWT for group: $group_name"
+    fi
+    echo_with_color $BLUE "  📤 Sending GraphQL cancel obligation mutation..."
+    
+    # Prepare GraphQL mutation
+    local graphql_mutation
+    local input_params="contractId: \\\"$contract_id\\\""
+    
+    # Add idempotency_key if provided
+    if [[ -n "$idempotency_key" ]]; then
+        input_params="$input_params, idempotencyKey: \\\"$idempotency_key\\\""
+    fi
+    
+    graphql_mutation="mutation { cancelObligation(input: { $input_params }) { success message accountAddress obligationId cancelResult messageId transactionId signature timestamp } }"
+    
+    local graphql_payload="{\"query\": \"$graphql_mutation\"}"
+    
+    echo_with_color $BLUE "  📋 GraphQL mutation:"
+    echo_with_color $BLUE "    $graphql_mutation"
+    
+    # Send GraphQL request to payments service
+    echo_with_color $BLUE "  🌐 Making GraphQL request to: http://localhost:3002/graphql"
+    local http_response=$(curl -s -X POST "http://localhost:3002/graphql" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $jwt_token" \
+        -d "$graphql_payload")
+    
+    echo_with_color $BLUE "  📡 Raw GraphQL response: '$http_response'"
+    
+    # Parse GraphQL response
+    local success=$(echo "$http_response" | jq -r '.data.cancelObligation.success // empty')
+    local message=$(echo "$http_response" | jq -r '.data.cancelObligation.message // empty')
+    local account_address=$(echo "$http_response" | jq -r '.data.cancelObligation.accountAddress // empty')
+    local obligation_id=$(echo "$http_response" | jq -r '.data.cancelObligation.obligationId // empty')
+    local cancel_result=$(echo "$http_response" | jq -r '.data.cancelObligation.cancelResult // empty')
+    local message_id=$(echo "$http_response" | jq -r '.data.cancelObligation.messageId // empty')
+    local transaction_id=$(echo "$http_response" | jq -r '.data.cancelObligation.transactionId // empty')
+    local signature=$(echo "$http_response" | jq -r '.data.cancelObligation.signature // empty')
+    local timestamp=$(echo "$http_response" | jq -r '.data.cancelObligation.timestamp // empty')
+    
+    # Check for errors
+    local error_message=$(echo "$http_response" | jq -r '.errors[0].message // empty')
+    
+    if [[ -n "$error_message" ]]; then
+        echo_with_color $RED "  ❌ GraphQL Error: $error_message"
+        return 1
+    fi
+    
+    # Display results
+    if [[ "$success" == "true" ]]; then
+        echo_with_color $GREEN "  ✅ Cancel obligation successful!"
+        echo_with_color $BLUE "    📋 Message: $message"
+        echo_with_color $BLUE "    🏦 Account: $account_address"
+        echo_with_color $BLUE "    🆔 Obligation ID: $obligation_id"
+        echo_with_color $BLUE "    ❌ Cancel Result: $cancel_result"
+        echo_with_color $BLUE "    📨 Message ID: $message_id"
+        echo_with_color $BLUE "    🔗 Transaction ID: $transaction_id"
+        echo_with_color $BLUE "    ✍️  Signature: ${signature:0:20}..."
+        echo_with_color $BLUE "    ⏰ Timestamp: $timestamp"
+        
+        # Store variables for future use
+        store_command_output "$command_name" "success" "true"
+        store_command_output "$command_name" "message" "$message"
+        store_command_output "$command_name" "account_address" "$account_address"
+        store_command_output "$command_name" "obligation_id" "$obligation_id"
+        store_command_output "$command_name" "cancel_result" "$cancel_result"
+        store_command_output "$command_name" "message_id" "$message_id"
+        store_command_output "$command_name" "transaction_id" "$transaction_id"
+        store_command_output "$command_name" "signature" "$signature"
+        store_command_output "$command_name" "timestamp" "$timestamp"
+        
+        return 0
+    else
+        echo_with_color $RED "  ❌ Cancel obligation failed!"
+        echo_with_color $RED "    📋 Message: $message"
+        return 1
+    fi
+}
+
 # Function to execute total_supply command using REST API
 execute_total_supply() {
     local command_name="$1"

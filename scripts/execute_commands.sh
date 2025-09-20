@@ -71,6 +71,13 @@ execute_command() {
     # Parse accept_obligation specific parameters
     local contract_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.contract_id")
     
+    # Parse transfer_obligation specific parameters
+    local transfer_contract_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.contract_id")
+    local transfer_destination_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.destination_id")
+    
+    # Parse cancel_obligation specific parameters
+    local cancel_contract_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.contract_id")
+    
     # Parse treasury specific parameters
     local policy_secret=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.policy_secret")
     
@@ -114,6 +121,13 @@ execute_command() {
     
     # Apply variable substitution to accept_obligation specific parameters
     contract_id=$(substitute_variables "$contract_id")
+    
+    # Apply variable substitution to transfer_obligation specific parameters
+    transfer_contract_id=$(substitute_variables "$transfer_contract_id")
+    transfer_destination_id=$(substitute_variables "$transfer_destination_id")
+    
+    # Apply variable substitution to cancel_obligation specific parameters
+    cancel_contract_id=$(substitute_variables "$cancel_contract_id")
     
     # Apply variable substitution to treasury specific parameters
     policy_secret=$(substitute_variables "$policy_secret")
@@ -160,6 +174,13 @@ execute_command() {
     # Display accept_obligation specific parameters
     if [[ -n "$contract_id" ]]; then echo_with_color $BLUE "    contract_id: $contract_id"; fi
     
+    # Display transfer_obligation specific parameters
+    if [[ -n "$transfer_contract_id" ]]; then echo_with_color $BLUE "    transfer_contract_id: $transfer_contract_id"; fi
+    if [[ -n "$transfer_destination_id" ]]; then echo_with_color $BLUE "    transfer_destination_id: $transfer_destination_id"; fi
+    
+    # Display cancel_obligation specific parameters
+    if [[ -n "$cancel_contract_id" ]]; then echo_with_color $BLUE "    cancel_contract_id: $cancel_contract_id"; fi
+    
     # Display treasury specific parameters
     if [[ -n "$policy_secret" ]]; then echo_with_color $BLUE "    policy_secret: ${policy_secret:0:8}..."; fi
     
@@ -184,6 +205,9 @@ execute_command() {
         "deposit")
             execute_deposit "$command_name" "$user_email" "$user_password" "$denomination" "$amount" "$idempotency_key" "$group_name"
             ;;
+        "withdraw")
+            execute_withdraw "$command_name" "$user_email" "$user_password" "$denomination" "$amount" "$idempotency_key" "$group_name"
+            ;;
         "instant")
             execute_instant "$command_name" "$user_email" "$user_password" "$denomination" "$amount" "$destination_id" "$idempotency_key" "$group_name"
             ;;
@@ -198,6 +222,12 @@ execute_command() {
             ;;
         "accept_obligation")
             execute_accept_obligation "$command_name" "$user_email" "$user_password" "$contract_id" "$idempotency_key" "$group_name"
+            ;;
+        "transfer_obligation")
+            execute_transfer_obligation "$command_name" "$user_email" "$user_password" "$transfer_contract_id" "$transfer_destination_id" "$idempotency_key" "$group_name"
+            ;;
+        "cancel_obligation")
+            execute_cancel_obligation "$command_name" "$user_email" "$user_password" "$cancel_contract_id" "$idempotency_key" "$group_name"
             ;;
         "obligations")
             execute_obligations "$command_name" "$user_email" "$user_password" "$group_name"

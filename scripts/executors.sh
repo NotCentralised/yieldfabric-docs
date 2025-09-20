@@ -80,6 +80,79 @@ execute_deposit() {
     fi
 }
 
+# Function to execute withdraw command using GraphQL
+execute_withdraw() {
+    local command_name="$1"
+    local user_email="$2"
+    local user_password="$3"
+    local denomination="$4"
+    local amount="$5"
+    local idempotency_key="$6"
+    local group_name="$7"  # Optional group name for delegation
+    
+    echo_with_color $CYAN "💸 Executing withdraw command via GraphQL: $command_name"
+    
+    # Login to get JWT token (with optional group delegation)
+    local jwt_token=$(login_user "$user_email" "$user_password" "$group_name")
+    if [[ -z "$jwt_token" ]]; then
+        echo_with_color $RED "❌ Failed to get JWT token for user: $user_email"
+        return 1
+    fi
+    
+    echo_with_color $BLUE "  🔑 JWT token obtained (first 50 chars): ${jwt_token:0:50}..."
+    if [[ -n "$group_name" ]]; then
+        echo_with_color $CYAN "  🏢 Using delegation JWT for group: $group_name"
+    fi
+    echo_with_color $BLUE "  📤 Sending GraphQL withdraw mutation..."
+    
+    # Prepare GraphQL mutation
+    local graphql_mutation
+    if [[ -n "$idempotency_key" ]]; then
+        graphql_mutation="mutation { withdraw(input: { assetId: \\\"$denomination\\\", amount: \\\"$amount\\\", idempotencyKey: \\\"$idempotency_key\\\" }) { success message accountAddress withdrawResult messageId timestamp } }"
+    else
+        graphql_mutation="mutation { withdraw(input: { assetId: \\\"$denomination\\\", amount: \\\"$amount\\\" }) { success message accountAddress withdrawResult messageId timestamp } }"
+    fi
+    
+    local graphql_payload="{\"query\": \"$graphql_mutation\"}"
+    
+    echo_with_color $BLUE "  📋 GraphQL mutation:"
+    echo_with_color $BLUE "    $graphql_mutation"
+    
+    # Send GraphQL request to payments service
+    echo_with_color $BLUE "  🌐 Making GraphQL request to: http://localhost:3002/graphql"
+    local http_response=$(curl -s -X POST "http://localhost:3002/graphql" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $jwt_token" \
+        -d "$graphql_payload")
+    
+    echo_with_color $BLUE "  📥 Response received:"
+    echo_with_color $BLUE "    $http_response"
+    
+    # Check if the response contains success
+    if echo "$http_response" | jq -e '.data.withdraw.success' > /dev/null 2>&1; then
+        local message_id=$(echo "$http_response" | jq -r '.data.withdraw.messageId // "N/A"')
+        local account_address=$(echo "$http_response" | jq -r '.data.withdraw.accountAddress // "N/A"')
+        local withdraw_result=$(echo "$http_response" | jq -r '.data.withdraw.withdrawResult // "N/A"')
+        local timestamp=$(echo "$http_response" | jq -r '.data.withdraw.timestamp // "N/A"')
+        
+        echo_with_color $GREEN "    ✅ Withdraw successful!"
+        echo_with_color $GREEN "      Message ID: $message_id"
+        echo_with_color $GREEN "      Account Address: $account_address"
+        echo_with_color $GREEN "      Withdraw Result: $withdraw_result"
+        echo_with_color $GREEN "      Timestamp: $timestamp"
+        
+        # Store command output for variable substitution
+        store_command_output "$command_name" "$http_response"
+        
+        return 0
+    else
+        local error_message=$(echo "$http_response" | jq -r '.errors[0].message // "Unknown error"')
+        echo_with_color $RED "    ❌ Withdraw failed: $error_message"
+        echo_with_color $BLUE "      Full response: $http_response"
+        return 1
+    fi
+}
+
 # Function to execute instant command using GraphQL
 execute_instant() {
     local command_name="$1"
