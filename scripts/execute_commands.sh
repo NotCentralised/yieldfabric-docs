@@ -81,7 +81,7 @@ execute_command() {
     # Parse treasury specific parameters
     local policy_secret=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.policy_secret")
     
-    # Parse swap specific parameters
+    # Parse swap specific parameters (legacy format)
     local swap_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.swap_id")
     local counterparty=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.counterparty")
     local obligation_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.obligation_id")
@@ -92,6 +92,20 @@ execute_command() {
     local expected_payments_json=$(yq eval -o json -I 0 ".commands[$command_index].parameters.expected_payments.payments" "$COMMANDS_FILE" 2>/dev/null || echo "[]")
     local key=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.key")
     local value=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.value")
+    
+    # Parse unified swap specific parameters (new format)
+    local initiator_obligation_ids_json=$(yq eval -o json -I 0 ".commands[$command_index].parameters.initiator.obligation_ids" "$COMMANDS_FILE" 2>/dev/null || echo "[]")
+    local initiator_expected_payments_amount=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.initiator.expected_payments.amount")
+    local initiator_expected_payments_denomination=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.initiator.expected_payments.denomination")
+    local initiator_expected_payments_obligor=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.initiator.expected_payments.obligor")
+    local initiator_expected_payments_json=$(yq eval -o json -I 0 ".commands[$command_index].parameters.initiator.expected_payments.payments" "$COMMANDS_FILE" 2>/dev/null || echo "[]")
+    
+    local counterparty_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.counterparty.id")
+    local counterparty_obligation_ids_json=$(yq eval -o json -I 0 ".commands[$command_index].parameters.counterparty.obligation_ids" "$COMMANDS_FILE" 2>/dev/null || echo "[]")
+    local counterparty_expected_payments_amount=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.counterparty.expected_payments.amount")
+    local counterparty_expected_payments_denomination=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.counterparty.expected_payments.denomination")
+    local counterparty_expected_payments_obligor=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.counterparty.expected_payments.obligor")
+    local counterparty_expected_payments_json=$(yq eval -o json -I 0 ".commands[$command_index].parameters.counterparty.expected_payments.payments" "$COMMANDS_FILE" 2>/dev/null || echo "[]")
     
     # Parse create_payment_swap specific parameters
     local initial_payments_amount=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.initial_payments.amount")
@@ -109,6 +123,10 @@ execute_command() {
     obligor=$(substitute_variables "$obligor")
     group_id=$(substitute_variables "$group_id")
     group_name=$(substitute_variables "$group_name")
+    
+    # Apply variable substitution to JSON arrays
+    initiator_obligation_ids_json=$(substitute_variables "$initiator_obligation_ids_json")
+    counterparty_obligation_ids_json=$(substitute_variables "$counterparty_obligation_ids_json")
     
     # Apply variable substitution to create_obligation specific parameters
     counterpart=$(substitute_variables "$counterpart")
@@ -132,7 +150,7 @@ execute_command() {
     # Apply variable substitution to treasury specific parameters
     policy_secret=$(substitute_variables "$policy_secret")
     
-    # Apply variable substitution to swap specific parameters
+    # Apply variable substitution to swap specific parameters (legacy format)
     swap_id=$(substitute_variables "$swap_id")
     counterparty=$(substitute_variables "$counterparty")
     obligation_id=$(substitute_variables "$obligation_id")
@@ -142,6 +160,20 @@ execute_command() {
     expected_payments_obligor=$(substitute_variables "$expected_payments_obligor")
     key=$(substitute_variables "$key")
     value=$(substitute_variables "$value")
+    
+    # Apply variable substitution to unified swap specific parameters (new format)
+    initiator_obligation_ids_json=$(substitute_variables "$initiator_obligation_ids_json")
+    initiator_expected_payments_amount=$(substitute_variables "$initiator_expected_payments_amount")
+    initiator_expected_payments_denomination=$(substitute_variables "$initiator_expected_payments_denomination")
+    initiator_expected_payments_obligor=$(substitute_variables "$initiator_expected_payments_obligor")
+    initiator_expected_payments_json=$(substitute_variables "$initiator_expected_payments_json")
+    
+    counterparty_id=$(substitute_variables "$counterparty_id")
+    counterparty_obligation_ids_json=$(substitute_variables "$counterparty_obligation_ids_json")
+    counterparty_expected_payments_amount=$(substitute_variables "$counterparty_expected_payments_amount")
+    counterparty_expected_payments_denomination=$(substitute_variables "$counterparty_expected_payments_denomination")
+    counterparty_expected_payments_obligor=$(substitute_variables "$counterparty_expected_payments_obligor")
+    counterparty_expected_payments_json=$(substitute_variables "$counterparty_expected_payments_json")
     
     # Apply variable substitution to create_payment_swap specific parameters
     initial_payments_amount=$(substitute_variables "$initial_payments_amount")
@@ -184,7 +216,7 @@ execute_command() {
     # Display treasury specific parameters
     if [[ -n "$policy_secret" ]]; then echo_with_color $BLUE "    policy_secret: ${policy_secret:0:8}..."; fi
     
-    # Display swap specific parameters
+    # Display swap specific parameters (legacy format)
     if [[ -n "$swap_id" ]]; then echo_with_color $BLUE "    swap_id: $swap_id"; fi
     if [[ -n "$counterparty" ]]; then echo_with_color $BLUE "    counterparty: $counterparty"; fi
     if [[ -n "$obligation_id" ]]; then echo_with_color $BLUE "    obligation_id: $obligation_id"; fi
@@ -194,6 +226,17 @@ execute_command() {
     if [[ -n "$expected_payments_obligor" ]]; then echo_with_color $BLUE "    expected_payments_obligor: $expected_payments_obligor"; fi
     if [[ -n "$key" ]]; then echo_with_color $BLUE "    key: $key"; fi
     if [[ -n "$value" ]]; then echo_with_color $BLUE "    value: $value"; fi
+    
+    # Display unified swap specific parameters (new format)
+    if [[ -n "$initiator_obligation_ids_json" && "$initiator_obligation_ids_json" != "[]" ]]; then echo_with_color $BLUE "    initiator_obligation_ids: $initiator_obligation_ids_json"; fi
+    if [[ -n "$initiator_expected_payments_amount" ]]; then echo_with_color $BLUE "    initiator_expected_payments_amount: $initiator_expected_payments_amount"; fi
+    if [[ -n "$initiator_expected_payments_denomination" ]]; then echo_with_color $BLUE "    initiator_expected_payments_denomination: $initiator_expected_payments_denomination"; fi
+    if [[ -n "$initiator_expected_payments_obligor" ]]; then echo_with_color $BLUE "    initiator_expected_payments_obligor: $initiator_expected_payments_obligor"; fi
+    if [[ -n "$counterparty_id" ]]; then echo_with_color $BLUE "    counterparty_id: $counterparty_id"; fi
+    if [[ -n "$counterparty_obligation_ids_json" && "$counterparty_obligation_ids_json" != "[]" ]]; then echo_with_color $BLUE "    counterparty_obligation_ids: $counterparty_obligation_ids_json"; fi
+    if [[ -n "$counterparty_expected_payments_amount" ]]; then echo_with_color $BLUE "    counterparty_expected_payments_amount: $counterparty_expected_payments_amount"; fi
+    if [[ -n "$counterparty_expected_payments_denomination" ]]; then echo_with_color $BLUE "    counterparty_expected_payments_denomination: $counterparty_expected_payments_denomination"; fi
+    if [[ -n "$counterparty_expected_payments_obligor" ]]; then echo_with_color $BLUE "    counterparty_expected_payments_obligor: $counterparty_expected_payments_obligor"; fi
     
     # Display create_payment_swap specific parameters
     if [[ -n "$initial_payments_amount" ]]; then echo_with_color $BLUE "    initial_payments_amount: $initial_payments_amount"; fi
@@ -246,6 +289,9 @@ execute_command() {
             ;;
         "create_payment_swap")
             execute_create_payment_swap "$command_name" "$user_email" "$user_password" "$swap_id" "$counterparty" "$deadline" "$initial_payments_amount" "$initial_payments_denomination" "$initial_payments_obligor" "$initial_payments_json" "$expected_payments_amount" "$expected_payments_denomination" "$expected_payments_obligor" "$expected_payments_json" "$idempotency_key" "$group_name"
+            ;;
+        "create_swap")
+            execute_create_swap "$command_name" "$user_email" "$user_password" "$swap_id" "$counterparty_id" "$deadline" "$initiator_obligation_ids_json" "$initiator_expected_payments_amount" "$initiator_expected_payments_denomination" "$initiator_expected_payments_obligor" "$initiator_expected_payments_json" "$counterparty_obligation_ids_json" "$counterparty_expected_payments_amount" "$counterparty_expected_payments_denomination" "$counterparty_expected_payments_obligor" "$counterparty_expected_payments_json" "$idempotency_key" "$group_name"
             ;;
         "complete_swap")
             execute_complete_swap "$command_name" "$user_email" "$user_password" "$swap_id" "$expected_payments_amount" "$expected_payments_denomination" "$expected_payments_obligor" "$expected_payments_json" "$idempotency_key" "$group_name"
@@ -320,6 +366,12 @@ execute_all_commands() {
         echo_with_color $PURPLE "🔍 DEBUG: After execute_command $i, success_count=$success_count"
         echo_with_color $PURPLE "🔍 DEBUG: Next iteration will be i=$((i+1))"
         echo ""
+        
+        # Add 2-second wait between commands (except for the last command)
+        if [[ $((i+1)) -lt $command_count ]]; then
+            echo_with_color $CYAN "⏳ Waiting 3 seconds before next command..."
+            sleep 3
+        fi
         
     done
     

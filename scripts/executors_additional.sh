@@ -707,6 +707,7 @@ execute_complete_swap() {
     local group_name="${10}"  # Optional group name for delegation
     
     echo_with_color $CYAN "✅ Executing complete swap command via GraphQL: $command_name"
+    echo_with_color $YELLOW "  ℹ️  Note: Expected payments are now retrieved from stored swap data"
     
     # Login to get JWT token (with optional group delegation)
     local jwt_token=$(login_user "$user_email" "$user_password" "$group_name")
@@ -722,37 +723,17 @@ execute_complete_swap() {
     
     # Debug: Show parsed values
     echo_with_color $PURPLE "  🔍 DEBUG: Parsed values:"
-    echo_with_color $PURPLE "    expected_payments_amount: '$expected_payments_amount'"
-    echo_with_color $PURPLE "    expected_payments_denomination: '$expected_payments_denomination'"
-    echo_with_color $PURPLE "    expected_payments_obligor: '$expected_payments_obligor'"
-    echo_with_color $PURPLE "    expected_payments_json: '$expected_payments_json'"
+    echo_with_color $PURPLE "    swap_id: '$swap_id'"
+    echo_with_color $PURPLE "    idempotency_key: '$idempotency_key'"
+    echo_with_color $PURPLE "    Note: expected_payments parameters are ignored (retrieved from stored data)"
     
-    # Prepare GraphQL mutation
+    # Prepare GraphQL mutation - simplified to only use swap_id and optional idempotency_key
     local graphql_mutation
     local input_params="swapId: \\\"$swap_id\\\""
     
     # Add idempotency_key if provided
     if [[ -n "$idempotency_key" ]]; then
         input_params="$input_params, idempotencyKey: \\\"$idempotency_key\\\""
-    fi
-    
-    # Add expected_payments if provided (check for null values from YAML parsing)
-    if [[ -n "$expected_payments_amount" && "$expected_payments_amount" != "null" && -n "$expected_payments_json" && "$expected_payments_json" != "[]" && "$expected_payments_json" != "null" ]]; then
-        local expected_payments_input="expectedPayments: { amount: \\\"$expected_payments_amount\\\""
-        
-        if [[ -n "$expected_payments_denomination" && "$expected_payments_denomination" != "null" ]]; then
-            expected_payments_input="$expected_payments_input, denomination: \\\"$expected_payments_denomination\\\""
-        fi
-        
-        if [[ -n "$expected_payments_obligor" && "$expected_payments_obligor" != "null" ]]; then
-            expected_payments_input="$expected_payments_input, obligor: \\\"$expected_payments_obligor\\\""
-        fi
-        
-        # Convert JSON array to GraphQL format - use proper escaping
-        local payments_array=$(echo "$expected_payments_json" | jq -r '.[] | "{ oracleAddress: null, oracleOwner: null, oracleKeySender: \\\"" + (.payer.key // "1") + "\\\", oracleValueSenderSecret: \\\"" + (.payer.valueSecret // "1") + "\\\", oracleKeyRecipient: \\\"" + (.payee.key // "1") + "\\\", oracleValueRecipientSecret: \\\"" + (.payee.valueSecret // "2") + "\\\", unlockSender: " + (if .payer.unlock then "\\\"" + .payer.unlock + "\\\"" else "null" end) + ", unlockReceiver: " + (if .payee.unlock then "\\\"" + .payee.unlock + "\\\"" else "null" end) + " }"' | tr '\n' ',' | sed 's/,$//')
-        expected_payments_input="$expected_payments_input, payments: [$payments_array] }"
-        
-        input_params="$input_params, $expected_payments_input"
     fi
     
     graphql_mutation="mutation { completeSwap(input: { $input_params }) { success message accountAddress swapId completeResult messageId transactionId signature timestamp } }"
@@ -786,6 +767,7 @@ execute_complete_swap() {
         echo_with_color $BLUE "  📊 Swap ID: $swap_id_result"
         echo_with_color $BLUE "  📊 Message ID: $message_id"
         echo_with_color $BLUE "  📊 Message: $message"
+        echo_with_color $GREEN "  ✅ Expected payments were retrieved from stored swap data"
     else
         echo_with_color $RED "❌ Complete swap failed"
         local error_message=$(echo "$http_response" | jq -r '.errors[0].message // "Unknown error"')
@@ -1014,6 +996,165 @@ mutation="$mutation { createObligationSwap(input: { swapId: \"$swap_id\", counte
     fi
 }
 
+# Function to execute unified create swap command using GraphQL
+execute_create_swap() {
+    local command_name="$1"
+    local user_email="$2"
+    local user_password="$3"
+    local swap_id="$4"
+    local counterparty_id="$5"
+    local deadline="$6"
+    local initiator_obligation_ids_json="$7"
+    local initiator_expected_payments_amount="$8"
+    local initiator_expected_payments_denomination="$9"
+    local initiator_expected_payments_obligor="${10}"
+    local initiator_expected_payments_json="${11}"
+    local counterparty_obligation_ids_json="${12}"
+    local counterparty_expected_payments_amount="${13}"
+    local counterparty_expected_payments_denomination="${14}"
+    local counterparty_expected_payments_obligor="${15}"
+    local counterparty_expected_payments_json="${16}"
+    local idempotency_key="${17}"
+    local group_name="${18}"  # Optional group name for delegation
+    
+    echo_with_color $CYAN "✅ Executing unified create swap command via GraphQL: $command_name"
+    
+    # Login to get JWT token (with optional group delegation)
+    local jwt_token=$(login_user "$user_email" "$user_password" "$group_name")
+    if [[ -z "$jwt_token" ]]; then
+        echo_with_color $RED "❌ Failed to get JWT token for user: $user_email"
+        return 1
+    fi
+    
+    if [[ -n "$group_name" ]]; then
+        echo_with_color $CYAN "  🏢 Using delegation JWT for group: $group_name"
+    fi
+    echo_with_color $BLUE "  📤 Sending GraphQL unified create swap mutation..."
+    
+    # Debug: Show parsed values
+    echo_with_color $PURPLE "  🔍 DEBUG: Parsed values:"
+    echo_with_color $PURPLE "    swap_id: '$swap_id'"
+    echo_with_color $PURPLE "    counterparty_id: '$counterparty_id'"
+    echo_with_color $PURPLE "    deadline: '$deadline'"
+    echo_with_color $PURPLE "    initiator_obligation_ids_json: '$initiator_obligation_ids_json'"
+    echo_with_color $PURPLE "    initiator_expected_payments_amount: '$initiator_expected_payments_amount'"
+    echo_with_color $PURPLE "    initiator_expected_payments_denomination: '$initiator_expected_payments_denomination'"
+    echo_with_color $PURPLE "    initiator_expected_payments_obligor: '$initiator_expected_payments_obligor'"
+    echo_with_color $PURPLE "    counterparty_obligation_ids_json: '$counterparty_obligation_ids_json'"
+    echo_with_color $PURPLE "    counterparty_expected_payments_amount: '$counterparty_expected_payments_amount'"
+    echo_with_color $PURPLE "    counterparty_expected_payments_denomination: '$counterparty_expected_payments_denomination'"
+    echo_with_color $PURPLE "    counterparty_expected_payments_obligor: '$counterparty_expected_payments_obligor'"
+    
+    # Prepare GraphQL mutation
+    local graphql_mutation
+    local input_params="swapId: \\\"$swap_id\\\", counterparty: \\\"$counterparty_id\\\", deadline: \\\"$deadline\\\""
+    
+    # Add idempotency_key if provided
+    if [[ -n "$idempotency_key" ]]; then
+        input_params="$input_params, idempotencyKey: \\\"$idempotency_key\\\""
+    fi
+    
+    # Add initiator obligation IDs if provided
+    if [[ -n "$initiator_obligation_ids_json" && "$initiator_obligation_ids_json" != "[]" && "$initiator_obligation_ids_json" != "null" ]]; then
+        # Convert JSON array to GraphQL format
+        local initiator_obligation_ids_array=$(echo "$initiator_obligation_ids_json" | jq -r '.[] | "\\\"" + . + "\\\""' | tr '\n' ',' | sed 's/,$//')
+        input_params="$input_params, initiatorObligationIds: [$initiator_obligation_ids_array]"
+    fi
+    
+    # Add initiator expected payments if provided
+    if [[ -n "$initiator_expected_payments_amount" && "$initiator_expected_payments_amount" != "null" && -n "$initiator_expected_payments_json" && "$initiator_expected_payments_json" != "[]" && "$initiator_expected_payments_json" != "null" ]]; then
+        local initiator_expected_payments_input="initiatorExpectedPayments: { amount: \\\"$initiator_expected_payments_amount\\\""
+        
+        if [[ -n "$initiator_expected_payments_denomination" && "$initiator_expected_payments_denomination" != "null" ]]; then
+            initiator_expected_payments_input="$initiator_expected_payments_input, denomination: \\\"$initiator_expected_payments_denomination\\\""
+        fi
+        
+        if [[ -n "$initiator_expected_payments_obligor" && "$initiator_expected_payments_obligor" != "null" ]]; then
+            initiator_expected_payments_input="$initiator_expected_payments_input, obligor: \\\"$initiator_expected_payments_obligor\\\""
+        fi
+        
+        # Convert JSON array to GraphQL format - use proper escaping
+        local initiator_payments_array=$(echo "$initiator_expected_payments_json" | jq -r '.[] | "{ oracleAddress: \\\"" + ("" | tostring) + "\\\", oracleOwner: \\\"" + ("" | tostring) + "\\\", oracleKeySender: \\\"" + (.payer.key // "1") + "\\\", oracleValueSenderSecret: \\\"" + (.payer.valueSecret // "1") + "\\\", oracleKeyRecipient: \\\"" + (.payee.key // "1") + "\\\", oracleValueRecipientSecret: \\\"" + (.payee.valueSecret // "2") + "\\\", unlockSender: \\\"" + (.payer.unlock // "") + "\\\", unlockReceiver: \\\"" + (.payee.unlock // "") + "\\\" }"' | tr '\n' ',' | sed 's/,$//')
+        initiator_expected_payments_input="$initiator_expected_payments_input, payments: [$initiator_payments_array] }"
+        
+        input_params="$input_params, $initiator_expected_payments_input"
+    fi
+    
+    # Add counterparty obligation IDs if provided
+    if [[ -n "$counterparty_obligation_ids_json" && "$counterparty_obligation_ids_json" != "[]" && "$counterparty_obligation_ids_json" != "null" ]]; then
+        # Convert JSON array to GraphQL format
+        local counterparty_obligation_ids_array=$(echo "$counterparty_obligation_ids_json" | jq -r '.[] | "\\\"" + . + "\\\""' | tr '\n' ',' | sed 's/,$//')
+        input_params="$input_params, counterpartyObligationIds: [$counterparty_obligation_ids_array]"
+    fi
+    
+    # Add counterparty expected payments if provided
+    if [[ -n "$counterparty_expected_payments_amount" && "$counterparty_expected_payments_amount" != "null" && -n "$counterparty_expected_payments_json" && "$counterparty_expected_payments_json" != "[]" && "$counterparty_expected_payments_json" != "null" ]]; then
+        local counterparty_expected_payments_input="counterpartyExpectedPayments: { amount: \\\"$counterparty_expected_payments_amount\\\""
+        
+        if [[ -n "$counterparty_expected_payments_denomination" && "$counterparty_expected_payments_denomination" != "null" ]]; then
+            counterparty_expected_payments_input="$counterparty_expected_payments_input, denomination: \\\"$counterparty_expected_payments_denomination\\\""
+        fi
+        
+        if [[ -n "$counterparty_expected_payments_obligor" && "$counterparty_expected_payments_obligor" != "null" ]]; then
+            counterparty_expected_payments_input="$counterparty_expected_payments_input, obligor: \\\"$counterparty_expected_payments_obligor\\\""
+        fi
+        
+        # Convert JSON array to GraphQL format - use proper escaping
+        local counterparty_payments_array=$(echo "$counterparty_expected_payments_json" | jq -r '.[] | "{ oracleAddress: \\\"" + ("" | tostring) + "\\\", oracleOwner: \\\"" + ("" | tostring) + "\\\", oracleKeySender: \\\"" + (.payer.key // "1") + "\\\", oracleValueSenderSecret: \\\"" + (.payer.valueSecret // "1") + "\\\", oracleKeyRecipient: \\\"" + (.payee.key // "1") + "\\\", oracleValueRecipientSecret: \\\"" + (.payee.valueSecret // "2") + "\\\", unlockSender: \\\"" + (.payer.unlock // "") + "\\\", unlockReceiver: \\\"" + (.payee.unlock // "") + "\\\" }"' | tr '\n' ',' | sed 's/,$//')
+        counterparty_expected_payments_input="$counterparty_expected_payments_input, payments: [$counterparty_payments_array] }"
+        
+        input_params="$input_params, $counterparty_expected_payments_input"
+    fi
+    
+    graphql_mutation="mutation { createSwap(input: { $input_params }) { success message accountAddress swapId counterparty swapResult messageId transactionId signature timestamp } }"
+    
+    local graphql_payload="{\"query\": \"$graphql_mutation\"}"
+    
+    echo_with_color $BLUE "  📋 GraphQL mutation:"
+    echo_with_color $BLUE "    $graphql_mutation"
+    
+    # Debug: Show the final input_params
+    echo_with_color $PURPLE "  🔍 DEBUG: Final input_params:"
+    echo_with_color $PURPLE "    $input_params"
+    
+    # Send GraphQL request to payments service
+    echo_with_color $BLUE "  🌐 Making GraphQL request to: http://localhost:3002/graphql"
+    local http_response=$(curl -s -X POST "http://localhost:3002/graphql" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $jwt_token" \
+        -d "$graphql_payload")
+    
+    # Check if request was successful
+    if [[ $? -ne 0 ]]; then
+        echo_with_color $RED "❌ Failed to send GraphQL request"
+        return 1
+    fi
+    
+    # Parse and display response
+    local success=$(echo "$http_response" | jq -r '.data.createSwap.success // false')
+    local message=$(echo "$http_response" | jq -r '.data.createSwap.message // "No message"')
+    local swap_id_result=$(echo "$http_response" | jq -r '.data.createSwap.swapId // "No swap ID"')
+    local message_id=$(echo "$http_response" | jq -r '.data.createSwap.messageId // "No message ID"')
+    
+    if [[ "$success" == "true" ]]; then
+        echo_with_color $GREEN "✅ Create unified swap completed successfully"
+        echo_with_color $BLUE "  📊 Swap ID: $swap_id_result"
+        echo_with_color $BLUE "  📊 Message ID: $message_id"
+        echo_with_color $BLUE "  📊 Message: $message"
+        
+        # Store command output for variable substitution
+        store_command_output "$command_name" "swap_id" "$swap_id_result"
+        store_command_output "$command_name" "message_id" "$message_id"
+        
+        return 0
+    else
+        echo_with_color $RED "❌ Create unified swap failed"
+        echo_with_color $RED "  📊 Message: $message"
+        echo_with_color $RED "  📊 Full response: $http_response"
+        return 1
+    fi
+}
+
 # Function to execute create payment swap command using GraphQL
 execute_create_payment_swap() {
     local command_name="$1"
@@ -1150,6 +1291,205 @@ execute_create_payment_swap() {
         echo_with_color $RED "❌ Create payment swap failed"
         local error_message=$(echo "$http_response" | jq -r '.errors[0].message // "Unknown error"')
         echo_with_color $RED "  📊 Error: $error_message"
+        echo_with_color $RED "  📊 Full response: $http_response"
+        return 1
+    fi
+}
+
+# Function to execute create unified swap command using GraphQL
+execute_create_swap() {
+    local command_name="$1"
+    local user_email="$2"
+    local user_password="$3"
+    local swap_id="$4"
+    local counterparty_id="$5"
+    local deadline="$6"
+    local initiator_obligation_ids_json="$7"
+    local initiator_expected_payments_amount="$8"
+    local initiator_expected_payments_denomination="$9"
+    local initiator_expected_payments_obligor="${10}"
+    local initiator_expected_payments_json="${11}"
+    local counterparty_obligation_ids_json="${12}"
+    local counterparty_expected_payments_amount="${13}"
+    local counterparty_expected_payments_denomination="${14}"
+    local counterparty_expected_payments_obligor="${15}"
+    local counterparty_expected_payments_json="${16}"
+    local idempotency_key="${17}"
+    local group_name="${18}"  # Optional group name for delegation
+    
+    echo_with_color $CYAN "✅ Executing create unified swap command via GraphQL: $command_name"
+    
+    # Login to get JWT token (with optional group delegation)
+    local jwt_token=$(login_user "$user_email" "$user_password" "$group_name")
+    if [[ -z "$jwt_token" ]]; then
+        echo_with_color $RED "❌ Failed to get JWT token for user: $user_email"
+        return 1
+    fi
+    
+    if [[ -n "$group_name" ]]; then
+        echo_with_color $CYAN "  🏢 Using delegation JWT for group: $group_name"
+    fi
+    echo_with_color $BLUE "  📤 Sending GraphQL create unified swap mutation..."
+    
+    # Prepare GraphQL mutation
+    local graphql_mutation
+    local input_params="swapId: \\\"$swap_id\\\", counterparty: \\\"$counterparty_id\\\", deadline: \\\"$deadline\\\""
+    
+    # Add idempotency_key if provided
+    if [[ -n "$idempotency_key" ]]; then
+        input_params="$input_params, idempotencyKey: \\\"$idempotency_key\\\""
+    fi
+    
+    # Add initiator obligation IDs if provided
+    if [[ -n "$initiator_obligation_ids_json" && "$initiator_obligation_ids_json" != "null" ]]; then
+        input_params="$input_params, initiatorObligationIds: $initiator_obligation_ids_json"
+    fi
+    
+    # Add initiator expected payments if provided
+    if [[ -n "$initiator_expected_payments_amount" && "$initiator_expected_payments_amount" != "null" ]]; then
+        # Build payments input from individual parameters
+        local initiator_payments_input="{ amount: \\\"$initiator_expected_payments_amount\\\""
+        if [[ -n "$initiator_expected_payments_denomination" && "$initiator_expected_payments_denomination" != "null" ]]; then
+            initiator_payments_input="$initiator_payments_input, denomination: \\\"$initiator_expected_payments_denomination\\\""
+        fi
+        if [[ -n "$initiator_expected_payments_obligor" && "$initiator_expected_payments_obligor" != "null" ]]; then
+            initiator_payments_input="$initiator_payments_input, obligor: \\\"$initiator_expected_payments_obligor\\\""
+        fi
+        # Use the payments JSON array from YAML, but convert simple payment objects to full oracle structure
+        if [[ -n "$initiator_expected_payments_json" && "$initiator_expected_payments_json" != "null" && "$initiator_expected_payments_json" != "[]" ]]; then
+            # Check if the payments array contains simple objects with just "id" field
+            if [[ "$initiator_expected_payments_json" =~ \{\"id\": ]]; then
+                # Convert simple payment objects to full oracle structure using GraphQL syntax
+                initiator_payments_input="$initiator_payments_input, payments: [{ oracleAddress: \\\"\\\", oracleOwner: \\\"\\\", oracleKeySender: \\\"1\\\", oracleValueSenderSecret: \\\"1\\\", oracleKeyRecipient: \\\"1\\\", oracleValueRecipientSecret: \\\"2\\\", unlockSender: \\\"\\\", unlockReceiver: \\\"\\\" }]"
+            else
+                # For complex payment objects, we need to convert JSON to GraphQL syntax
+                # This is a simplified approach - for now, use default oracle structure
+                initiator_payments_input="$initiator_payments_input, payments: [{ oracleAddress: \\\"\\\", oracleOwner: \\\"\\\", oracleKeySender: \\\"1\\\", oracleValueSenderSecret: \\\"1\\\", oracleKeyRecipient: \\\"1\\\", oracleValueRecipientSecret: \\\"2\\\", unlockSender: \\\"\\\", unlockReceiver: \\\"\\\" }]"
+            fi
+        else
+            initiator_payments_input="$initiator_payments_input, payments: [{ oracleAddress: \\\"\\\", oracleOwner: \\\"\\\", oracleKeySender: \\\"1\\\", oracleValueSenderSecret: \\\"1\\\", oracleKeyRecipient: \\\"1\\\", oracleValueRecipientSecret: \\\"2\\\", unlockSender: \\\"\\\", unlockReceiver: \\\"\\\" }]"
+        fi
+        initiator_payments_input="$initiator_payments_input }"
+        input_params="$input_params, initiatorExpectedPayments: $initiator_payments_input"
+    fi
+    
+    # Add counterparty obligation IDs if provided
+    if [[ -n "$counterparty_obligation_ids_json" && "$counterparty_obligation_ids_json" != "null" ]]; then
+        input_params="$input_params, counterpartyObligationIds: $counterparty_obligation_ids_json"
+    fi
+    
+    # Add counterparty expected payments if provided
+    if [[ -n "$counterparty_expected_payments_amount" && "$counterparty_expected_payments_amount" != "null" ]]; then
+        # Build payments input from individual parameters
+        local counterparty_payments_input="{ amount: \\\"$counterparty_expected_payments_amount\\\""
+        if [[ -n "$counterparty_expected_payments_denomination" && "$counterparty_expected_payments_denomination" != "null" ]]; then
+            counterparty_payments_input="$counterparty_payments_input, denomination: \\\"$counterparty_expected_payments_denomination\\\""
+        fi
+        if [[ -n "$counterparty_expected_payments_obligor" && "$counterparty_expected_payments_obligor" != "null" ]]; then
+            counterparty_payments_input="$counterparty_payments_input, obligor: \\\"$counterparty_expected_payments_obligor\\\""
+        fi
+        # Use the payments JSON array from YAML, but convert simple payment objects to full oracle structure
+        if [[ -n "$counterparty_expected_payments_json" && "$counterparty_expected_payments_json" != "null" && "$counterparty_expected_payments_json" != "[]" ]]; then
+            # Check if the payments array contains simple objects with just "id" field
+            if [[ "$counterparty_expected_payments_json" =~ \{\"id\": ]]; then
+                # Convert simple payment objects to full oracle structure using GraphQL syntax
+                counterparty_payments_input="$counterparty_payments_input, payments: [{ oracleAddress: \\\"\\\", oracleOwner: \\\"\\\", oracleKeySender: \\\"1\\\", oracleValueSenderSecret: \\\"1\\\", oracleKeyRecipient: \\\"1\\\", oracleValueRecipientSecret: \\\"2\\\", unlockSender: \\\"\\\", unlockReceiver: \\\"\\\" }]"
+            else
+                # For complex payment objects, we need to convert JSON to GraphQL syntax
+                # This is a simplified approach - for now, use default oracle structure
+                counterparty_payments_input="$counterparty_payments_input, payments: [{ oracleAddress: \\\"\\\", oracleOwner: \\\"\\\", oracleKeySender: \\\"1\\\", oracleValueSenderSecret: \\\"1\\\", oracleKeyRecipient: \\\"1\\\", oracleValueRecipientSecret: \\\"2\\\", unlockSender: \\\"\\\", unlockReceiver: \\\"\\\" }]"
+            fi
+        else
+            counterparty_payments_input="$counterparty_payments_input, payments: [{ oracleAddress: \\\"\\\", oracleOwner: \\\"\\\", oracleKeySender: \\\"1\\\", oracleValueSenderSecret: \\\"1\\\", oracleKeyRecipient: \\\"1\\\", oracleValueRecipientSecret: \\\"2\\\", unlockSender: \\\"\\\", unlockReceiver: \\\"\\\" }]"
+        fi
+        counterparty_payments_input="$counterparty_payments_input }"
+        input_params="$input_params, counterpartyExpectedPayments: $counterparty_payments_input"
+    fi
+    
+    # Use GraphQL variables to avoid parsing issues with complex nested structures
+    graphql_mutation="mutation(\$input: CreateSwapInput!) { createSwap(input: \$input) { success message accountAddress swapId counterparty swapResult messageId transactionId signature timestamp } }"
+    
+    # Build proper JSON variables object from scratch
+    local json_variables="{\"input\": {"
+    json_variables="$json_variables \"swapId\": \"$swap_id\","
+    json_variables="$json_variables \"counterparty\": \"$counterparty_id\","
+    json_variables="$json_variables \"deadline\": \"$deadline\","
+    json_variables="$json_variables \"idempotencyKey\": \"$idempotency_key\""
+    
+    # Add initiator obligation IDs if provided
+    if [[ -n "$initiator_obligation_ids_json" && "$initiator_obligation_ids_json" != "null" && "$initiator_obligation_ids_json" != "[]" ]]; then
+        json_variables="$json_variables, \"initiatorObligationIds\": $initiator_obligation_ids_json"
+    fi
+    
+    # Add counterparty expected payments if provided
+    if [[ -n "$counterparty_expected_payments_amount" && "$counterparty_expected_payments_amount" != "null" ]]; then
+        json_variables="$json_variables, \"counterpartyExpectedPayments\": {"
+        json_variables="$json_variables \"amount\": \"$counterparty_expected_payments_amount\","
+        json_variables="$json_variables \"denomination\": \"$counterparty_expected_payments_denomination\","
+        json_variables="$json_variables \"payments\": [{"
+        json_variables="$json_variables \"oracleAddress\": \"\","
+        json_variables="$json_variables \"oracleOwner\": \"\","
+        json_variables="$json_variables \"oracleKeySender\": \"1\","
+        json_variables="$json_variables \"oracleValueSenderSecret\": \"1\","
+        json_variables="$json_variables \"oracleKeyRecipient\": \"1\","
+        json_variables="$json_variables \"oracleValueRecipientSecret\": \"2\","
+        json_variables="$json_variables \"unlockSender\": \"\","
+        json_variables="$json_variables \"unlockReceiver\": \"\""
+        json_variables="$json_variables }]"
+        json_variables="$json_variables }"
+    fi
+    
+    json_variables="$json_variables }}"
+    local graphql_payload="{\"query\": \"$graphql_mutation\", \"variables\": $json_variables}"
+    
+    echo_with_color $BLUE "  📋 GraphQL mutation:"
+    echo_with_color $BLUE "    $graphql_mutation"
+    echo_with_color $BLUE "  📋 Variables object:"
+    echo_with_color $BLUE "    $json_variables"
+    
+    # Send GraphQL request to payments service
+    echo_with_color $BLUE "  🌐 Making GraphQL request to: http://localhost:3002/graphql"
+    local http_response=$(curl -s -X POST "http://localhost:3002/graphql" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $jwt_token" \
+        -d "$graphql_payload")
+    
+    # Check if the request was successful
+    if echo "$http_response" | jq -e '.data.createSwap' > /dev/null 2>&1; then
+        echo_with_color $GREEN "✅ Create unified swap successful"
+        
+        # Extract response data
+        local success=$(echo "$http_response" | jq -r '.data.createSwap.success')
+        local message=$(echo "$http_response" | jq -r '.data.createSwap.message')
+        local account_address=$(echo "$http_response" | jq -r '.data.createSwap.accountAddress')
+        local swap_id_result=$(echo "$http_response" | jq -r '.data.createSwap.swapId')
+        local counterparty=$(echo "$http_response" | jq -r '.data.createSwap.counterparty')
+        local swap_result=$(echo "$http_response" | jq -r '.data.createSwap.swapResult')
+        local message_id=$(echo "$http_response" | jq -r '.data.createSwap.messageId')
+        local transaction_id=$(echo "$http_response" | jq -r '.data.createSwap.transactionId')
+        local signature=$(echo "$http_response" | jq -r '.data.createSwap.signature')
+        local timestamp=$(echo "$http_response" | jq -r '.data.createSwap.timestamp')
+        
+        echo_with_color $BLUE "  📊 Success: $success"
+        echo_with_color $BLUE "  📊 Message: $message"
+        echo_with_color $BLUE "  📊 Account Address: $account_address"
+        echo_with_color $BLUE "  📊 Swap ID: $swap_id_result"
+        echo_with_color $BLUE "  📊 Counterparty: $counterparty"
+        echo_with_color $BLUE "  📊 Swap Result: $swap_result"
+        echo_with_color $BLUE "  📊 Message ID: $message_id"
+        echo_with_color $BLUE "  📊 Transaction ID: $transaction_id"
+        echo_with_color $BLUE "  📊 Signature: $signature"
+        echo_with_color $BLUE "  📊 Timestamp: $timestamp"
+        
+        # Store command output for variable substitution
+        store_command_output "$command_name" "swap_id" "$swap_id_result"
+        store_command_output "$command_name" "message_id" "$message_id"
+        
+        return 0
+    else
+        echo_with_color $RED "❌ Create unified swap failed"
+        local error_message=$(echo "$http_response" | jq -r '.errors[0].message // "Unknown error"')
+        echo_with_color $RED "  📊 Message: $error_message"
         echo_with_color $RED "  📊 Full response: $http_response"
         return 1
     fi

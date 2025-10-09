@@ -51,6 +51,11 @@ tokens:
     description: AUD Token Description
     chain_id: 33117
     address: 0x3Aa5ebB10DC797CAC828524e59A333d0A371443c
+  - id: USD
+    name: USD Token
+    description: USD Token Description
+    chain_id: 33117
+    address: 0xc6e7DF5E7b4f2A278906862b61205850344D4e7d
 
 assets:
   - id: AUD
@@ -59,16 +64,34 @@ assets:
     currency: AUD
     description: AUD Token Description
     token_id: AUD-token
+    
+  - id: USD
+    name: USD Token
+    type: Cash
+    currency: USD
+    description: USD Token Description
+    token_id: USD-token
 
 fiat_accounts:
   - id: AUDBANK-001
     user:
-      id: admin2@yieldfabric.com
-      password: testpass123
-      group: Admin Group
-    holder: YieldFabric Inc
+      id: issuer@yieldfabric.com
+      password: issuerpass456
+    holder: Personal Inc
     currency: AUD
     iban: AU12ABCD1234567890123456
     bsb: 012345
     account_number: 123456789
     asset: aud-token-asset
+
+  - id: USDBANK-002
+    user:
+      id: admin2@yieldfabric.com
+      password: testpass123
+      group: Admin Group
+    holder: YieldFabric Inc
+    currency: USD
+    iban: US12ABCD1234567890123456
+    routing_number: 123456789
+    account_number: 123456789
+    asset: usd-token-asset

@@ -109,6 +109,35 @@ substitute_variables() {
         return 0
     fi
     
+    # Check if the value is a JSON array that contains variable references
+    if [[ "$value" =~ ^\[.*\$.*\]$ ]]; then
+        # This is a JSON array with variables - process each element
+        local result="$value"
+        
+        # Find all variable references in the JSON array
+        while [[ "$result" =~ \$[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]* ]]; do
+            local var_ref="${BASH_REMATCH[0]}"
+            local command_name=$(echo "$var_ref" | sed -n 's/.*\$\([a-zA-Z_][a-zA-Z0-9_]*\)\.[a-zA-Z0-9_]*.*/\1/p')
+            local field_name=$(echo "$var_ref" | sed -n 's/.*\$[a-zA-Z_][a-zA-Z0-9_]*\.\([a-zA-Z0-9_]*\).*/\1/p')
+            
+            if [[ -n "$command_name" && -n "$field_name" ]]; then
+                local stored_value=$(get_command_output "$command_name" "$field_name")
+                if [[ -n "$stored_value" ]]; then
+                    echo_with_color $CYAN "    🔄 Substituting $var_ref -> $stored_value in JSON array" >&2
+                    result="${result//$var_ref/$stored_value}"
+                else
+                    echo_with_color $YELLOW "    ⚠️  Variable $var_ref not found in stored outputs" >&2
+                    break
+                fi
+            else
+                break
+            fi
+        done
+        
+        echo "$result"
+        return 0
+    fi
+    
     # Check if the value contains variable references
     if [[ "$value" =~ \$[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]* ]]; then
         # Extract command name and field name

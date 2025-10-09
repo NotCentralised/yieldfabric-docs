@@ -3,6 +3,12 @@
 # YieldFabric Command Executors Module
 # Contains functions for executing different types of commands
 
+# Service URLs - can be overridden by environment variables
+# PAY_SERVICE_URL="${PAY_SERVICE_URL:-http://localhost:3002}"
+# AUTH_SERVICE_URL="${AUTH_SERVICE_URL:-http://localhost:3000}"
+PAY_SERVICE_URL="${PAY_SERVICE_URL:-https://pay.yieldfabric.io}"
+AUTH_SERVICE_URL="${AUTH_SERVICE_URL:-https://auth.yieldfabric.io}"
+
 # Function to execute deposit command using GraphQL
 execute_deposit() {
     local command_name="$1"
@@ -42,8 +48,8 @@ execute_deposit() {
     echo_with_color $BLUE "    $graphql_mutation"
     
     # Send GraphQL request to payments service
-    echo_with_color $BLUE "  🌐 Making GraphQL request to: http://localhost:3002/graphql"
-    local http_response=$(curl -s -X POST "http://localhost:3002/graphql" \
+    echo_with_color $BLUE "  🌐 Making GraphQL request to: ${PAY_SERVICE_URL}/graphql"
+    local http_response=$(curl -s -X POST "${PAY_SERVICE_URL}/graphql" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $jwt_token" \
         -d "$graphql_payload")
@@ -119,8 +125,8 @@ execute_withdraw() {
     echo_with_color $BLUE "    $graphql_mutation"
     
     # Send GraphQL request to payments service
-    echo_with_color $BLUE "  🌐 Making GraphQL request to: http://localhost:3002/graphql"
-    local http_response=$(curl -s -X POST "http://localhost:3002/graphql" \
+    echo_with_color $BLUE "  🌐 Making GraphQL request to: ${PAY_SERVICE_URL}/graphql"
+    local http_response=$(curl -s -X POST "${PAY_SERVICE_URL}/graphql" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $jwt_token" \
         -d "$graphql_payload")
@@ -192,8 +198,8 @@ execute_instant() {
     echo_with_color $BLUE "    $graphql_mutation"
     
     # Send GraphQL request to payments service
-    echo_with_color $BLUE "  🌐 Making GraphQL request to: http://localhost:3002/graphql"
-    local http_response=$(curl -s -X POST "http://localhost:3002/graphql" \
+    echo_with_color $BLUE "  🌐 Making GraphQL request to: ${PAY_SERVICE_URL}/graphql"
+    local http_response=$(curl -s -X POST "${PAY_SERVICE_URL}/graphql" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $jwt_token" \
         -d "$graphql_payload")
@@ -275,8 +281,8 @@ execute_balance() {
     echo_with_color $BLUE "    group_id: $group_id"
     
     # Send REST API request to payments service
-    echo_with_color $BLUE "  🌐 Making REST API request to: http://localhost:3002/balance?$query_params"
-    local http_response=$(curl -s -X GET "http://localhost:3002/balance?$query_params" \
+    echo_with_color $BLUE "  🌐 Making REST API request to: ${PAY_SERVICE_URL}/balance?$query_params"
+    local http_response=$(curl -s -X GET "${PAY_SERVICE_URL}/balance?$query_params" \
         -H "Authorization: Bearer $jwt_token")
     
     echo_with_color $BLUE "  📡 Raw REST API response: '$http_response'"
@@ -463,8 +469,8 @@ execute_accept() {
     echo_with_color $BLUE "    $graphql_mutation"
     
     # Send GraphQL request to payments service
-    echo_with_color $BLUE "  🌐 Making GraphQL request to: http://localhost:3002/graphql"
-    local http_response=$(curl -s -X POST "http://localhost:3002/graphql" \
+    echo_with_color $BLUE "  🌐 Making GraphQL request to: ${PAY_SERVICE_URL}/graphql"
+    local http_response=$(curl -s -X POST "${PAY_SERVICE_URL}/graphql" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $jwt_token" \
         -d "$graphql_payload")
@@ -618,8 +624,8 @@ execute_create_obligation_ergonomic() {
     echo_with_color $BLUE "    $graphql_mutation"
     
     # Send GraphQL request to payments service
-    echo_with_color $BLUE "  🌐 Making GraphQL request to: http://localhost:3002/graphql"
-    local http_response=$(curl -s -X POST "http://localhost:3002/graphql" \
+    echo_with_color $BLUE "  🌐 Making GraphQL request to: ${PAY_SERVICE_URL}/graphql"
+    local http_response=$(curl -s -X POST "${PAY_SERVICE_URL}/graphql" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $jwt_token" \
         -d "$graphql_payload")
@@ -694,8 +700,8 @@ execute_list_groups() {
     echo_with_color $BLUE "  📤 Sending request to Auth Service..."
     
     # Make request to auth service to get user's groups
-    echo_with_color $BLUE "  🌐 Making request to: http://localhost:3000/auth/groups/user"
-    local http_response=$(curl -s -X GET "http://localhost:3000/auth/groups/user" \
+    echo_with_color $BLUE "  🌐 Making request to: ${AUTH_SERVICE_URL}/auth/groups/user"
+    local http_response=$(curl -s -X GET "${AUTH_SERVICE_URL}/auth/groups/user" \
         -H "Authorization: Bearer $jwt_token")
     
     echo_with_color $BLUE "  📡 Response received:"

@@ -100,11 +100,8 @@ commands:
   # - name: cancel_swap-1
   #   type: cancel_swap
   #   user: 
-  #     id: admin2@yieldfabric.com
-  #     password: testpass123
-  #     group: Admin Group
+  #     id: counterpart@yieldfabric.com
+  #     password: counterpass789
   #   parameters:
-  #     swap_id: "1234567890"
-  #     key: "cancel_key"
-  #     value: "cancel_value"
+  #     swap_id: "123456789"
   #     idempotency_key: cancel-swap-ergonomic-$(date +%s)

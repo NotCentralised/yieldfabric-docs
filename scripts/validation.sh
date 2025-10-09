@@ -304,9 +304,42 @@ validate_commands_file() {
                 # list_groups doesn't require any specific parameters
                 # It only needs user credentials which are already validated above
                 ;;
+            "create_swap")
+                local swap_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.swap_id")
+                local counterparty_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.counterparty.id")
+                local deadline=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.deadline")
+                
+                if [[ -z "$swap_id" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.swap_id' field"
+                    return 1
+                fi
+                
+                if [[ -z "$counterparty_id" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.counterparty.id' field"
+                    return 1
+                fi
+                
+                if [[ -z "$deadline" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.deadline' field"
+                    return 1
+                fi
+                
+                # Validate initiator parameters (optional but if present, should be valid)
+                local initiator_obligation_ids=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.initiator.obligation_ids")
+                local initiator_expected_payments=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.initiator.expected_payments")
+                
+                # Validate counterparty parameters (optional but if present, should be valid)
+                local counterparty_obligation_ids=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.counterparty.obligation_ids")
+                local counterparty_expected_payments=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.counterparty.expected_payments")
+                
+                # Note: For create_swap, at least one of initiator or counterparty should have obligations or expected payments
+                if [[ -z "$initiator_obligation_ids" && -z "$initiator_expected_payments" && -z "$counterparty_obligation_ids" && -z "$counterparty_expected_payments" ]]; then
+                    echo_with_color $YELLOW "Warning: Command '$command_name' has no obligations or expected payments for either initiator or counterparty"
+                fi
+                ;;
             *)
                 echo_with_color $RED "Error: Command '$command_name' has unsupported type: '$command_type'"
-                echo_with_color $YELLOW "Supported types: deposit, withdraw, instant, accept, balance, create_obligation, accept_obligation, transfer_obligation, cancel_obligation, obligations, total_supply, mint, burn, create_obligation_swap, create_payment_swap, complete_swap, cancel_swap, list_groups"
+                echo_with_color $YELLOW "Supported types: deposit, withdraw, instant, accept, balance, create_obligation, accept_obligation, transfer_obligation, cancel_obligation, obligations, total_supply, mint, burn, create_obligation_swap, create_payment_swap, create_swap, complete_swap, cancel_swap, list_groups"
                 return 1
                 ;;
         esac

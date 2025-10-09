@@ -13,6 +13,13 @@ TOKENS_DIR="$SCRIPT_DIR/tokens"
 # Ensure tokens directory exists
 mkdir -p "$TOKENS_DIR"
 
+# Service URLs - can be overridden by environment variables
+# PAY_SERVICE_URL="${PAY_SERVICE_URL:-http://localhost:3002}"
+# AUTH_SERVICE_URL="${AUTH_SERVICE_URL:-http://localhost:3000}"
+
+PAY_SERVICE_URL="${PAY_SERVICE_URL:-https://pay.yieldfabric.io}"
+AUTH_SERVICE_URL="${AUTH_SERVICE_URL:-https://auth.yieldfabric.io}"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -78,7 +85,7 @@ login_with_services() {
     local password="$2"
     local services_json='["vault", "payments"]'
 
-    local http_response=$(curl -s -w "HTTP_STATUS:%{http_code}" -X POST "http://localhost:3000/auth/login/with-services" \
+    local http_response=$(curl -s -w "HTTP_STATUS:%{http_code}" -X POST "${AUTH_SERVICE_URL}/auth/login/with-services" \
         -H "Content-Type: application/json" \
         -d "{\"email\": \"$email\", \"password\": \"$password\", \"services\": $services_json}")
 
@@ -109,7 +116,7 @@ get_first_user_credentials() {
 get_group_id_by_name() {
     local token="$1"
     local name="$2"
-    local groups_json=$(curl -s -X GET "http://localhost:3000/auth/groups" -H "Authorization: Bearer $token")
+    local groups_json=$(curl -s -X GET "${AUTH_SERVICE_URL}/auth/groups" -H "Authorization: Bearer $token")
     local group_id=$(echo "$groups_json" | jq -r ".[] | select(.name == \"$name\") | .id" 2>/dev/null)
     echo "$group_id"
 }
@@ -142,7 +149,7 @@ get_group_id_by_name_for_delegation() {
     
     echo_with_color $BLUE "  🔍 Looking up group ID for delegation: $group_name" >&2
     
-    local groups_json=$(curl -s -X GET "http://localhost:3000/auth/groups" \
+    local groups_json=$(curl -s -X GET "${AUTH_SERVICE_URL}/auth/groups" \
         -H "Authorization: Bearer $token")
     
     if [[ -n "$groups_json" ]]; then
@@ -171,7 +178,7 @@ create_delegation_token_for_fiat() {
     echo_with_color $BLUE "    Group ID: ${group_id:0:8}..." >&2
     
     # Create delegation JWT with comprehensive scope for payments operations
-    local delegation_response=$(curl -s -X POST "http://localhost:3000/auth/delegation/jwt" \
+    local delegation_response=$(curl -s -X POST "${AUTH_SERVICE_URL}/auth/delegation/jwt" \
         -H "Authorization: Bearer $user_token" \
         -H "Content-Type: application/json" \
         -d "{\"group_id\": \"$group_id\", \"delegation_scope\": [\"CryptoOperations\", \"ReadGroup\", \"UpdateGroup\", \"ManageGroupMembers\"], \"expiry_seconds\": 3600}")
@@ -200,7 +207,7 @@ login_user_for_fiat_account() {
     echo_with_color $BLUE "  🔐 Logging in user for fiat account creation: $email" >&2
     
     local services_json='["vault", "payments"]'
-    local http_response=$(curl -s -X POST "http://localhost:3000/auth/login/with-services" \
+    local http_response=$(curl -s -X POST "${AUTH_SERVICE_URL}/auth/login/with-services" \
         -H "Content-Type: application/json" \
         -d "{\"email\": \"$email\", \"password\": \"$password\", \"services\": $services_json}")
     
@@ -298,7 +305,7 @@ create_user() {
     local user_payload="{\"email\": \"$email\", \"password\": \"$password\", \"role\": \"$role\"}"
     
     # Get HTTP status code along with response
-    local http_response=$(curl -s -w "HTTP_STATUS:%{http_code}" -X POST "http://localhost:3000/auth/users" \
+    local http_response=$(curl -s -w "HTTP_STATUS:%{http_code}" -X POST "${AUTH_SERVICE_URL}/auth/users" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $admin_token" \
         -d "$user_payload")
@@ -330,7 +337,7 @@ check_user_exists() {
     
     # Since there's no GET /auth/users endpoint, we need to try to get user info
     # by attempting to login and extract user ID from the response
-    local login_response=$(curl -s -X POST "http://localhost:3000/auth/login/with-services" \
+    local login_response=$(curl -s -X POST "${AUTH_SERVICE_URL}/auth/login/with-services" \
         -H "Content-Type: application/json" \
         -d "{\"email\": \"$email\", \"password\": \"$(parse_yaml "$SETUP_FILE" ".users[] | select(.id == \"$email\") | .password")\", \"services\": [\"vault\", \"payments\"]}")
     
@@ -380,7 +387,7 @@ create_initial_users() {
             sleep 1
             
             # Get HTTP status code along with response
-            local http_response=$(curl -s -w "HTTP_STATUS:%{http_code}" -X POST "http://localhost:3000/auth/users" \
+            local http_response=$(curl -s -w "HTTP_STATUS:%{http_code}" -X POST "${AUTH_SERVICE_URL}/auth/users" \
                 -H "Content-Type: application/json" \
                 -d "$user_payload")
             
@@ -427,7 +434,7 @@ create_group() {
     local group_payload="{\"name\": \"$name\", \"description\": \"$description\", \"group_type\": \"$group_type\"}"
     
     # Get HTTP status code along with response
-    local http_response=$(curl -s -w "HTTP_STATUS:%{http_code}" -X POST "http://localhost:3000/auth/groups" \
+    local http_response=$(curl -s -w "HTTP_STATUS:%{http_code}" -X POST "${AUTH_SERVICE_URL}/auth/groups" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $creator_token" \
         -d "$group_payload")
@@ -468,7 +475,7 @@ check_user_in_group() {
     fi
     
     # Check if user is already a member
-    local http_response=$(curl -s -w "HTTP_STATUS:%{http_code}" -X GET "http://localhost:3000/auth/groups/$group_id/members" \
+    local http_response=$(curl -s -w "HTTP_STATUS:%{http_code}" -X GET "${AUTH_SERVICE_URL}/auth/groups/$group_id/members" \
         -H "Authorization: Bearer $admin_token")
     
     local http_status=$(echo "$http_response" | grep -o 'HTTP_STATUS:[0-9]*' | cut -d: -f2)
@@ -520,7 +527,7 @@ add_user_to_group() {
     local member_payload="{\"user_id\": \"$user_id\", \"role\": \"$role\"}"
     
     # Get HTTP status code along with response
-    local http_response=$(curl -s -w "HTTP_STATUS:%{http_code}" -X POST "http://localhost:3000/auth/groups/$group_id/members" \
+    local http_response=$(curl -s -w "HTTP_STATUS:%{http_code}" -X POST "${AUTH_SERVICE_URL}/auth/groups/$group_id/members" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $admin_token" \
         -d "$member_payload")
@@ -556,7 +563,7 @@ create_token() {
     # Create token using GraphQL API with input object
     local create_token_query="{\"query\": \"mutation { tokenFlow { createToken(input: { chainId: \\\"$chain_id\\\", address: \\\"$address\\\", tokenId: \\\"$token_id_param\\\", name: \\\"$name\\\", description: \\\"$description\\\" }) { success message token { id chainId address } transactionId signature timestamp } } }\"}"
     
-    local response=$(curl -s -X POST "http://localhost:3002/graphql" \
+    local response=$(curl -s -X POST "${PAY_SERVICE_URL}/graphql" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $admin_token" \
         -d "$create_token_query")
@@ -611,7 +618,7 @@ create_asset() {
     # Create asset using GraphQL API with input object
     local create_asset_query="{\"query\": \"mutation { assetFlow { createAsset(input: { name: \\\"$name\\\", description: \\\"$description\\\", assetType: \\\"$asset_type\\\", currency: \\\"$currency\\\", tokenId: \\\"$token_id\\\" }) { success message asset { id name description assetType currency tokenId obligationAssetId obligorId createdAt deleted transactionId } transactionId signature timestamp } } }\"}"
     
-    local response=$(curl -s -X POST "http://localhost:3002/graphql" \
+    local response=$(curl -s -X POST "${PAY_SERVICE_URL}/graphql" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $admin_token" \
         -d "$create_asset_query")
@@ -682,7 +689,7 @@ create_us_bank_account() {
     # Create US bank account using GraphQL API
     local create_fiat_account_query="{\"query\": \"mutation { fiatAccountFlow { createUsBankAccount(input: { accountId: \\\"$account_id\\\", assetId: \\\"$asset_id\\\", country: \\\"$country\\\", currency: \\\"$currency\\\", accountHolderName: \\\"$account_holder_name\\\", iban: \\\"$iban\\\", status: ACTIVE, routingNumber: \\\"$routing_number\\\", accountNumber: \\\"$account_number\\\" }) { success message bankAccount { id assetId country currency accountHolderName iban status } transactionId signature timestamp } } }\"}"
     
-    local response=$(curl -s -X POST "http://localhost:3002/graphql" \
+    local response=$(curl -s -X POST "${PAY_SERVICE_URL}/graphql" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $effective_token" \
         -d "$create_fiat_account_query")
@@ -753,7 +760,7 @@ create_uk_bank_account() {
     # Create UK bank account using GraphQL API
     local create_fiat_account_query="{\"query\": \"mutation { fiatAccountFlow { createUkBankAccount(input: { accountId: \\\"$account_id\\\", assetId: \\\"$asset_id\\\", country: \\\"$country\\\", currency: \\\"$currency\\\", accountHolderName: \\\"$account_holder_name\\\", iban: \\\"$iban\\\", status: ACTIVE, sortCode: \\\"$sort_code\\\", accountNumber: \\\"$account_number\\\" }) { success message bankAccount { id assetId country currency accountHolderName iban status } transactionId signature timestamp } } }\"}"
     
-    local response=$(curl -s -X POST "http://localhost:3002/graphql" \
+    local response=$(curl -s -X POST "${PAY_SERVICE_URL}/graphql" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $effective_token" \
         -d "$create_fiat_account_query")
@@ -824,7 +831,7 @@ create_au_bank_account() {
     # Create AU bank account using GraphQL API
     local create_fiat_account_query="{\"query\": \"mutation { fiatAccountFlow { createAuBankAccount(input: { accountId: \\\"$account_id\\\", assetId: \\\"$asset_id\\\", country: \\\"$country\\\", currency: \\\"$currency\\\", accountHolderName: \\\"$account_holder_name\\\", iban: \\\"$iban\\\", status: ACTIVE, bsb: \\\"$bsb\\\", accountNumber: \\\"$account_number\\\" }) { success message bankAccount { id assetId country currency accountHolderName iban status } transactionId signature timestamp } } }\"}"
     
-    local response=$(curl -s -X POST "http://localhost:3002/graphql" \
+    local response=$(curl -s -X POST "${PAY_SERVICE_URL}/graphql" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $effective_token" \
         -d "$create_fiat_account_query")
@@ -967,7 +974,7 @@ deploy_group_account_if_needed() {
     echo_with_color $BLUE "    🔍 Checking account status for group ID: $group_id"
     
     # Check if group account is already deployed
-    local account_status_response=$(curl -s -X GET "http://localhost:3000/auth/groups/$group_id/account-status" \
+    local account_status_response=$(curl -s -X GET "${AUTH_SERVICE_URL}/auth/groups/$group_id/account-status" \
         -H "Authorization: Bearer $admin_token")
     
     if [[ -n "$account_status_response" ]]; then
@@ -982,7 +989,7 @@ deploy_group_account_if_needed() {
             echo_with_color $BLUE "    🚀 Deploying group account..."
             
             # Deploy the group account
-            local deploy_response=$(curl -s -w "HTTP_STATUS:%{http_code}" -X POST "http://localhost:3000/auth/groups/$group_id/deploy-account" \
+            local deploy_response=$(curl -s -w "HTTP_STATUS:%{http_code}" -X POST "${AUTH_SERVICE_URL}/auth/groups/$group_id/deploy-account" \
                 -H "Authorization: Bearer $admin_token")
             
             local http_status=$(echo "$deploy_response" | grep -o 'HTTP_STATUS:[0-9]*' | cut -d: -f2)
@@ -1021,7 +1028,7 @@ create_delegation_jwt() {
     
     echo_with_color $BLUE "    🔑 Creating delegation JWT for group: $group_id" >&2
     
-    local delegation_response=$(curl -s -X POST "http://localhost:3000/auth/delegation/jwt" \
+    local delegation_response=$(curl -s -X POST "${AUTH_SERVICE_URL}/auth/delegation/jwt" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $admin_token" \
         -d "{\"group_id\": \"$group_id\", \"delegation_scope\": [\"CryptoOperations\", \"ReadGroup\", \"UpdateGroup\", \"ManageGroupMembers\"], \"expiry_seconds\": 3600}")
@@ -1073,7 +1080,7 @@ add_member_as_owner() {
     echo_with_color $BLUE "    🔍 Checking account status for group ID: $group_id"
     
     # Get the group's account address using admin token (delegation JWT not needed for read operations)
-    local account_status_response=$(curl -s -X GET "http://localhost:3000/auth/groups/$group_id/account-status" \
+    local account_status_response=$(curl -s -X GET "${AUTH_SERVICE_URL}/auth/groups/$group_id/account-status" \
         -H "Authorization: Bearer $admin_token")
     
     echo_with_color $BLUE "    📥 Account status response: $account_status_response"
@@ -1093,7 +1100,7 @@ add_member_as_owner() {
             # Add the user as an owner to the group's account using delegation JWT
             local add_owner_payload="{\"new_owner\": \"$user_id\"}"
             
-            local add_owner_response=$(curl -s -w "HTTP_STATUS:%{http_code}" -X POST "http://localhost:3000/auth/groups/$group_id/add-owner" \
+            local add_owner_response=$(curl -s -w "HTTP_STATUS:%{http_code}" -X POST "${AUTH_SERVICE_URL}/auth/groups/$group_id/add-owner" \
                 -H "Content-Type: application/json" \
                 -H "Authorization: Bearer $delegation_token" \
                 -d "$add_owner_payload")
