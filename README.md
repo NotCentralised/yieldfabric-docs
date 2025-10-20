@@ -51,8 +51,6 @@ YieldFabric provides **intelligent accounts** that enable sophisticated financia
 - **[SIMPLE.md](./SIMPLE.md)** - All API examples in one comprehensive file
 - **[NAVIGATION.md](./NAVIGATION.md)** - Reading guide based on your needs
 
-### Additional Documentation
-- **[BANKING.md](./BANKING.md)** - Banking integration guide
 
 ### Service URLs
 - **Production Auth**: `https://auth.yieldfabric.com`
@@ -182,26 +180,6 @@ All account balances and transactions use ZK-proofs:
 
 See [Section 13 in SIMPLE.md](./SIMPLE.md#13-annuity-settlement-workflow) for complete example.
 
-## Automation & Testing
-
-### Scripts Directory
-
-The `scripts/` directory contains automation tools:
-
-- **`execute_commands.sh`** - Execute YAML command sequences
-- **`settle_annuity.yaml`** - Annuity settlement workflow example
-- **`setup.yaml`** - Basic system setup commands
-- **`setup_system.sh`** - Complete system initialization
-
-### Running Workflows
-
-```bash
-cd scripts
-./execute_commands.sh settle_annuity.yaml
-```
-
-This executes the complete annuity securitization workflow automatically.
-
 ## GraphQL Schema
 
 The API uses GraphQL for most operations:
@@ -258,18 +236,6 @@ When acting on behalf of groups:
 - **Chain 151** - Redbelly Mainnet (Governors)
 - **Chain 153** - Redbelly Testnet (Governors)
 
-## Support & Resources
-
-For detailed API documentation and examples, see:
-- [SIMPLE.md](./SIMPLE.md) - Complete API reference
-- [PAYMENTS.md](./PAYMENTS.md) - Payment system details
-- [BANKING.md](./BANKING.md) - Banking integration
-
-For implementation support:
-- Review example workflows in `scripts/` directory
-- Check `settle_annuity.yaml` for real-world scenarios
-- Use `execute_commands.sh` to run automated test sequences
-
 ## Security Notes
 
 - Always use HTTPS in production
@@ -310,15 +276,6 @@ For implementation support:
 │                                                              │
 └──────────────────────────────────────────────────────────────┘
 ```
-
-## Contributing
-
-This documentation is maintained alongside the YieldFabric platform. When API changes occur:
-
-1. Update [SIMPLE.md](./SIMPLE.md) with new endpoints/parameters
-2. Add real response examples from production
-3. Update workflow examples in `scripts/` directory
-4. Verify against actual implementation in `yieldfabric-payments` and `yieldfabric-auth`
 
 ## License
 
