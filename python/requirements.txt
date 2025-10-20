@@ -1,0 +1,56 @@
+# YieldFabric Python Port Dependencies
+# Core dependencies for the Python port of YieldFabric bash scripts
+
+# HTTP requests and API communication
+requests>=2.31.0
+
+# YAML parsing (replaces yq functionality)
+PyYAML>=6.0.1
+
+# JSON handling (built-in, but explicit for clarity)
+# json - built-in module
+
+# Environment variable handling (built-in, but explicit for clarity)
+# os - built-in module
+
+# System and subprocess operations (built-in, but explicit for clarity)
+# subprocess - built-in module
+
+# Regular expressions (built-in, but explicit for clarity)
+# re - built-in module
+
+# Time and date operations (built-in, but explicit for clarity)
+# time - built-in module
+
+# Type hints and annotations (built-in, but explicit for clarity)
+# typing - built-in module
+
+# Argument parsing (built-in, but explicit for clarity)
+# argparse - built-in module
+
+# System operations (built-in, but explicit for clarity)
+# sys - built-in module
+
+# Optional: For enhanced YAML parsing with more yq-like functionality
+# ruamel.yaml>=0.17.32
+
+# Optional: For GraphQL client functionality (if needed in future)
+# gql>=3.4.0
+
+# Optional: For enhanced HTTP client functionality
+# httpx>=0.24.0
+
+# Optional: For configuration management
+# python-dotenv>=1.0.0
+
+# Optional: For enhanced logging
+# loguru>=0.7.0
+
+# Optional: For testing
+# pytest>=7.4.0
+# pytest-cov>=4.1.0
+
+# Optional: For code formatting and linting
+# black>=23.0.0
+# flake8>=6.0.0
+# mypy>=1.5.0
