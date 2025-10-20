@@ -3,6 +3,9 @@
 # YieldFabric Authentication Module
 # Contains functions for user authentication and group delegation
 
+# Service URLs - can be overridden by environment variables
+AUTH_SERVICE_URL="${AUTH_SERVICE_URL:-https://auth.yieldfabric.io}"
+
 # Helper function to get group ID by name from auth service
 get_group_id_by_name() {
     local token="$1"
@@ -10,7 +13,7 @@ get_group_id_by_name() {
     
     echo_with_color $BLUE "  🔍 Looking up group ID for: $group_name" >&2
     
-    local groups_json=$(curl -s -X GET "http://localhost:3000/auth/groups" \
+    local groups_json=$(curl -s -X GET "${AUTH_SERVICE_URL}/auth/groups" \
         -H "Authorization: Bearer $token")
     
     if [[ -n "$groups_json" ]]; then
@@ -39,7 +42,7 @@ create_delegation_token() {
     echo_with_color $BLUE "    Group ID: ${group_id:0:8}..." >&2
     
     # Create delegation JWT with comprehensive scope for payments operations
-    local delegation_response=$(curl -s -X POST "http://localhost:3000/auth/delegation/jwt" \
+    local delegation_response=$(curl -s -X POST "${AUTH_SERVICE_URL}/auth/delegation/jwt" \
         -H "Authorization: Bearer $user_token" \
         -H "Content-Type: application/json" \
         -d "{\"group_id\": \"$group_id\", \"delegation_scope\": [\"CryptoOperations\", \"ReadGroup\", \"UpdateGroup\", \"ManageGroupMembers\"], \"expiry_seconds\": 3600}")
@@ -68,7 +71,7 @@ login_user() {
 
     echo_with_color $BLUE "  🔐 Logging in user: $email" >&2
     
-    local http_response=$(curl -s -X POST "http://localhost:3000/auth/login/with-services" \
+    local http_response=$(curl -s -X POST "${AUTH_SERVICE_URL}/auth/login/with-services" \
         -H "Content-Type: application/json" \
         -d "{\"email\": \"$email\", \"password\": \"$password\", \"services\": $services_json}")
 

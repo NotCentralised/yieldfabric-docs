@@ -43,7 +43,7 @@ commands:
       denomination: aud-token-asset
       obligor: issuer@yieldfabric.com
       notional: 5 
-      expiry: 2025-10-10
+      expiry: 2025-11-01
       data: 
         name: "Annuity Stream"
         description: "Annuity Stream Obligation"
@@ -101,7 +101,7 @@ commands:
       denomination: aud-token-asset
       obligor: issuer@yieldfabric.com
       notional: 100
-      expiry: 2025-10-10
+      expiry: 2025-11-01
       data: 
         name: "Redemption"
         description: "Redemption Obligation"
@@ -146,7 +146,7 @@ commands:
           amount: 100
           payments:
             - id: swap-payment-1
-      deadline: 2025-10-10
+      deadline: 2025-11-10
 
   - name: complete_swap-1
     type: complete_swap

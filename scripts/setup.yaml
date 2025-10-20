@@ -49,13 +49,16 @@ tokens:
   - id: AUD
     name: AUD Token
     description: AUD Token Description
-    chain_id: 33117
-    address: 0x3Aa5ebB10DC797CAC828524e59A333d0A371443c
+    chain_id: 153
+    # address: 0x68B1D87F95878fE05B998F19b66F4baba5De1aed
+    address: 0xe764F77fbCa499E29Ec2B58506fB21CbE4BC2916
   - id: USD
     name: USD Token
     description: USD Token Description
-    chain_id: 33117
-    address: 0xc6e7DF5E7b4f2A278906862b61205850344D4e7d
+    # chain_id: 33117
+    chain_id: 153
+    # address: 0x3Aa5ebB10DC797CAC828524e59A333d0A371443c
+    address: 0x1797599D39EdDdBEF5eACD0313da2879F54aF245
 
 assets:
   - id: AUD

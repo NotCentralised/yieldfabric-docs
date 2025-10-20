@@ -7,6 +7,17 @@
 # Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Load .env file if it exists
+if [[ -f "$SCRIPT_DIR/.env" ]]; then
+    echo "Loading environment variables from .env file..."
+    set -a
+    source "$SCRIPT_DIR/.env"
+    set +a
+fi
+
+# Command execution delay (in seconds) - can be overridden by environment variable
+COMMAND_DELAY="${COMMAND_DELAY:-3}"
+
 # Source all module files
 source "$SCRIPT_DIR/utils.sh"
 source "$SCRIPT_DIR/auth.sh"
@@ -321,18 +332,19 @@ execute_all_commands() {
     fi
     
     # Check service status
-    if ! check_service_running "Auth Service" "3000"; then
-        echo_with_color $RED "❌ Auth service is not running on port 3000"
-        echo_with_color $YELLOW "Please start the auth service first:"
-        echo "   cd ../yieldfabric-auth && cargo run"
+    if ! check_service_running "Auth Service" "$AUTH_SERVICE_URL"; then
+        echo_with_color $RED "❌ Auth service is not reachable at $AUTH_SERVICE_URL"
+        echo_with_color $YELLOW "Please check your connection or start the auth service:"
+        echo "   Local: cd ../yieldfabric-auth && cargo run"
+        echo "   Remote: Verify $AUTH_SERVICE_URL is accessible"
         return 1
     fi
     
-    if ! check_service_running "Payments Service" "3002"; then
-        echo_with_color $RED "❌ Payments service is not running on port 3002"
-        echo_with_color $YELLOW "Please start the payments service first:"
-        echo "   cd ../yieldfabric-payments && cargo run"
-        echo_with_color $BLUE "   GraphQL endpoint will be available at: http://localhost:3002/graphql"
+    if ! check_service_running "Payments Service" "$PAY_SERVICE_URL"; then
+        echo_with_color $RED "❌ Payments service is not reachable at $PAY_SERVICE_URL"
+        echo_with_color $YELLOW "Please check your connection or start the payments service:"
+        echo "   Local: cd ../yieldfabric-payments && cargo run"
+        echo_with_color $BLUE "   GraphQL endpoint will be available at: $PAY_SERVICE_URL/graphql"
         return 1
     fi
     
@@ -367,10 +379,10 @@ execute_all_commands() {
         echo_with_color $PURPLE "🔍 DEBUG: Next iteration will be i=$((i+1))"
         echo ""
         
-        # Add 2-second wait between commands (except for the last command)
+        # Add configurable wait between commands (except for the last command)
         if [[ $((i+1)) -lt $command_count ]]; then
-            echo_with_color $CYAN "⏳ Waiting 3 seconds before next command..."
-            sleep 3
+            echo_with_color $CYAN "⏳ Waiting $COMMAND_DELAY seconds before next command..."
+            sleep "$COMMAND_DELAY"
         fi
         
     done

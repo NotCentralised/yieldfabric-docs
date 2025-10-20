@@ -10,6 +10,14 @@ SETUP_FILE="$SCRIPT_DIR/setup.yaml"
 AUTH_SCRIPT="$SCRIPT_DIR/yieldfabric-auth.sh"
 TOKENS_DIR="$SCRIPT_DIR/tokens"
 
+# Load .env file if it exists
+if [[ -f "$SCRIPT_DIR/.env" ]]; then
+    echo "Loading environment variables from .env file..."
+    set -a
+    source "$SCRIPT_DIR/.env"
+    set +a
+fi
+
 # Ensure tokens directory exists
 mkdir -p "$TOKENS_DIR"
 
@@ -38,18 +46,30 @@ echo_with_color() {
 # Function to check if a service is running
 check_service_running() {
     local service_name=$1
-    local port=$2
+    local service_url=$2
     
-    if nc -z localhost $port 2>/dev/null; then
-        return 0
+    # If URL is provided (remote service), check with curl
+    if [[ "$service_url" =~ ^https?:// ]]; then
+        if curl -s -f -o /dev/null --max-time 5 "$service_url/health" 2>/dev/null || \
+           curl -s -f -o /dev/null --max-time 5 "$service_url" 2>/dev/null; then
+            return 0
+        else
+            return 1
+        fi
     else
-        return 1
+        # Legacy: port-based check for localhost
+        local port=$service_url
+        if nc -z localhost $port 2>/dev/null; then
+            return 0
+        else
+            return 1
+        fi
     fi
 }
 
 # Function to check if token service is running
 check_token_service_running() {
-    if check_service_running "Token Service" "3002"; then
+    if check_service_running "Token Service" "$PAY_SERVICE_URL"; then
         return 0
     else
         return 1
@@ -1748,19 +1768,20 @@ show_setup_status() {
     
     # Check services
     echo_with_color $BLUE "Service Status:"
-    if check_service_running "Auth Service" "3000"; then
-        echo_with_color $GREEN "   Auth Service (port 3000) - Running"
+    if check_service_running "Auth Service" "$AUTH_SERVICE_URL"; then
+        echo_with_color $GREEN "   Auth Service ($AUTH_SERVICE_URL) - Running"
     else
-        echo_with_color $RED "   Auth Service (port 3000) - Not running"
-        echo_with_color $YELLOW "   Start the auth service first: cd ../yieldfabric-auth && cargo run"
+        echo_with_color $RED "   Auth Service ($AUTH_SERVICE_URL) - Not running"
+        echo_with_color $YELLOW "   Start the auth service first or check your connection to $AUTH_SERVICE_URL"
         return 1
     fi
     
     if check_token_service_running; then
-        echo_with_color $GREEN "   Token Service (port 3002) - Running"
+        echo_with_color $GREEN "   Payment Service ($PAY_SERVICE_URL) - Running"
     else
-        echo_with_color $YELLOW "   Token Service (port 3002) - Not running"
-        echo_with_color $BLUE "   Start the token service first: cd ../yieldfabric-services && cargo run"
+        echo_with_color $YELLOW "   Payment Service ($PAY_SERVICE_URL) - Not running"
+        echo_with_color $BLUE "   Local: cd ../yieldfabric-payments && cargo run"
+        echo_with_color $BLUE "   Remote: Verify $PAY_SERVICE_URL is accessible"
     fi
     
     # Check setup file
@@ -1855,10 +1876,11 @@ run_setup() {
     fi
     
     # Check service status
-    if ! check_service_running "Auth Service" "3000"; then
-        echo_with_color $RED "❌ Auth service is not running on port 3000"
-        echo_with_color $YELLOW "Please start the auth service first:"
-        echo "   cd ../yieldfabric-auth && cargo run"
+    if ! check_service_running "Auth Service" "$AUTH_SERVICE_URL"; then
+        echo_with_color $RED "❌ Auth service is not reachable at $AUTH_SERVICE_URL"
+        echo_with_color $YELLOW "Please check your connection or start the auth service:"
+        echo "   Local: cd ../yieldfabric-auth && cargo run"
+        echo "   Remote: Verify $AUTH_SERVICE_URL is accessible"
         return 1
     fi
     
@@ -1983,7 +2005,7 @@ case "${1:-setup}" in
         validate_setup_file
         ;;
     "users")
-        if check_service_running "Auth Service" "3000"; then
+        if check_service_running "Auth Service" "$AUTH_SERVICE_URL"; then
             # Get admin token first, then create users
             echo_with_color $BLUE "Getting admin token first..."
             admin_token=$($AUTH_SCRIPT admin 2>/dev/null)
@@ -2005,7 +2027,7 @@ case "${1:-setup}" in
         fi
         ;;
     "groups")
-        if check_service_running "Auth Service" "3000"; then
+        if check_service_running "Auth Service" "$AUTH_SERVICE_URL"; then
             # Create users first if they don't exist
             if ! create_initial_users; then
                 echo_with_color $RED "Failed to create users"
@@ -2026,7 +2048,7 @@ case "${1:-setup}" in
         fi
         ;;
     "tokens")
-        if check_service_running "Auth Service" "3000"; then
+        if check_service_running "Auth Service" "$AUTH_SERVICE_URL"; then
             # Create users first if they don't exist
             if ! create_initial_users; then
                 echo_with_color $RED "Failed to create users"
@@ -2041,7 +2063,7 @@ case "${1:-setup}" in
         fi
         ;;
     "owners")
-        if check_service_running "Auth Service" "3000"; then
+        if check_service_running "Auth Service" "$AUTH_SERVICE_URL"; then
             # Create users first if they don't exist
             if ! create_initial_users; then
                 echo_with_color $RED "Failed to create users"
@@ -2056,7 +2078,7 @@ case "${1:-setup}" in
         fi
         ;;
     "assets")
-        if check_service_running "Auth Service" "3000"; then
+        if check_service_running "Auth Service" "$AUTH_SERVICE_URL"; then
             # Create users first if they don't exist
             if ! create_initial_users; then
                 echo_with_color $RED "Failed to create users"
@@ -2071,7 +2093,7 @@ case "${1:-setup}" in
         fi
         ;;
     "fiat")
-        if check_service_running "Auth Service" "3000"; then
+        if check_service_running "Auth Service" "$AUTH_SERVICE_URL"; then
             # Create users first if they don't exist
             if ! create_initial_users; then
                 echo_with_color $RED "Failed to create users"

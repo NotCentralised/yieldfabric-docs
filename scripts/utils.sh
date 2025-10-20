@@ -21,12 +21,24 @@ echo_with_color() {
 # Function to check if a service is running
 check_service_running() {
     local service_name=$1
-    local port=$2
+    local service_url=$2
     
-    if nc -z localhost $port 2>/dev/null; then
-        return 0
+    # If URL is provided (remote service), check with curl
+    if [[ "$service_url" =~ ^https?:// ]]; then
+        if curl -s -f -o /dev/null --max-time 5 "$service_url/health" 2>/dev/null || \
+           curl -s -f -o /dev/null --max-time 5 "$service_url" 2>/dev/null; then
+            return 0
+        else
+            return 1
+        fi
     else
-        return 1
+        # Legacy: port-based check for localhost
+        local port=$service_url
+        if nc -z localhost $port 2>/dev/null; then
+            return 0
+        else
+            return 1
+        fi
     fi
 }
 

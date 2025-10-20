@@ -3,6 +3,10 @@
 # YieldFabric Validation Module
 # Contains functions for validating commands and showing status
 
+# Service URLs - can be overridden by environment variables
+PAY_SERVICE_URL="${PAY_SERVICE_URL:-https://pay.yieldfabric.io}"
+AUTH_SERVICE_URL="${AUTH_SERVICE_URL:-https://auth.yieldfabric.io}"
+
 # Function to validate commands.yaml file
 validate_commands_file() {
     echo_with_color $CYAN "Validating $YAML_FILE..."
@@ -366,7 +370,7 @@ show_commands_status() {
     
     if check_service_running "Payments Service" "3002"; then
         echo_with_color $GREEN "   Payments Service (port 3002) - Running"
-        echo_with_color $BLUE "   GraphQL endpoint available at: http://localhost:3002/graphql"
+        echo_with_color $BLUE "   GraphQL endpoint available at: ${PAY_SERVICE_URL}/graphql"
     else
         echo_with_color $RED "   Payments Service (port 3002) - Not running"
         echo_with_color $YELLOW "   Start the payments service first: cd ../yieldfabric-payments && cargo run"

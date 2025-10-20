@@ -3,6 +3,10 @@
 # YieldFabric Additional Command Executors Module
 # Contains additional executor functions that were too large for the main executors.sh
 
+# Service URLs - can be overridden by environment variables
+PAY_SERVICE_URL="${PAY_SERVICE_URL:-https://pay.yieldfabric.io}"
+AUTH_SERVICE_URL="${AUTH_SERVICE_URL:-https://auth.yieldfabric.io}"
+
 # Function to execute accept obligation command using GraphQL
 execute_accept_obligation() {
     local command_name="$1"
@@ -43,8 +47,8 @@ execute_accept_obligation() {
     echo_with_color $BLUE "    $graphql_mutation"
     
     # Send GraphQL request to payments service
-    echo_with_color $BLUE "  🌐 Making GraphQL request to: http://localhost:3002/graphql"
-    local http_response=$(curl -s -X POST "http://localhost:3002/graphql" \
+    echo_with_color $BLUE "  🌐 Making GraphQL request to: ${PAY_SERVICE_URL}/graphql"
+    local http_response=$(curl -s -X POST "${PAY_SERVICE_URL}/graphql" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $jwt_token" \
         -d "$graphql_payload")
@@ -132,8 +136,8 @@ execute_transfer_obligation() {
     echo_with_color $BLUE "    $graphql_mutation"
     
     # Send GraphQL request to payments service
-    echo_with_color $BLUE "  🌐 Making GraphQL request to: http://localhost:3002/graphql"
-    local http_response=$(curl -s -X POST "http://localhost:3002/graphql" \
+    echo_with_color $BLUE "  🌐 Making GraphQL request to: ${PAY_SERVICE_URL}/graphql"
+    local http_response=$(curl -s -X POST "${PAY_SERVICE_URL}/graphql" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $jwt_token" \
         -d "$graphql_payload")
@@ -228,8 +232,8 @@ execute_cancel_obligation() {
     echo_with_color $BLUE "    $graphql_mutation"
     
     # Send GraphQL request to payments service
-    echo_with_color $BLUE "  🌐 Making GraphQL request to: http://localhost:3002/graphql"
-    local http_response=$(curl -s -X POST "http://localhost:3002/graphql" \
+    echo_with_color $BLUE "  🌐 Making GraphQL request to: ${PAY_SERVICE_URL}/graphql"
+    local http_response=$(curl -s -X POST "${PAY_SERVICE_URL}/graphql" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $jwt_token" \
         -d "$graphql_payload")
@@ -316,8 +320,8 @@ execute_total_supply() {
     echo_with_color $BLUE "    asset_id: $denomination"
     
     # Send REST API request to payments service
-    echo_with_color $BLUE "  🌐 Making REST API request to: http://localhost:3002/total_supply?$query_params"
-    local http_response=$(curl -s -X GET "http://localhost:3002/total_supply?$query_params" \
+    echo_with_color $BLUE "  🌐 Making REST API request to: ${PAY_SERVICE_URL}/total_supply?$query_params"
+    local http_response=$(curl -s -X GET "${PAY_SERVICE_URL}/total_supply?$query_params" \
         -H "Authorization: Bearer $jwt_token")
     
     echo_with_color $BLUE "  📡 Raw REST API response: '$http_response'"
@@ -388,8 +392,8 @@ execute_mint() {
     echo_with_color $BLUE "    policy_secret: ${policy_secret:0:8}..."
     
     # Send REST API request to payments service
-    echo_with_color $BLUE "  🌐 Making REST API request to: http://localhost:3002/mint?$query_params"
-    local http_response=$(curl -s -X POST "http://localhost:3002/mint?$query_params" \
+    echo_with_color $BLUE "  🌐 Making REST API request to: ${PAY_SERVICE_URL}/mint?$query_params"
+    local http_response=$(curl -s -X POST "${PAY_SERVICE_URL}/mint?$query_params" \
         -H "Authorization: Bearer $jwt_token")
     
     echo_with_color $BLUE "  📡 Raw REST API response: '$http_response'"
@@ -468,8 +472,8 @@ execute_burn() {
     echo_with_color $BLUE "    policy_secret: ${policy_secret:0:8}..."
     
     # Send REST API request to payments service
-    echo_with_color $BLUE "  🌐 Making REST API request to: http://localhost:3002/burn?$query_params"
-    local http_response=$(curl -s -X POST "http://localhost:3002/burn?$query_params" \
+    echo_with_color $BLUE "  🌐 Making REST API request to: ${PAY_SERVICE_URL}/burn?$query_params"
+    local http_response=$(curl -s -X POST "${PAY_SERVICE_URL}/burn?$query_params" \
         -H "Authorization: Bearer $jwt_token")
     
     echo_with_color $BLUE "  📡 Raw REST API response: '$http_response'"
@@ -537,8 +541,8 @@ execute_obligations() {
     echo_with_color $BLUE "  📤 Sending REST API obligations request..."
     
     # Send REST API request to payments service
-    echo_with_color $BLUE "  🌐 Making REST API request to: http://localhost:3002/obligations"
-    local http_response=$(curl -s -X GET "http://localhost:3002/obligations" \
+    echo_with_color $BLUE "  🌐 Making REST API request to: ${PAY_SERVICE_URL}/obligations"
+    local http_response=$(curl -s -X GET "${PAY_SERVICE_URL}/obligations" \
         -H "Authorization: Bearer $jwt_token")
     
     echo_with_color $BLUE "  📡 Raw REST API response: '$http_response'"
@@ -656,8 +660,8 @@ execute_create_obligation_swap() {
     echo_with_color $PURPLE "    $input_params"
     
     # Send GraphQL request to payments service
-    echo_with_color $BLUE "  🌐 Making GraphQL request to: http://localhost:3002/graphql"
-    local http_response=$(curl -s -X POST "http://localhost:3002/graphql" \
+    echo_with_color $BLUE "  🌐 Making GraphQL request to: ${PAY_SERVICE_URL}/graphql"
+    local http_response=$(curl -s -X POST "${PAY_SERVICE_URL}/graphql" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $jwt_token" \
         -d "$graphql_payload")
@@ -744,8 +748,8 @@ execute_complete_swap() {
     echo_with_color $BLUE "    $graphql_mutation"
     
     # Send GraphQL request to payments service
-    echo_with_color $BLUE "  🌐 Making GraphQL request to: http://localhost:3002/graphql"
-    local http_response=$(curl -s -X POST "http://localhost:3002/graphql" \
+    echo_with_color $BLUE "  🌐 Making GraphQL request to: ${PAY_SERVICE_URL}/graphql"
+    local http_response=$(curl -s -X POST "${PAY_SERVICE_URL}/graphql" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $jwt_token" \
         -d "$graphql_payload")
@@ -824,8 +828,8 @@ execute_cancel_swap() {
     echo_with_color $BLUE "    $graphql_mutation"
     
     # Send GraphQL request to payments service
-    echo_with_color $BLUE "  🌐 Making GraphQL request to: http://localhost:3002/graphql"
-    local http_response=$(curl -s -X POST "http://localhost:3002/graphql" \
+    echo_with_color $BLUE "  🌐 Making GraphQL request to: ${PAY_SERVICE_URL}/graphql"
+    local http_response=$(curl -s -X POST "${PAY_SERVICE_URL}/graphql" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $jwt_token" \
         -d "$graphql_payload")
@@ -963,12 +967,12 @@ mutation="$mutation { createObligationSwap(input: { swapId: \"$swap_id\", counte
     
     echo "  🔍 DEBUG: request_body = $request_body"
     
-    local response=$(curl -s -X POST http://localhost:3002/graphql \
+    local response=$(curl -s -X POST ${PAY_SERVICE_URL}/graphql \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $jwt_token" \
         -d "$request_body")
     
-    echo "  🌐 Making GraphQL request to: http://localhost:3002/graphql"
+    echo "  🌐 Making GraphQL request to: ${PAY_SERVICE_URL}/graphql"
     
     # Check for errors in response
     local error_message=$(echo "$response" | jq -r ".errors[0].message // empty")
@@ -1118,8 +1122,8 @@ execute_create_swap() {
     echo_with_color $PURPLE "    $input_params"
     
     # Send GraphQL request to payments service
-    echo_with_color $BLUE "  🌐 Making GraphQL request to: http://localhost:3002/graphql"
-    local http_response=$(curl -s -X POST "http://localhost:3002/graphql" \
+    echo_with_color $BLUE "  🌐 Making GraphQL request to: ${PAY_SERVICE_URL}/graphql"
+    local http_response=$(curl -s -X POST "${PAY_SERVICE_URL}/graphql" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $jwt_token" \
         -d "$graphql_payload")
@@ -1258,8 +1262,8 @@ execute_create_payment_swap() {
     echo_with_color $PURPLE "    $input_params"
     
     # Send GraphQL request to payments service
-    echo_with_color $BLUE "  🌐 Making GraphQL request to: http://localhost:3002/graphql"
-    local http_response=$(curl -s -X POST "http://localhost:3002/graphql" \
+    echo_with_color $BLUE "  🌐 Making GraphQL request to: ${PAY_SERVICE_URL}/graphql"
+    local http_response=$(curl -s -X POST "${PAY_SERVICE_URL}/graphql" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $jwt_token" \
         -d "$graphql_payload")
@@ -1448,8 +1452,8 @@ execute_create_swap() {
     echo_with_color $BLUE "    $json_variables"
     
     # Send GraphQL request to payments service
-    echo_with_color $BLUE "  🌐 Making GraphQL request to: http://localhost:3002/graphql"
-    local http_response=$(curl -s -X POST "http://localhost:3002/graphql" \
+    echo_with_color $BLUE "  🌐 Making GraphQL request to: ${PAY_SERVICE_URL}/graphql"
+    local http_response=$(curl -s -X POST "${PAY_SERVICE_URL}/graphql" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $jwt_token" \
         -d "$graphql_payload")
