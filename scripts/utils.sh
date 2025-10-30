@@ -150,25 +150,37 @@ substitute_variables() {
         return 0
     fi
     
-    # Check if the value contains variable references
+    # Check if the value contains variable references (supports multiple variables in one string)
     if [[ "$value" =~ \$[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]* ]]; then
-        # Extract command name and field name
-        local command_name=$(echo "$value" | sed -n 's/.*\$\([a-zA-Z_][a-zA-Z0-9_]*\)\.[a-zA-Z0-9_]*.*/\1/p')
-        local field_name=$(echo "$value" | sed -n 's/.*\$[a-zA-Z_][a-zA-Z0-9_]*\.\([a-zA-Z0-9_]*\).*/\1/p')
+        local result="$value"
+        local original_value="$value"
         
-        if [[ -n "$command_name" && -n "$field_name" ]]; then
-            # Look up the value in our stored outputs
-            local stored_value=$(get_command_output "$command_name" "$field_name")
-            if [[ -n "$stored_value" ]]; then
-                echo_with_color $CYAN "    🔄 Substituting $value -> $stored_value" >&2
-                echo "$stored_value"
-                return 0
+        # Remove surrounding quotes if present (from YAML parsing)
+        result="${result#\"}"
+        result="${result%\"}"
+        
+        # Find and replace ALL variable references in the string
+        while [[ "$result" =~ \$[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]* ]]; do
+            local var_ref="${BASH_REMATCH[0]}"
+            local command_name=$(echo "$var_ref" | sed -n 's/\$\([a-zA-Z_][a-zA-Z0-9_]*\)\.\([a-zA-Z0-9_]*\)/\1/p')
+            local field_name=$(echo "$var_ref" | sed -n 's/\$\([a-zA-Z_][a-zA-Z0-9_]*\)\.\([a-zA-Z0-9_]*\)/\2/p')
+            
+            if [[ -n "$command_name" && -n "$field_name" ]]; then
+                local stored_value=$(get_command_output "$command_name" "$field_name")
+                if [[ -n "$stored_value" ]]; then
+                    echo_with_color $CYAN "    🔄 Substituting $var_ref -> $stored_value in: $original_value" >&2
+                    result="${result//$var_ref/$stored_value}"
+                else
+                    echo_with_color $YELLOW "    ⚠️  Variable $var_ref not found in stored outputs" >&2
+                    break
+                fi
             else
-                echo_with_color $YELLOW "    ⚠️  Variable $value not found in stored outputs" >&2
-                echo "$value"
-                return 1
+                break
             fi
-        fi
+        done
+        
+        echo "$result"
+        return 0
     fi
     
     # No substitution needed

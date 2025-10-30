@@ -435,8 +435,9 @@ execute_accept() {
     local user_email="$2"
     local user_password="$3"
     local payment_id="$4"
-    local idempotency_key="$5"
-    local group_name="$6"  # Optional group name for delegation
+    local amount="$5"
+    local idempotency_key="$6"
+    local group_name="$7"  # Optional group name for delegation
     
     echo_with_color $CYAN "✅ Executing accept command via GraphQL: $command_name"
     
@@ -455,6 +456,14 @@ execute_accept() {
     # Prepare GraphQL mutation
     local graphql_mutation
     local input_params="paymentId: \\\"$payment_id\\\""
+    
+    # Add amount if provided (for partial retrieval)
+    if [[ -n "$amount" && "$amount" != "null" ]]; then
+        input_params="$input_params, amount: $amount"
+        echo_with_color $CYAN "  💰 Partial acceptance: amount = $amount"
+    else
+        echo_with_color $CYAN "  💰 Full acceptance (no amount specified)"
+    fi
     
     # Add idempotency_key if provided
     if [[ -n "$idempotency_key" ]]; then
@@ -492,15 +501,25 @@ execute_accept() {
         store_command_output "$command_name" "id_hash" "$id_hash"
         store_command_output "$command_name" "message_id" "$message_id"
         store_command_output "$command_name" "accept_result" "$accept_result"
+        if [[ -n "$amount" && "$amount" != "null" ]]; then
+            store_command_output "$command_name" "amount" "$amount"
+        fi
         
         echo_with_color $GREEN "    ✅ Accept successful!"
         echo_with_color $BLUE "      Account: $account_address"
         echo_with_color $BLUE "      ID Hash: $id_hash"
+        if [[ -n "$amount" && "$amount" != "null" ]]; then
+            echo_with_color $CYAN "      Amount (Partial): $amount"
+        fi
         echo_with_color $BLUE "      Message: $message"
         echo_with_color $BLUE "      Message ID: $message_id"
         echo_with_color $BLUE "      Accept Result: $accept_result"
         echo_with_color $CYAN "      📝 Stored outputs for variable substitution:"
-        echo_with_color $CYAN "        ${command_name}_account_address, ${command_name}_message, ${command_name}_id_hash, ${command_name}_message_id, ${command_name}_accept_result"
+        if [[ -n "$amount" && "$amount" != "null" ]]; then
+            echo_with_color $CYAN "        ${command_name}_account_address, ${command_name}_message, ${command_name}_id_hash, ${command_name}_message_id, ${command_name}_accept_result, ${command_name}_amount"
+        else
+            echo_with_color $CYAN "        ${command_name}_account_address, ${command_name}_message, ${command_name}_id_hash, ${command_name}_message_id, ${command_name}_accept_result"
+        fi
         return 0
     else
         local error_message=$(echo "$http_response" | jq -r '.errors[0].message // "Unknown error"')
@@ -585,7 +604,8 @@ execute_create_obligation_ergonomic() {
             oracleKeyRecipient: (.payee.key // "0"),
             oracleValueRecipientSecret: (.payee.valueSecret // "0"),
             unlockSender: .payer.unlock,
-            unlockReceiver: .payee.unlock
+            unlockReceiver: .payee.unlock,
+            linearVesting: (.linear_vesting // false)
         })')
         
         local initial_payments_variable=$(echo "$vault_payments" | jq --arg amount "$initial_payments_amount" '{

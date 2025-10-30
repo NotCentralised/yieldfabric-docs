@@ -911,7 +911,8 @@ execute_create_obligation_swap() {
                 oracleKeyRecipient: (.payee.key // "1"),
                 oracleValueRecipientSecret: (.payee.valueSecret // "2"),
                 unlockSender: .payer.unlock,
-                unlockReceiver: .payee.unlock
+                unlockReceiver: .payee.unlock,
+                linearVesting: (.linear_vesting // false)
             })')
             echo "  🔍 DEBUG: vault_payments = $vault_payments"
         fi
@@ -1078,7 +1079,7 @@ execute_create_swap() {
         fi
         
         # Convert JSON array to GraphQL format - use proper escaping
-        local initiator_payments_array=$(echo "$initiator_expected_payments_json" | jq -r '.[] | "{ oracleAddress: \\\"" + ("" | tostring) + "\\\", oracleOwner: \\\"" + ("" | tostring) + "\\\", oracleKeySender: \\\"" + (.payer.key // "1") + "\\\", oracleValueSenderSecret: \\\"" + (.payer.valueSecret // "1") + "\\\", oracleKeyRecipient: \\\"" + (.payee.key // "1") + "\\\", oracleValueRecipientSecret: \\\"" + (.payee.valueSecret // "2") + "\\\", unlockSender: \\\"" + (.payer.unlock // "") + "\\\", unlockReceiver: \\\"" + (.payee.unlock // "") + "\\\" }"' | tr '\n' ',' | sed 's/,$//')
+        local initiator_payments_array=$(echo "$initiator_expected_payments_json" | jq -r '.[] | "{ oracleAddress: \\\"" + ("" | tostring) + "\\\", oracleOwner: \\\"" + ("" | tostring) + "\\\", oracleKeySender: \\\"" + (.payer.key // "1") + "\\\", oracleValueSenderSecret: \\\"" + (.payer.valueSecret // "1") + "\\\", oracleKeyRecipient: \\\"" + (.payee.key // "1") + "\\\", oracleValueRecipientSecret: \\\"" + (.payee.valueSecret // "2") + "\\\", unlockSender: \\\"" + (.payer.unlock // "") + "\\\", unlockReceiver: \\\"" + (.payee.unlock // "") + "\\\", linearVesting: " + ((.linear_vesting // false) | tostring) + " }"' | tr '\n' ',' | sed 's/,$//')
         initiator_expected_payments_input="$initiator_expected_payments_input, payments: [$initiator_payments_array] }"
         
         input_params="$input_params, $initiator_expected_payments_input"
@@ -1104,7 +1105,7 @@ execute_create_swap() {
         fi
         
         # Convert JSON array to GraphQL format - use proper escaping
-        local counterparty_payments_array=$(echo "$counterparty_expected_payments_json" | jq -r '.[] | "{ oracleAddress: \\\"" + ("" | tostring) + "\\\", oracleOwner: \\\"" + ("" | tostring) + "\\\", oracleKeySender: \\\"" + (.payer.key // "1") + "\\\", oracleValueSenderSecret: \\\"" + (.payer.valueSecret // "1") + "\\\", oracleKeyRecipient: \\\"" + (.payee.key // "1") + "\\\", oracleValueRecipientSecret: \\\"" + (.payee.valueSecret // "2") + "\\\", unlockSender: \\\"" + (.payer.unlock // "") + "\\\", unlockReceiver: \\\"" + (.payee.unlock // "") + "\\\" }"' | tr '\n' ',' | sed 's/,$//')
+        local counterparty_payments_array=$(echo "$counterparty_expected_payments_json" | jq -r '.[] | "{ oracleAddress: \\\"" + ("" | tostring) + "\\\", oracleOwner: \\\"" + ("" | tostring) + "\\\", oracleKeySender: \\\"" + (.payer.key // "1") + "\\\", oracleValueSenderSecret: \\\"" + (.payer.valueSecret // "1") + "\\\", oracleKeyRecipient: \\\"" + (.payee.key // "1") + "\\\", oracleValueRecipientSecret: \\\"" + (.payee.valueSecret // "2") + "\\\", unlockSender: \\\"" + (.payer.unlock // "") + "\\\", unlockReceiver: \\\"" + (.payee.unlock // "") + "\\\", linearVesting: " + ((.linear_vesting // false) | tostring) + " }"' | tr '\n' ',' | sed 's/,$//')
         counterparty_expected_payments_input="$counterparty_expected_payments_input, payments: [$counterparty_payments_array] }"
         
         input_params="$input_params, $counterparty_expected_payments_input"
@@ -1225,7 +1226,7 @@ execute_create_payment_swap() {
         fi
         
         # Convert JSON array to GraphQL format - use proper escaping
-        local payments_array=$(echo "$initial_payments_json" | jq -r '.[] | "{ oracleAddress: \\\"" + ("" | tostring) + "\\\", oracleOwner: \\\"" + ("" | tostring) + "\\\", oracleKeySender: \\\"" + (.payer.key // "1") + "\\\", oracleValueSenderSecret: \\\"" + (.payer.valueSecret // "1") + "\\\", oracleKeyRecipient: \\\"" + (.payee.key // "1") + "\\\", oracleValueRecipientSecret: \\\"" + (.payee.valueSecret // "2") + "\\\", unlockSender: \\\"" + (.payer.unlock // "") + "\\\", unlockReceiver: \\\"" + (.payee.unlock // "") + "\\\" }"' | tr '\n' ',' | sed 's/,$//')
+        local payments_array=$(echo "$initial_payments_json" | jq -r '.[] | "{ oracleAddress: \\\"" + ("" | tostring) + "\\\", oracleOwner: \\\"" + ("" | tostring) + "\\\", oracleKeySender: \\\"" + (.payer.key // "1") + "\\\", oracleValueSenderSecret: \\\"" + (.payer.valueSecret // "1") + "\\\", oracleKeyRecipient: \\\"" + (.payee.key // "1") + "\\\", oracleValueRecipientSecret: \\\"" + (.payee.valueSecret // "2") + "\\\", unlockSender: \\\"" + (.payer.unlock // "") + "\\\", unlockReceiver: \\\"" + (.payee.unlock // "") + "\\\", linearVesting: " + ((.linear_vesting // false) | tostring) + " }"' | tr '\n' ',' | sed 's/,$//')
         initial_payments_input="$initial_payments_input, payments: [$payments_array] }"
         
         input_params="$input_params, $initial_payments_input"

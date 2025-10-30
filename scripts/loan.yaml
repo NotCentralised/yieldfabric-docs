@@ -1,0 +1,163 @@
+commands:
+  # START FUNDING COUNTERPART
+  - name: issuer_deposit
+    type: deposit
+    user: 
+      id: issuer@yieldfabric.com
+      password: issuerpass456
+    parameters:
+      asset_id: aud-token-asset
+      amount: 225
+      idempotency_key: deposit-$(date +%s)
+
+  - name: issuer_send_1
+    type: instant
+    user: 
+      id: issuer@yieldfabric.com
+      password: issuerpass456
+    parameters:
+      asset_id: aud-token-asset
+      amount: 100
+      idempotency_key: instant-$(date +%s)
+      destination_id: counterpart@yieldfabric.com
+
+  - name: counterpart_accept_1
+    type: accept
+    user: 
+      id: counterpart@yieldfabric.com
+      password: counterpass789
+    parameters:
+      idempotency_key: accept-$(date +%s)
+      payment_id: $issuer_send_1.payment_id
+      amount: 50
+
+
+  - name: counterpart_accept_2
+    type: accept
+    user: 
+      id: counterpart@yieldfabric.com
+      password: counterpass789
+    parameters:
+      idempotency_key: accept-$(date +%s)
+      payment_id: $issuer_send_1.payment_id
+      amount: 25
+
+  - name: counterpart_accept_3
+    type: accept
+    user: 
+      id: counterpart@yieldfabric.com
+      password: counterpass789
+    parameters:
+      idempotency_key: accept-$(date +%s)
+      payment_id: $issuer_send_1.payment_id
+      amount: 25
+
+  # START CREATING ANNUITY
+
+  - name: issuer_annuity_stream_obligation_1
+    type: create_obligation
+    user: 
+      id: issuer@yieldfabric.com
+      password: issuerpass456
+    parameters:
+      idempotency_key: create_annuity_stream_obligation-ergonomic-$(date +%s)
+      counterpart: issuer@yieldfabric.com
+      denomination: aud-token-asset
+      obligor: issuer@yieldfabric.com
+      notional: 5 
+      expiry: 2025-11-01
+      data: 
+        name: "Annuity Stream"
+        description: "Annuity Stream Obligation"
+      initial_payments:
+        amount: 5
+        payments:
+          - id: payment-1
+            linear_vesting: true
+            payer:
+              unlock: 2025-11-01
+            payee:
+              unlock: 2025-11-01
+
+          - id: payment-2
+            linear_vesting: true
+            payer:
+              unlock: 2025-11-02
+            payee:
+              unlock: 2025-11-02
+
+          - id: payment-3
+            linear_vesting: true
+            payer:
+              unlock: 2025-11-03
+            payee:
+              unlock: 2025-11-03
+
+          - id: payment-4
+            payer:
+              unlock: 2025-11-04
+            payee:
+              unlock: 2025-11-04
+
+          - id: payment-5
+            payer:
+              unlock: 2025-11-05
+            payee:
+              unlock: 2025-11-05
+
+          - id: payment-6
+            payer:
+              unlock: 2025-11-06
+            payee:
+              unlock: 2025-11-06
+
+          - id: payment-7
+            linear_vesting: true
+            payer:
+              unlock: 2025-11-07
+            payee:
+              unlock: 2025-11-07
+
+          - id: payment-8
+            linear_vesting: true
+            payer:
+              unlock: 2025-11-08
+            payee:
+              unlock: 2025-11-08
+
+          - id: payment-9
+            linear_vesting: true
+            payer:
+              unlock: 2025-11-09
+            payee:
+              unlock: 2025-11-09
+
+          - id: payment-10
+            linear_vesting: true
+            payer:
+              unlock: 2025-11-10
+            payee:
+              unlock: 2025-11-10
+
+          - id: payment-11
+            linear_vesting: true
+            payer:
+              unlock: 2025-11-11
+            payee:
+              unlock: 2025-11-11
+
+          - id: payment-12
+            linear_vesting: true
+            payer:
+              unlock: 2025-11-12
+            payee:
+              unlock: 2025-11-12
+
+  - name: issuer_accept_annuity_stream_obligation_1
+    type: accept_obligation
+    user: 
+      id: issuer@yieldfabric.com
+      password: issuerpass456
+    parameters:
+      idempotency_key: accept_annuity_stream_obligation-ergonomic-$(date +%s)
+      contract_id: $issuer_annuity_stream_obligation_1.contract_id

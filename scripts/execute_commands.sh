@@ -266,7 +266,7 @@ execute_command() {
             execute_instant "$command_name" "$user_email" "$user_password" "$denomination" "$amount" "$destination_id" "$idempotency_key" "$group_name"
             ;;
         "accept")
-            execute_accept "$command_name" "$user_email" "$user_password" "$payment_id" "$idempotency_key" "$group_name"
+            execute_accept "$command_name" "$user_email" "$user_password" "$payment_id" "$amount" "$idempotency_key" "$group_name"
             ;;
         "balance")
             execute_balance "$command_name" "$user_email" "$user_password" "$denomination" "$obligor" "$group_id" "$group_name"
