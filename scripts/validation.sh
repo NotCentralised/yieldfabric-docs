@@ -115,6 +115,15 @@ validate_commands_file() {
                     return 1
                 fi
                 ;;
+            "accept_all")
+                local denomination=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.denomination")
+                # obligor is optional for accept_all - if not specified, accepts all obligors
+                
+                if [[ -z "$denomination" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.denomination' field"
+                    return 1
+                fi
+                ;;
             "balance")
                 local denomination=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.denomination")
                 local obligor=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.obligor")
@@ -308,6 +317,48 @@ validate_commands_file() {
                 # list_groups doesn't require any specific parameters
                 # It only needs user credentials which are already validated above
                 ;;
+            "add_owner")
+                local new_owner=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.new_owner")
+                
+                if [[ -z "$new_owner" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.new_owner' field"
+                    return 1
+                fi
+                ;;
+            "remove_owner")
+                local old_owner=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.old_owner")
+                
+                if [[ -z "$old_owner" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.old_owner' field"
+                    return 1
+                fi
+                ;;
+            "add_account_member")
+                local obligation_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.obligation_id")
+                
+                # obligation_address is optional - backend will use CONFIDENTIAL_OBLIGATION_ADDRESS by default
+                if [[ -z "$obligation_id" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.obligation_id' field"
+                    return 1
+                fi
+                ;;
+            "remove_account_member")
+                local obligation_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.obligation_id")
+                
+                # obligation_address is optional - backend will use CONFIDENTIAL_OBLIGATION_ADDRESS by default
+                if [[ -z "$obligation_id" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing 'parameters.obligation_id' field"
+                    return 1
+                fi
+                ;;
+            "get_account_owners")
+                # get_account_owners doesn't require any specific parameters
+                # It only needs user credentials and group which are already validated
+                ;;
+            "get_account_members")
+                # get_account_members doesn't require any specific parameters
+                # It only needs user credentials and group which are already validated
+                ;;
             "create_swap")
                 local swap_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.swap_id")
                 local counterparty_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.counterparty.id")
@@ -343,7 +394,7 @@ validate_commands_file() {
                 ;;
             *)
                 echo_with_color $RED "Error: Command '$command_name' has unsupported type: '$command_type'"
-                echo_with_color $YELLOW "Supported types: deposit, withdraw, instant, accept, balance, create_obligation, accept_obligation, transfer_obligation, cancel_obligation, obligations, total_supply, mint, burn, create_obligation_swap, create_payment_swap, create_swap, complete_swap, cancel_swap, list_groups"
+                echo_with_color $YELLOW "Supported types: deposit, withdraw, instant, accept, accept_all, balance, create_obligation, accept_obligation, transfer_obligation, cancel_obligation, obligations, total_supply, mint, burn, create_obligation_swap, create_payment_swap, create_swap, complete_swap, cancel_swap, list_groups, add_owner, remove_owner, add_account_member, remove_account_member, get_account_owners, get_account_members"
                 return 1
                 ;;
         esac

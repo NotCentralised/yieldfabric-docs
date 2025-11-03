@@ -65,7 +65,7 @@ commands:
       denomination: aud-token-asset
       obligor: issuer@yieldfabric.com
       notional: 5 
-      expiry: 2025-11-01
+      expiry: 2025-12-01
       data: 
         name: "Annuity Stream"
         description: "Annuity Stream Obligation"
@@ -75,83 +75,83 @@ commands:
           - id: payment-1
             linear_vesting: true
             payer:
-              unlock: 2025-11-01
+              unlock: 2025-12-01
             payee:
-              unlock: 2025-11-01
+              unlock: 2025-12-01
 
           - id: payment-2
             linear_vesting: true
             payer:
-              unlock: 2025-11-02
+              unlock: 2025-12-02
             payee:
-              unlock: 2025-11-02
+              unlock: 2025-12-02
 
           - id: payment-3
             linear_vesting: true
             payer:
-              unlock: 2025-11-03
+              unlock: 2025-12-03
             payee:
-              unlock: 2025-11-03
+              unlock: 2025-12-03
 
           - id: payment-4
             payer:
-              unlock: 2025-11-04
+              unlock: 2025-12-04
             payee:
-              unlock: 2025-11-04
+              unlock: 2025-12-04
 
           - id: payment-5
             payer:
-              unlock: 2025-11-05
+              unlock: 2025-12-05
             payee:
-              unlock: 2025-11-05
+              unlock: 2025-12-05
 
           - id: payment-6
             payer:
-              unlock: 2025-11-06
+              unlock: 2025-12-06
             payee:
-              unlock: 2025-11-06
+              unlock: 2025-12-06
 
           - id: payment-7
             linear_vesting: true
             payer:
-              unlock: 2025-11-07
+              unlock: 2025-12-07
             payee:
-              unlock: 2025-11-07
+              unlock: 2025-12-07
 
           - id: payment-8
             linear_vesting: true
             payer:
-              unlock: 2025-11-08
+              unlock: 2025-12-08
             payee:
-              unlock: 2025-11-08
+              unlock: 2025-12-08
 
           - id: payment-9
             linear_vesting: true
             payer:
-              unlock: 2025-11-09
+              unlock: 2025-12-09
             payee:
-              unlock: 2025-11-09
+              unlock: 2025-12-09
 
           - id: payment-10
             linear_vesting: true
             payer:
-              unlock: 2025-11-10
+              unlock: 2025-12-10
             payee:
-              unlock: 2025-11-10
+              unlock: 2025-12-10
 
           - id: payment-11
             linear_vesting: true
             payer:
-              unlock: 2025-11-11
+              unlock: 2025-12-11
             payee:
-              unlock: 2025-11-11
+              unlock: 2025-12-11
 
           - id: payment-12
             linear_vesting: true
             payer:
-              unlock: 2025-11-12
+              unlock: 2025-12-12
             payee:
-              unlock: 2025-11-12
+              unlock: 2025-12-12
 
   - name: issuer_accept_annuity_stream_obligation_1
     type: accept_obligation
@@ -161,3 +161,25 @@ commands:
     parameters:
       idempotency_key: accept_annuity_stream_obligation-ergonomic-$(date +%s)
       contract_id: $issuer_annuity_stream_obligation_1.contract_id
+
+
+  # ACCEPT ALL
+  - name: counterpart_accept_1
+    type: accept_all
+    user: 
+      id: counterpart@yieldfabric.com
+      password: counterpass789
+    parameters:
+      idempotency_key: accept-$(date +%s)
+      denomination: aud-token-asset
+
+  - name: issuer_accept_1
+    type: accept_all
+    user: 
+      id: issuer@yieldfabric.com
+      password: issuerpass456
+    parameters:
+      idempotency_key: accept-$(date +%s)
+      denomination: aud-token-asset
+
+

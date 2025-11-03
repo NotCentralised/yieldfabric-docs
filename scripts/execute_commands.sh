@@ -63,6 +63,12 @@ execute_command() {
     local asset_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.asset_id")
     local obligor=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.obligor")
     
+    # Parse account management specific parameters
+    local new_owner=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.new_owner")
+    local old_owner=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.old_owner")
+    local obligation_address=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.obligation_address")
+    local obligation_id_param=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.obligation_id")
+    
     # Use asset_id if denomination is not provided (for backward compatibility)
     if [[ -z "$denomination" || "$denomination" == "null" ]]; then
         denomination="$asset_id"
@@ -191,6 +197,12 @@ execute_command() {
     initial_payments_denomination=$(substitute_variables "$initial_payments_denomination")
     initial_payments_obligor=$(substitute_variables "$initial_payments_obligor")
     
+    # Apply variable substitution to account management specific parameters
+    new_owner=$(substitute_variables "$new_owner")
+    old_owner=$(substitute_variables "$old_owner")
+    obligation_address=$(substitute_variables "$obligation_address")
+    obligation_id_param=$(substitute_variables "$obligation_id_param")
+    
     echo_with_color $PURPLE "🚀 Executing command $((command_index + 1)): $command_name"
     echo_with_color $BLUE "  Type: $command_type"
     echo_with_color $BLUE "  User: $user_email"
@@ -254,6 +266,12 @@ execute_command() {
     if [[ -n "$initial_payments_denomination" ]]; then echo_with_color $BLUE "    initial_payments_denomination: $initial_payments_denomination"; fi
     if [[ -n "$initial_payments_obligor" ]]; then echo_with_color $BLUE "    initial_payments_obligor: $initial_payments_obligor"; fi
     
+    # Display account management specific parameters
+    if [[ -n "$new_owner" && "$new_owner" != "null" ]]; then echo_with_color $BLUE "    new_owner: $new_owner"; fi
+    if [[ -n "$old_owner" && "$old_owner" != "null" ]]; then echo_with_color $BLUE "    old_owner: $old_owner"; fi
+    if [[ -n "$obligation_address" && "$obligation_address" != "null" ]]; then echo_with_color $BLUE "    obligation_address: $obligation_address"; fi
+    if [[ -n "$obligation_id_param" && "$obligation_id_param" != "null" ]]; then echo_with_color $BLUE "    obligation_id: $obligation_id_param"; fi
+    
     # Execute command based on type
     case "$command_type" in
         "deposit")
@@ -263,10 +281,13 @@ execute_command() {
             execute_withdraw "$command_name" "$user_email" "$user_password" "$denomination" "$amount" "$idempotency_key" "$group_name"
             ;;
         "instant")
-            execute_instant "$command_name" "$user_email" "$user_password" "$denomination" "$amount" "$destination_id" "$idempotency_key" "$group_name"
+            execute_instant "$command_name" "$user_email" "$user_password" "$denomination" "$amount" "$destination_id" "$idempotency_key" "$obligor" "$group_name"
             ;;
         "accept")
             execute_accept "$command_name" "$user_email" "$user_password" "$payment_id" "$amount" "$idempotency_key" "$group_name"
+            ;;
+        "accept_all")
+            execute_accept_all "$command_name" "$user_email" "$user_password" "$denomination" "$obligor" "$idempotency_key" "$group_name"
             ;;
         "balance")
             execute_balance "$command_name" "$user_email" "$user_password" "$denomination" "$obligor" "$group_id" "$group_name"
@@ -312,6 +333,24 @@ execute_command() {
             ;;
         "list_groups")
             execute_list_groups "$command_name" "$user_email" "$user_password" "$group_name"
+            ;;
+        "add_owner")
+            execute_add_owner "$command_name" "$user_email" "$user_password" "$new_owner" "$group_name"
+            ;;
+        "remove_owner")
+            execute_remove_owner "$command_name" "$user_email" "$user_password" "$old_owner" "$group_name"
+            ;;
+        "add_account_member")
+            execute_add_account_member "$command_name" "$user_email" "$user_password" "$obligation_address" "$obligation_id_param" "$group_name"
+            ;;
+        "remove_account_member")
+            execute_remove_account_member "$command_name" "$user_email" "$user_password" "$obligation_address" "$obligation_id_param" "$group_name"
+            ;;
+        "get_account_owners")
+            execute_get_account_owners "$command_name" "$user_email" "$user_password" "$group_name"
+            ;;
+        "get_account_members")
+            execute_get_account_members "$command_name" "$user_email" "$user_password" "$group_name"
             ;;
         *)
             echo_with_color $RED "❌ Unknown command type: $command_type"

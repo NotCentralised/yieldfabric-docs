@@ -7,7 +7,7 @@ commands:
       password: issuerpass456
     parameters:
       asset_id: aud-token-asset
-      amount: 225
+      amount: 125
       idempotency_key: deposit-$(date +%s)
 
   - name: issuer_send_1
@@ -43,7 +43,7 @@ commands:
       denomination: aud-token-asset
       obligor: issuer@yieldfabric.com
       notional: 5 
-      expiry: 2025-11-01
+      expiry: 2025-12-01
       data: 
         name: "Annuity Stream"
         description: "Annuity Stream Obligation"
@@ -52,33 +52,33 @@ commands:
         payments:
           - id: payment-1
             payer:
-              unlock: 2025-11-01
+              unlock: 2025-12-01
             payee:
-              unlock: 2025-11-01
+              unlock: 2025-12-01
 
           - id: payment-2
             payer:
-              unlock: 2025-11-02
+              unlock: 2025-12-02
             payee:
-              unlock: 2025-11-02
+              unlock: 2025-12-02
 
           - id: payment-3
             payer:
-              unlock: 2025-11-03
+              unlock: 2025-12-03
             payee:
-              unlock: 2025-11-03
+              unlock: 2025-12-03
 
           - id: payment-4
             payer:
-              unlock: 2025-11-04
+              unlock: 2025-12-04
             payee:
-              unlock: 2025-11-04
+              unlock: 2025-12-04
 
           - id: payment-5
             payer:
-              unlock: 2025-11-05
+              unlock: 2025-12-05
             payee:
-              unlock: 2025-11-05
+              unlock: 2025-12-05
 
   - name: issuer_accept_annuity_stream_obligation_1
     type: accept_obligation
@@ -101,7 +101,7 @@ commands:
       denomination: aud-token-asset
       obligor: issuer@yieldfabric.com
       notional: 100
-      expiry: 2025-11-01
+      expiry: 2025-12-01
       data: 
         name: "Redemption"
         description: "Redemption Obligation"
@@ -110,9 +110,9 @@ commands:
         payments:
           - id: payment-1
             payer:
-              unlock: 2025-11-06
+              unlock: 2025-12-06
             payee:
-              unlock: 2025-11-06
+              unlock: 2025-12-06
 
   - name: issuer_accept_redemption_obligation_1
     type: accept_obligation
@@ -122,7 +122,6 @@ commands:
     parameters:
       idempotency_key: accept_redemption_obligation-ergonomic-$(date +%s)
       contract_id: $issuer_redemption_obligation_1.contract_id
-
 
 
   # START ANNUITY SETTLEMENT
@@ -146,7 +145,7 @@ commands:
           amount: 100
           payments:
             - id: swap-payment-1
-      deadline: 2025-11-10
+      deadline: 2025-12-10
 
   - name: complete_swap-1
     type: complete_swap
@@ -173,3 +172,24 @@ commands:
   #     key: "cancel_key"
   #     value: "cancel_value"
   #     idempotency_key: cancel-swap-ergonomic-$(date +%s)
+
+
+  - name: counterpart_accept_1
+    type: accept_all
+    user: 
+      id: counterpart@yieldfabric.com
+      password: counterpass789
+    parameters:
+      idempotency_key: accept-$(date +%s)
+      denomination: aud-token-asset
+
+  - name: issuer_accept_1
+    type: accept_all
+    user: 
+      id: issuer@yieldfabric.com
+      password: issuerpass456
+    parameters:
+      idempotency_key: accept-$(date +%s)
+      denomination: aud-token-asset
+
+

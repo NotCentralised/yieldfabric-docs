@@ -642,7 +642,7 @@ execute_create_obligation_swap() {
         fi
         
         # Convert JSON array to GraphQL format - use proper escaping
-        local payments_array=$(echo "$expected_payments_json" | jq -r '.[] | "{ oracleAddress: \\\"" + ("" | tostring) + "\\\", oracleOwner: \\\"" + ("" | tostring) + "\\\", oracleKeySender: \\\"" + (.payer.key // "1") + "\\\", oracleValueSenderSecret: \\\"" + (.payer.valueSecret // "1") + "\\\", oracleKeyRecipient: \\\"" + (.payee.key // "1") + "\\\", oracleValueRecipientSecret: \\\"" + (.payee.valueSecret // "2") + "\\\", unlockSender: \\\"" + (.payer.unlock // "") + "\\\", unlockReceiver: \\\"" + (.payee.unlock // "") + "\\\" }"' | tr '\n' ',' | sed 's/,$//')
+        local payments_array=$(echo "$expected_payments_json" | jq -r '.[] | "{ oracleAddress: \\\"" + ("" | tostring) + "\\\", oracleOwner: \\\"" + ("" | tostring) + "\\\", oracleKeySender: \\\"" + (.payer.key // "0") + "\\\", oracleValueSenderSecret: \\\"" + (.payer.valueSecret // "0") + "\\\", oracleKeyRecipient: \\\"" + (.payee.key // "0") + "\\\", oracleValueRecipientSecret: \\\"" + (.payee.valueSecret // "0") + "\\\", unlockSender: \\\"" + (.payer.unlock // "") + "\\\", unlockReceiver: \\\"" + (.payee.unlock // "") + "\\\" }"' | tr '\n' ',' | sed 's/,$//')
         expected_payments_input="$expected_payments_input, payments: [$payments_array] }"
         
         input_params="$input_params, $expected_payments_input"
@@ -906,10 +906,10 @@ execute_create_obligation_swap() {
             vault_payments=$(echo "$expected_payments_json" | jq '. // [] | map({
                 oracleAddress: null,
                 oracleOwner: .owner,
-                oracleKeySender: (.payer.key // "1"),
-                oracleValueSenderSecret: (.payer.valueSecret // "1"),
-                oracleKeyRecipient: (.payee.key // "1"),
-                oracleValueRecipientSecret: (.payee.valueSecret // "2"),
+                oracleKeySender: (.payer.key // "0"),
+                oracleValueSenderSecret: (.payer.valueSecret // "0"),
+                oracleKeyRecipient: (.payee.key // "0"),
+                oracleValueRecipientSecret: (.payee.valueSecret // "0"),
                 unlockSender: .payer.unlock,
                 unlockReceiver: .payee.unlock,
                 linearVesting: (.linear_vesting // false)
@@ -1079,7 +1079,7 @@ execute_create_swap() {
         fi
         
         # Convert JSON array to GraphQL format - use proper escaping
-        local initiator_payments_array=$(echo "$initiator_expected_payments_json" | jq -r '.[] | "{ oracleAddress: \\\"" + ("" | tostring) + "\\\", oracleOwner: \\\"" + ("" | tostring) + "\\\", oracleKeySender: \\\"" + (.payer.key // "1") + "\\\", oracleValueSenderSecret: \\\"" + (.payer.valueSecret // "1") + "\\\", oracleKeyRecipient: \\\"" + (.payee.key // "1") + "\\\", oracleValueRecipientSecret: \\\"" + (.payee.valueSecret // "2") + "\\\", unlockSender: \\\"" + (.payer.unlock // "") + "\\\", unlockReceiver: \\\"" + (.payee.unlock // "") + "\\\", linearVesting: " + ((.linear_vesting // false) | tostring) + " }"' | tr '\n' ',' | sed 's/,$//')
+        local initiator_payments_array=$(echo "$initiator_expected_payments_json" | jq -r '.[] | "{ oracleAddress: \\\"" + ("" | tostring) + "\\\", oracleOwner: \\\"" + ("" | tostring) + "\\\", oracleKeySender: \\\"" + (.payer.key // "0") + "\\\", oracleValueSenderSecret: \\\"" + (.payer.valueSecret // "0") + "\\\", oracleKeyRecipient: \\\"" + (.payee.key // "0") + "\\\", oracleValueRecipientSecret: \\\"" + (.payee.valueSecret // "0") + "\\\", unlockSender: \\\"" + (.payer.unlock // "") + "\\\", unlockReceiver: \\\"" + (.payee.unlock // "") + "\\\", linearVesting: " + ((.linear_vesting // false) | tostring) + " }"' | tr '\n' ',' | sed 's/,$//')
         initiator_expected_payments_input="$initiator_expected_payments_input, payments: [$initiator_payments_array] }"
         
         input_params="$input_params, $initiator_expected_payments_input"
@@ -1105,7 +1105,7 @@ execute_create_swap() {
         fi
         
         # Convert JSON array to GraphQL format - use proper escaping
-        local counterparty_payments_array=$(echo "$counterparty_expected_payments_json" | jq -r '.[] | "{ oracleAddress: \\\"" + ("" | tostring) + "\\\", oracleOwner: \\\"" + ("" | tostring) + "\\\", oracleKeySender: \\\"" + (.payer.key // "1") + "\\\", oracleValueSenderSecret: \\\"" + (.payer.valueSecret // "1") + "\\\", oracleKeyRecipient: \\\"" + (.payee.key // "1") + "\\\", oracleValueRecipientSecret: \\\"" + (.payee.valueSecret // "2") + "\\\", unlockSender: \\\"" + (.payer.unlock // "") + "\\\", unlockReceiver: \\\"" + (.payee.unlock // "") + "\\\", linearVesting: " + ((.linear_vesting // false) | tostring) + " }"' | tr '\n' ',' | sed 's/,$//')
+        local counterparty_payments_array=$(echo "$counterparty_expected_payments_json" | jq -r '.[] | "{ oracleAddress: \\\"" + ("" | tostring) + "\\\", oracleOwner: \\\"" + ("" | tostring) + "\\\", oracleKeySender: \\\"" + (.payer.key // "0") + "\\\", oracleValueSenderSecret: \\\"" + (.payer.valueSecret // "0") + "\\\", oracleKeyRecipient: \\\"" + (.payee.key // "0") + "\\\", oracleValueRecipientSecret: \\\"" + (.payee.valueSecret // "0") + "\\\", unlockSender: \\\"" + (.payer.unlock // "") + "\\\", unlockReceiver: \\\"" + (.payee.unlock // "") + "\\\", linearVesting: " + ((.linear_vesting // false) | tostring) + " }"' | tr '\n' ',' | sed 's/,$//')
         counterparty_expected_payments_input="$counterparty_expected_payments_input, payments: [$counterparty_payments_array] }"
         
         input_params="$input_params, $counterparty_expected_payments_input"
@@ -1226,7 +1226,7 @@ execute_create_payment_swap() {
         fi
         
         # Convert JSON array to GraphQL format - use proper escaping
-        local payments_array=$(echo "$initial_payments_json" | jq -r '.[] | "{ oracleAddress: \\\"" + ("" | tostring) + "\\\", oracleOwner: \\\"" + ("" | tostring) + "\\\", oracleKeySender: \\\"" + (.payer.key // "1") + "\\\", oracleValueSenderSecret: \\\"" + (.payer.valueSecret // "1") + "\\\", oracleKeyRecipient: \\\"" + (.payee.key // "1") + "\\\", oracleValueRecipientSecret: \\\"" + (.payee.valueSecret // "2") + "\\\", unlockSender: \\\"" + (.payer.unlock // "") + "\\\", unlockReceiver: \\\"" + (.payee.unlock // "") + "\\\", linearVesting: " + ((.linear_vesting // false) | tostring) + " }"' | tr '\n' ',' | sed 's/,$//')
+        local payments_array=$(echo "$initial_payments_json" | jq -r '.[] | "{ oracleAddress: \\\"" + ("" | tostring) + "\\\", oracleOwner: \\\"" + ("" | tostring) + "\\\", oracleKeySender: \\\"" + (.payer.key // "0") + "\\\", oracleValueSenderSecret: \\\"" + (.payer.valueSecret // "0") + "\\\", oracleKeyRecipient: \\\"" + (.payee.key // "0") + "\\\", oracleValueRecipientSecret: \\\"" + (.payee.valueSecret // "0") + "\\\", unlockSender: \\\"" + (.payer.unlock // "") + "\\\", unlockReceiver: \\\"" + (.payee.unlock // "") + "\\\", linearVesting: " + ((.linear_vesting // false) | tostring) + " }"' | tr '\n' ',' | sed 's/,$//')
         initial_payments_input="$initial_payments_input, payments: [$payments_array] }"
         
         input_params="$input_params, $initial_payments_input"
@@ -1245,7 +1245,7 @@ execute_create_payment_swap() {
         fi
         
         # Convert JSON array to GraphQL format - use proper escaping
-        local payments_array=$(echo "$expected_payments_json" | jq -r '.[] | "{ oracleAddress: \\\"" + ("" | tostring) + "\\\", oracleOwner: \\\"" + ("" | tostring) + "\\\", oracleKeySender: \\\"" + (.payer.key // "1") + "\\\", oracleValueSenderSecret: \\\"" + (.payer.valueSecret // "1") + "\\\", oracleKeyRecipient: \\\"" + (.payee.key // "1") + "\\\", oracleValueRecipientSecret: \\\"" + (.payee.valueSecret // "2") + "\\\", unlockSender: \\\"" + (.payer.unlock // "") + "\\\", unlockReceiver: \\\"" + (.payee.unlock // "") + "\\\" }"' | tr '\n' ',' | sed 's/,$//')
+        local payments_array=$(echo "$expected_payments_json" | jq -r '.[] | "{ oracleAddress: \\\"" + ("" | tostring) + "\\\", oracleOwner: \\\"" + ("" | tostring) + "\\\", oracleKeySender: \\\"" + (.payer.key // "0") + "\\\", oracleValueSenderSecret: \\\"" + (.payer.valueSecret // "0") + "\\\", oracleKeyRecipient: \\\"" + (.payee.key // "0") + "\\\", oracleValueRecipientSecret: \\\"" + (.payee.valueSecret // "0") + "\\\", unlockSender: \\\"" + (.payer.unlock // "") + "\\\", unlockReceiver: \\\"" + (.payee.unlock // "") + "\\\" }"' | tr '\n' ',' | sed 's/,$//')
         expected_payments_input="$expected_payments_input, payments: [$payments_array] }"
         
         input_params="$input_params, $expected_payments_input"
@@ -1365,14 +1365,14 @@ execute_create_swap() {
             # Check if the payments array contains simple objects with just "id" field
             if [[ "$initiator_expected_payments_json" =~ \{\"id\": ]]; then
                 # Convert simple payment objects to full oracle structure using GraphQL syntax
-                initiator_payments_input="$initiator_payments_input, payments: [{ oracleAddress: \\\"\\\", oracleOwner: \\\"\\\", oracleKeySender: \\\"1\\\", oracleValueSenderSecret: \\\"1\\\", oracleKeyRecipient: \\\"1\\\", oracleValueRecipientSecret: \\\"2\\\", unlockSender: \\\"\\\", unlockReceiver: \\\"\\\" }]"
+                initiator_payments_input="$initiator_payments_input, payments: [{ oracleAddress: \\\"\\\", oracleOwner: \\\"\\\", oracleKeySender: \\\"0\\\", oracleValueSenderSecret: \\\"0\\\", oracleKeyRecipient: \\\"0\\\", oracleValueRecipientSecret: \\\"0\\\", unlockSender: \\\"\\\", unlockReceiver: \\\"\\\" }]"
             else
                 # For complex payment objects, we need to convert JSON to GraphQL syntax
                 # This is a simplified approach - for now, use default oracle structure
-                initiator_payments_input="$initiator_payments_input, payments: [{ oracleAddress: \\\"\\\", oracleOwner: \\\"\\\", oracleKeySender: \\\"1\\\", oracleValueSenderSecret: \\\"1\\\", oracleKeyRecipient: \\\"1\\\", oracleValueRecipientSecret: \\\"2\\\", unlockSender: \\\"\\\", unlockReceiver: \\\"\\\" }]"
+                initiator_payments_input="$initiator_payments_input, payments: [{ oracleAddress: \\\"\\\", oracleOwner: \\\"\\\", oracleKeySender: \\\"0\\\", oracleValueSenderSecret: \\\"0\\\", oracleKeyRecipient: \\\"0\\\", oracleValueRecipientSecret: \\\"0\\\", unlockSender: \\\"\\\", unlockReceiver: \\\"\\\" }]"
             fi
         else
-            initiator_payments_input="$initiator_payments_input, payments: [{ oracleAddress: \\\"\\\", oracleOwner: \\\"\\\", oracleKeySender: \\\"1\\\", oracleValueSenderSecret: \\\"1\\\", oracleKeyRecipient: \\\"1\\\", oracleValueRecipientSecret: \\\"2\\\", unlockSender: \\\"\\\", unlockReceiver: \\\"\\\" }]"
+            initiator_payments_input="$initiator_payments_input, payments: [{ oracleAddress: \\\"\\\", oracleOwner: \\\"\\\", oracleKeySender: \\\"0\\\", oracleValueSenderSecret: \\\"0\\\", oracleKeyRecipient: \\\"0\\\", oracleValueRecipientSecret: \\\"0\\\", unlockSender: \\\"\\\", unlockReceiver: \\\"\\\" }]"
         fi
         initiator_payments_input="$initiator_payments_input }"
         input_params="$input_params, initiatorExpectedPayments: $initiator_payments_input"
@@ -1398,14 +1398,14 @@ execute_create_swap() {
             # Check if the payments array contains simple objects with just "id" field
             if [[ "$counterparty_expected_payments_json" =~ \{\"id\": ]]; then
                 # Convert simple payment objects to full oracle structure using GraphQL syntax
-                counterparty_payments_input="$counterparty_payments_input, payments: [{ oracleAddress: \\\"\\\", oracleOwner: \\\"\\\", oracleKeySender: \\\"1\\\", oracleValueSenderSecret: \\\"1\\\", oracleKeyRecipient: \\\"1\\\", oracleValueRecipientSecret: \\\"2\\\", unlockSender: \\\"\\\", unlockReceiver: \\\"\\\" }]"
+                counterparty_payments_input="$counterparty_payments_input, payments: [{ oracleAddress: \\\"\\\", oracleOwner: \\\"\\\", oracleKeySender: \\\"0\\\", oracleValueSenderSecret: \\\"0\\\", oracleKeyRecipient: \\\"0\\\", oracleValueRecipientSecret: \\\"0\\\", unlockSender: \\\"\\\", unlockReceiver: \\\"\\\" }]"
             else
                 # For complex payment objects, we need to convert JSON to GraphQL syntax
                 # This is a simplified approach - for now, use default oracle structure
-                counterparty_payments_input="$counterparty_payments_input, payments: [{ oracleAddress: \\\"\\\", oracleOwner: \\\"\\\", oracleKeySender: \\\"1\\\", oracleValueSenderSecret: \\\"1\\\", oracleKeyRecipient: \\\"1\\\", oracleValueRecipientSecret: \\\"2\\\", unlockSender: \\\"\\\", unlockReceiver: \\\"\\\" }]"
+                counterparty_payments_input="$counterparty_payments_input, payments: [{ oracleAddress: \\\"\\\", oracleOwner: \\\"\\\", oracleKeySender: \\\"0\\\", oracleValueSenderSecret: \\\"0\\\", oracleKeyRecipient: \\\"0\\\", oracleValueRecipientSecret: \\\"0\\\", unlockSender: \\\"\\\", unlockReceiver: \\\"\\\" }]"
             fi
         else
-            counterparty_payments_input="$counterparty_payments_input, payments: [{ oracleAddress: \\\"\\\", oracleOwner: \\\"\\\", oracleKeySender: \\\"1\\\", oracleValueSenderSecret: \\\"1\\\", oracleKeyRecipient: \\\"1\\\", oracleValueRecipientSecret: \\\"2\\\", unlockSender: \\\"\\\", unlockReceiver: \\\"\\\" }]"
+            counterparty_payments_input="$counterparty_payments_input, payments: [{ oracleAddress: \\\"\\\", oracleOwner: \\\"\\\", oracleKeySender: \\\"0\\\", oracleValueSenderSecret: \\\"0\\\", oracleKeyRecipient: \\\"0\\\", oracleValueRecipientSecret: \\\"0\\\", unlockSender: \\\"\\\", unlockReceiver: \\\"\\\" }]"
         fi
         counterparty_payments_input="$counterparty_payments_input }"
         input_params="$input_params, counterpartyExpectedPayments: $counterparty_payments_input"
@@ -1426,18 +1426,30 @@ execute_create_swap() {
         json_variables="$json_variables, \"initiatorObligationIds\": $initiator_obligation_ids_json"
     fi
     
+    # Add counterparty obligation IDs if provided
+    if [[ -n "$counterparty_obligation_ids_json" && "$counterparty_obligation_ids_json" != "null" && "$counterparty_obligation_ids_json" != "[]" ]]; then
+        json_variables="$json_variables, \"counterpartyObligationIds\": $counterparty_obligation_ids_json"
+    fi
+    
     # Add counterparty expected payments if provided
     if [[ -n "$counterparty_expected_payments_amount" && "$counterparty_expected_payments_amount" != "null" ]]; then
         json_variables="$json_variables, \"counterpartyExpectedPayments\": {"
         json_variables="$json_variables \"amount\": \"$counterparty_expected_payments_amount\","
-        json_variables="$json_variables \"denomination\": \"$counterparty_expected_payments_denomination\","
+        # Add denomination if provided
+        if [[ -n "$counterparty_expected_payments_denomination" && "$counterparty_expected_payments_denomination" != "null" ]]; then
+            json_variables="$json_variables \"denomination\": \"$counterparty_expected_payments_denomination\","
+        fi
+        # Add obligor if provided
+        if [[ -n "$counterparty_expected_payments_obligor" && "$counterparty_expected_payments_obligor" != "null" ]]; then
+            json_variables="$json_variables \"obligor\": \"$counterparty_expected_payments_obligor\","
+        fi
         json_variables="$json_variables \"payments\": [{"
         json_variables="$json_variables \"oracleAddress\": \"\","
         json_variables="$json_variables \"oracleOwner\": \"\","
-        json_variables="$json_variables \"oracleKeySender\": \"1\","
-        json_variables="$json_variables \"oracleValueSenderSecret\": \"1\","
-        json_variables="$json_variables \"oracleKeyRecipient\": \"1\","
-        json_variables="$json_variables \"oracleValueRecipientSecret\": \"2\","
+        json_variables="$json_variables \"oracleKeySender\": \"0\","
+        json_variables="$json_variables \"oracleValueSenderSecret\": \"0\","
+        json_variables="$json_variables \"oracleKeyRecipient\": \"0\","
+        json_variables="$json_variables \"oracleValueRecipientSecret\": \"0\","
         json_variables="$json_variables \"unlockSender\": \"\","
         json_variables="$json_variables \"unlockReceiver\": \"\""
         json_variables="$json_variables }]"
@@ -1496,6 +1508,373 @@ execute_create_swap() {
         local error_message=$(echo "$http_response" | jq -r '.errors[0].message // "Unknown error"')
         echo_with_color $RED "  📊 Message: $error_message"
         echo_with_color $RED "  📊 Full response: $http_response"
+        return 1
+    fi
+}
+
+# Function to execute add_owner command using Auth Service
+execute_add_owner() {
+    local command_name="$1"
+    local user_email="$2"
+    local user_password="$3"
+    local new_owner="$4"
+    local group_name="$5"
+    
+    echo_with_color $CYAN "👤 Executing add_owner command via Auth Service: $command_name"
+    
+    # Login to get JWT token
+    local jwt_token=$(login_user "$user_email" "$user_password")
+    if [[ -z "$jwt_token" ]]; then
+        echo_with_color $RED "❌ Failed to get JWT token for user: $user_email"
+        return 1
+    fi
+    
+    echo_with_color $BLUE "  🔑 JWT token obtained (first 50 chars): ${jwt_token:0:50}..."
+    
+    # Get group ID from group name
+    local groups_response=$(curl -s -X GET "${AUTH_SERVICE_URL}/auth/groups/user" \
+        -H "Authorization: Bearer $jwt_token")
+    
+    local group_id=$(echo "$groups_response" | jq -r ".[] | select(.name == \"$group_name\") | .id")
+    
+    if [[ -z "$group_id" || "$group_id" == "null" ]]; then
+        echo_with_color $RED "❌ Group not found: $group_name"
+        return 1
+    fi
+    
+    echo_with_color $BLUE "  📤 Sending add owner request..."
+    
+    # Make request to add owner
+    local http_response=$(curl -s -X POST "${AUTH_SERVICE_URL}/auth/groups/${group_id}/add-owner" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $jwt_token" \
+        -d "{\"new_owner\": \"$new_owner\"}")
+    
+    echo_with_color $BLUE "  📡 Response: $http_response"
+    
+    # Check if successful
+    local status=$(echo "$http_response" | jq -r '.status // empty')
+    if [[ "$status" == "success" ]]; then
+        echo_with_color $GREEN "    ✅ Add owner successful!"
+        echo_with_color $BLUE "      Group: $group_name ($group_id)"
+        echo_with_color $BLUE "      New Owner: $new_owner"
+        
+        store_command_output "$command_name" "group_id" "$group_id"
+        store_command_output "$command_name" "new_owner" "$new_owner"
+        return 0
+    else
+        local error_message=$(echo "$http_response" | jq -r '.message // .error // "Unknown error"')
+        echo_with_color $RED "    ❌ Add owner failed: $error_message"
+        return 1
+    fi
+}
+
+# Function to execute remove_owner command using Auth Service
+execute_remove_owner() {
+    local command_name="$1"
+    local user_email="$2"
+    local user_password="$3"
+    local old_owner="$4"
+    local group_name="$5"
+    
+    echo_with_color $CYAN "👤 Executing remove_owner command via Auth Service: $command_name"
+    
+    # Login to get JWT token
+    local jwt_token=$(login_user "$user_email" "$user_password")
+    if [[ -z "$jwt_token" ]]; then
+        echo_with_color $RED "❌ Failed to get JWT token for user: $user_email"
+        return 1
+    fi
+    
+    # Get group ID from group name
+    local groups_response=$(curl -s -X GET "${AUTH_SERVICE_URL}/auth/groups/user" \
+        -H "Authorization: Bearer $jwt_token")
+    
+    local group_id=$(echo "$groups_response" | jq -r ".[] | select(.name == \"$group_name\") | .id")
+    
+    if [[ -z "$group_id" || "$group_id" == "null" ]]; then
+        echo_with_color $RED "❌ Group not found: $group_name"
+        return 1
+    fi
+    
+    echo_with_color $BLUE "  📤 Sending remove owner request..."
+    
+    # Make request to remove owner
+    local http_response=$(curl -s -X POST "${AUTH_SERVICE_URL}/auth/groups/${group_id}/remove-owner" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $jwt_token" \
+        -d "{\"old_owner\": \"$old_owner\"}")
+    
+    echo_with_color $BLUE "  📡 Response: $http_response"
+    
+    # Check if successful
+    local status=$(echo "$http_response" | jq -r '.status // empty')
+    if [[ "$status" == "success" ]]; then
+        echo_with_color $GREEN "    ✅ Remove owner successful!"
+        echo_with_color $BLUE "      Group: $group_name ($group_id)"
+        echo_with_color $BLUE "      Removed Owner: $old_owner"
+        return 0
+    else
+        local error_message=$(echo "$http_response" | jq -r '.message // .error // "Unknown error"')
+        echo_with_color $RED "    ❌ Remove owner failed: $error_message"
+        return 1
+    fi
+}
+
+# Function to execute add_account_member command using Auth Service
+execute_add_account_member() {
+    local command_name="$1"
+    local user_email="$2"
+    local user_password="$3"
+    local obligation_address="$4"
+    local obligation_id="$5"
+    local group_name="$6"
+    
+    echo_with_color $CYAN "👥 Executing add_account_member command via Auth Service: $command_name"
+    
+    # Login to get JWT token
+    local jwt_token=$(login_user "$user_email" "$user_password")
+    if [[ -z "$jwt_token" ]]; then
+        echo_with_color $RED "❌ Failed to get JWT token for user: $user_email"
+        return 1
+    fi
+    
+    # Get group ID from group name
+    local groups_response=$(curl -s -X GET "${AUTH_SERVICE_URL}/auth/groups/user" \
+        -H "Authorization: Bearer $jwt_token")
+    
+    local group_id=$(echo "$groups_response" | jq -r ".[] | select(.name == \"$group_name\") | .id")
+    
+    if [[ -z "$group_id" || "$group_id" == "null" ]]; then
+        echo_with_color $RED "❌ Group not found: $group_name"
+        return 1
+    fi
+    
+    echo_with_color $BLUE "  📤 Sending add account member request..."
+    
+    # Build JSON payload - obligation_address is optional (backend will use default)
+    local json_payload
+    if [[ -n "$obligation_address" && "$obligation_address" != "null" && "$obligation_address" != "" ]]; then
+        json_payload="{\"obligation_address\": \"$obligation_address\", \"obligation_id\": \"$obligation_id\"}"
+    else
+        json_payload="{\"obligation_id\": \"$obligation_id\"}"
+        echo_with_color $YELLOW "  ℹ️  Using default obligation_address from backend (CONFIDENTIAL_OBLIGATION_ADDRESS)"
+    fi
+    
+    # Make request to add member
+    local http_response=$(curl -s -X POST "${AUTH_SERVICE_URL}/auth/groups/${group_id}/add-account-member" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $jwt_token" \
+        -d "$json_payload")
+    
+    echo_with_color $BLUE "  📡 Response: $http_response"
+    
+    # Check if successful
+    local status=$(echo "$http_response" | jq -r '.status // empty')
+    if [[ "$status" == "success" ]]; then
+        echo_with_color $GREEN "    ✅ Add account member successful!"
+        echo_with_color $BLUE "      Group: $group_name ($group_id)"
+        echo_with_color $BLUE "      Obligation Address: $obligation_address"
+        echo_with_color $BLUE "      Obligation ID: $obligation_id"
+        
+        local member_type
+        if [[ "$obligation_id" == "0" ]]; then
+            member_type="direct address"
+        else
+            member_type="NFT-based (ID: $obligation_id)"
+        fi
+        echo_with_color $CYAN "      Member Type: $member_type"
+        
+        store_command_output "$command_name" "group_id" "$group_id"
+        store_command_output "$command_name" "obligation_address" "$obligation_address"
+        store_command_output "$command_name" "obligation_id" "$obligation_id"
+        return 0
+    else
+        local error_message=$(echo "$http_response" | jq -r '.message // .error // "Unknown error"')
+        echo_with_color $RED "    ❌ Add account member failed: $error_message"
+        return 1
+    fi
+}
+
+# Function to execute remove_account_member command using Auth Service
+execute_remove_account_member() {
+    local command_name="$1"
+    local user_email="$2"
+    local user_password="$3"
+    local obligation_address="$4"
+    local obligation_id="$5"
+    local group_name="$6"
+    
+    echo_with_color $CYAN "👥 Executing remove_account_member command via Auth Service: $command_name"
+    
+    # Login to get JWT token
+    local jwt_token=$(login_user "$user_email" "$user_password")
+    if [[ -z "$jwt_token" ]]; then
+        echo_with_color $RED "❌ Failed to get JWT token for user: $user_email"
+        return 1
+    fi
+    
+    # Get group ID from group name
+    local groups_response=$(curl -s -X GET "${AUTH_SERVICE_URL}/auth/groups/user" \
+        -H "Authorization: Bearer $jwt_token")
+    
+    local group_id=$(echo "$groups_response" | jq -r ".[] | select(.name == \"$group_name\") | .id")
+    
+    if [[ -z "$group_id" || "$group_id" == "null" ]]; then
+        echo_with_color $RED "❌ Group not found: $group_name"
+        return 1
+    fi
+    
+    echo_with_color $BLUE "  📤 Sending remove account member request..."
+    
+    # Build JSON payload - obligation_address is optional (backend will use default)
+    local json_payload
+    if [[ -n "$obligation_address" && "$obligation_address" != "null" && "$obligation_address" != "" ]]; then
+        json_payload="{\"obligation_address\": \"$obligation_address\", \"obligation_id\": \"$obligation_id\"}"
+    else
+        json_payload="{\"obligation_id\": \"$obligation_id\"}"
+        echo_with_color $YELLOW "  ℹ️  Using default obligation_address from backend (CONFIDENTIAL_OBLIGATION_ADDRESS)"
+    fi
+    
+    # Make request to remove member
+    local http_response=$(curl -s -X POST "${AUTH_SERVICE_URL}/auth/groups/${group_id}/remove-account-member" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $jwt_token" \
+        -d "$json_payload")
+    
+    echo_with_color $BLUE "  📡 Response: $http_response"
+    
+    # Check if successful
+    local status=$(echo "$http_response" | jq -r '.status // empty')
+    if [[ "$status" == "success" ]]; then
+        echo_with_color $GREEN "    ✅ Remove account member successful!"
+        echo_with_color $BLUE "      Group: $group_name ($group_id)"
+        echo_with_color $BLUE "      Removed Obligation Address: $obligation_address"
+        echo_with_color $BLUE "      Removed Obligation ID: $obligation_id"
+        return 0
+    else
+        local error_message=$(echo "$http_response" | jq -r '.message // .error // "Unknown error"')
+        echo_with_color $RED "    ❌ Remove account member failed: $error_message"
+        return 1
+    fi
+}
+
+# Function to execute get_account_owners command using Auth Service
+execute_get_account_owners() {
+    local command_name="$1"
+    local user_email="$2"
+    local user_password="$3"
+    local group_name="$4"
+    
+    echo_with_color $CYAN "👥 Executing get_account_owners command via Auth Service: $command_name"
+    
+    # Login to get JWT token
+    local jwt_token=$(login_user "$user_email" "$user_password")
+    if [[ -z "$jwt_token" ]]; then
+        echo_with_color $RED "❌ Failed to get JWT token for user: $user_email"
+        return 1
+    fi
+    
+    # Get group ID from group name
+    local groups_response=$(curl -s -X GET "${AUTH_SERVICE_URL}/auth/groups/user" \
+        -H "Authorization: Bearer $jwt_token")
+    
+    local group_id=$(echo "$groups_response" | jq -r ".[] | select(.name == \"$group_name\") | .id")
+    
+    if [[ -z "$group_id" || "$group_id" == "null" ]]; then
+        echo_with_color $RED "❌ Group not found: $group_name"
+        return 1
+    fi
+    
+    echo_with_color $BLUE "  📤 Sending get account owners request..."
+    
+    # Make request to get account owners
+    local http_response=$(curl -s -X GET "${AUTH_SERVICE_URL}/auth/groups/${group_id}/account-owners" \
+        -H "Authorization: Bearer $jwt_token")
+    
+    echo_with_color $BLUE "  📡 Response received"
+    
+    # Check if successful
+    if echo "$http_response" | jq -e '.owners' >/dev/null 2>&1; then
+        local owners_count=$(echo "$http_response" | jq '.owners | length')
+        local account_address=$(echo "$http_response" | jq -r '.account_address')
+        
+        echo_with_color $GREEN "    ✅ Get account owners successful!"
+        echo_with_color $BLUE "      Group: $group_name ($group_id)"
+        echo_with_color $BLUE "      Account Address: $account_address"
+        echo_with_color $BLUE "      Owners Count: $owners_count"
+        
+        if [[ $owners_count -gt 0 ]]; then
+            echo_with_color $CYAN "      👥 Owners:"
+            echo "$http_response" | jq -r '.owners[] | "        • \(.owner_address) (Added: \(.added_at), Active: \(.is_active))"'
+        fi
+        
+        store_command_output "$command_name" "owners" "$(echo "$http_response" | jq -c '.owners')"
+        store_command_output "$command_name" "owners_count" "$owners_count"
+        return 0
+    else
+        local error_message=$(echo "$http_response" | jq -r '.message // .error // "Unknown error"')
+        echo_with_color $RED "    ❌ Get account owners failed: $error_message"
+        return 1
+    fi
+}
+
+# Function to execute get_account_members command using Auth Service
+execute_get_account_members() {
+    local command_name="$1"
+    local user_email="$2"
+    local user_password="$3"
+    local group_name="$4"
+    
+    echo_with_color $CYAN "👥 Executing get_account_members command via Auth Service: $command_name"
+    
+    # Login to get JWT token
+    local jwt_token=$(login_user "$user_email" "$user_password")
+    if [[ -z "$jwt_token" ]]; then
+        echo_with_color $RED "❌ Failed to get JWT token for user: $user_email"
+        return 1
+    fi
+    
+    # Get group ID from group name
+    local groups_response=$(curl -s -X GET "${AUTH_SERVICE_URL}/auth/groups/user" \
+        -H "Authorization: Bearer $jwt_token")
+    
+    local group_id=$(echo "$groups_response" | jq -r ".[] | select(.name == \"$group_name\") | .id")
+    
+    if [[ -z "$group_id" || "$group_id" == "null" ]]; then
+        echo_with_color $RED "❌ Group not found: $group_name"
+        return 1
+    fi
+    
+    echo_with_color $BLUE "  📤 Sending get account members request..."
+    
+    # Make request to get account members
+    local http_response=$(curl -s -X GET "${AUTH_SERVICE_URL}/auth/groups/${group_id}/account-members" \
+        -H "Authorization: Bearer $jwt_token")
+    
+    echo_with_color $BLUE "  📡 Response received"
+    
+    # Check if successful
+    if echo "$http_response" | jq -e '.members' >/dev/null 2>&1; then
+        local members_count=$(echo "$http_response" | jq '.members | length')
+        local account_address=$(echo "$http_response" | jq -r '.account_address')
+        
+        echo_with_color $GREEN "    ✅ Get account members successful!"
+        echo_with_color $BLUE "      Group: $group_name ($group_id)"
+        echo_with_color $BLUE "      Account Address: $account_address"
+        echo_with_color $BLUE "      Members Count: $members_count"
+        
+        if [[ $members_count -gt 0 ]]; then
+            echo_with_color $CYAN "      👥 Members:"
+            echo "$http_response" | jq -r '.members[] | "        • \(.obligation_address) (ID: \(.obligation_id), Type: \(.member_type), Active: \(.is_active))"'
+        fi
+        
+        store_command_output "$command_name" "members" "$(echo "$http_response" | jq -c '.members')"
+        store_command_output "$command_name" "members_count" "$members_count"
+        return 0
+    else
+        local error_message=$(echo "$http_response" | jq -r '.message // .error // "Unknown error"')
+        echo_with_color $RED "    ❌ Get account members failed: $error_message"
         return 1
     fi
 }

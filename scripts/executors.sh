@@ -168,7 +168,8 @@ execute_instant() {
     local amount="$5"
     local destination_id="$6"
     local idempotency_key="$7"
-    local group_name="$8"  # Optional group name for delegation
+    local obligor="$8"  # Optional obligor
+    local group_name="$9"  # Optional group name for delegation
     
     echo_with_color $CYAN "⚡ Executing instant command via GraphQL: $command_name"
     
@@ -184,13 +185,21 @@ execute_instant() {
     fi
     echo_with_color $BLUE "  📤 Sending GraphQL instant send mutation..."
     
-    # Prepare GraphQL mutation
+    # Prepare GraphQL mutation with optional obligor
     local graphql_mutation
-    if [[ -n "$idempotency_key" ]]; then
-        graphql_mutation="mutation { instant(input: { assetId: \\\"$denomination\\\", amount: \\\"$amount\\\", destinationId: \\\"$destination_id\\\", idempotencyKey: \\\"$idempotency_key\\\" }) { success message accountAddress destinationId idHash messageId paymentId sendResult timestamp } }"
-    else
-        graphql_mutation="mutation { instant(input: { assetId: \\\"$denomination\\\", amount: \\\"$amount\\\", destinationId: \\\"$destination_id\\\" }) { success message accountAddress destinationId idHash messageId paymentId sendResult timestamp } }"
+    local mutation_input="assetId: \\\"$denomination\\\", amount: \\\"$amount\\\", destinationId: \\\"$destination_id\\\""
+    
+    # Add obligor if provided
+    if [[ -n "$obligor" && "$obligor" != "null" ]]; then
+        mutation_input="$mutation_input, obligor: \\\"$obligor\\\""
     fi
+    
+    # Add idempotency key if provided
+    if [[ -n "$idempotency_key" ]]; then
+        mutation_input="$mutation_input, idempotencyKey: \\\"$idempotency_key\\\""
+    fi
+    
+    graphql_mutation="mutation { instant(input: { $mutation_input }) { success message accountAddress destinationId idHash messageId paymentId sendResult timestamp } }"
     
     local graphql_payload="{\"query\": \"$graphql_mutation\"}"
     
@@ -529,6 +538,119 @@ execute_accept() {
     fi
 }
 
+# Function to execute accept_all command using GraphQL
+# NOTE: This only processes PAYABLES (where the user is the RECEIVER/PAYEE)
+# It will NOT process PAYOUTS (where the user is the PAYER)
+execute_accept_all() {
+    local command_name="$1"
+    local user_email="$2"
+    local user_password="$3"
+    local denomination="$4"
+    local obligor="$5"
+    local idempotency_key="$6"
+    local group_name="$7"  # Optional group name for delegation
+    
+    echo_with_color $CYAN "✅ Executing accept_all command via GraphQL: $command_name"
+    echo_with_color $YELLOW "   ⚠️  Note: Only accepting PAYABLES (where user is the RECEIVER)"
+    
+    # Login to get JWT token (with optional group delegation)
+    local jwt_token=$(login_user "$user_email" "$user_password" "$group_name")
+    if [[ -z "$jwt_token" ]]; then
+        echo_with_color $RED "❌ Failed to get JWT token for user: $user_email"
+        return 1
+    fi
+    
+    if [[ -n "$group_name" ]]; then
+        echo_with_color $CYAN "  🏢 Using delegation JWT for group: $group_name"
+    fi
+    echo_with_color $BLUE "  📤 Sending GraphQL accept_all mutation..."
+    
+    # Prepare GraphQL mutation
+    local graphql_mutation
+    local input_params="denomination: \\\"$denomination\\\""
+    
+    # Add obligor if provided (optional parameter)
+    if [[ -n "$obligor" && "$obligor" != "null" ]]; then
+        input_params="$input_params, obligor: \\\"$obligor\\\""
+    fi
+    
+    # Add idempotency_key if provided
+    if [[ -n "$idempotency_key" ]]; then
+        input_params="$input_params, idempotencyKey: \\\"$idempotency_key\\\""
+    fi
+    
+    graphql_mutation="mutation { acceptAll(input: { $input_params }) { success message totalPayments acceptedCount failedCount acceptedPayments { paymentId amount messageId transactionId } failedPayments { paymentId amount error } timestamp } }"
+    
+    local graphql_payload="{\"query\": \"$graphql_mutation\"}"
+    
+    echo_with_color $BLUE "  📋 GraphQL mutation:"
+    echo_with_color $BLUE "    $graphql_mutation"
+    
+    # Send GraphQL request to payments service
+    echo_with_color $BLUE "  🌐 Making GraphQL request to: ${PAY_SERVICE_URL}/graphql"
+    local http_response=$(curl -s -X POST "${PAY_SERVICE_URL}/graphql" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $jwt_token" \
+        -d "$graphql_payload")
+    
+    echo_with_color $BLUE "  📡 Raw GraphQL response: '$http_response'"
+    
+    # Parse GraphQL response
+    local success=$(echo "$http_response" | jq -r '.data.acceptAll.success // empty')
+    if [[ "$success" == "true" ]]; then
+        local message=$(echo "$http_response" | jq -r '.data.acceptAll.message // empty')
+        local total_payments=$(echo "$http_response" | jq -r '.data.acceptAll.totalPayments // 0')
+        local accepted_count=$(echo "$http_response" | jq -r '.data.acceptAll.acceptedCount // 0')
+        local failed_count=$(echo "$http_response" | jq -r '.data.acceptAll.failedCount // 0')
+        local timestamp=$(echo "$http_response" | jq -r '.data.acceptAll.timestamp // empty')
+        
+        # Store outputs for variable substitution in future commands
+        store_command_output "$command_name" "message" "$message"
+        store_command_output "$command_name" "total_payments" "$total_payments"
+        store_command_output "$command_name" "accepted_count" "$accepted_count"
+        store_command_output "$command_name" "failed_count" "$failed_count"
+        store_command_output "$command_name" "denomination" "$denomination"
+        store_command_output "$command_name" "obligor" "$obligor"
+        store_command_output "$command_name" "timestamp" "$timestamp"
+        
+        echo_with_color $GREEN "    ✅ Accept All PAYABLES successful!"
+        echo_with_color $BLUE "      Message: $message"
+        echo_with_color $BLUE "      Total PAYABLE Payments Found: $total_payments"
+        echo_with_color $GREEN "      Accepted (as PAYEE/RECEIVER): $accepted_count"
+        echo_with_color $BLUE "      Denomination: $denomination"
+        if [[ -n "$obligor" && "$obligor" != "null" ]]; then
+            echo_with_color $BLUE "      Obligor (Payer) Filter: $obligor"
+        else
+            echo_with_color $BLUE "      Obligor (Payer) Filter: Any"
+        fi
+        
+        if [[ "$failed_count" -gt 0 ]]; then
+            echo_with_color $YELLOW "      Failed: $failed_count"
+        fi
+        
+        # Display accepted payments details
+        if [[ "$accepted_count" -gt 0 ]]; then
+            echo_with_color $GREEN "  ✅ Accepted Payments:"
+            echo "$http_response" | jq -r '.data.acceptAll.acceptedPayments[]? | "      • Payment ID: \(.paymentId), Amount: \(.amount), Message ID: \(.messageId)"' 2>/dev/null
+        fi
+        
+        # Display failed payments details
+        if [[ "$failed_count" -gt 0 ]]; then
+            echo_with_color $YELLOW "  ⚠️  Failed Payments:"
+            echo "$http_response" | jq -r '.data.acceptAll.failedPayments[]? | "      • Payment ID: \(.paymentId), Amount: \(.amount), Error: \(.error)"' 2>/dev/null
+        fi
+        
+        echo_with_color $CYAN "      📝 Stored outputs for variable substitution:"
+        echo_with_color $CYAN "        ${command_name}_message, ${command_name}_total_payments, ${command_name}_accepted_count, ${command_name}_failed_count, ${command_name}_denomination, ${command_name}_obligor, ${command_name}_timestamp"
+        return 0
+    else
+        local error_message=$(echo "$http_response" | jq -r '.errors[0].message // "Unknown error"')
+        echo_with_color $RED "    ❌ Accept All failed: $error_message"
+        echo_with_color $BLUE "      Full response: $http_response"
+        return 1
+    fi
+}
+
 # Function to execute create obligation command using GraphQL (with ergonomic input)
 execute_create_obligation_ergonomic() {
     local command_name="$1"
@@ -564,7 +686,12 @@ execute_create_obligation_ergonomic() {
     # Prepare GraphQL mutation with required fields
     local graphql_mutation
     local graphql_variables=""
-    local input_params="counterpart: \\\"$counterpart\\\", denomination: \\\"$denomination\\\""
+    local input_params="counterpart: \\\"$counterpart\\\""
+    
+    # Add denomination if provided (optional - only required with payments)
+    if [[ -n "$denomination" && "$denomination" != "null" ]]; then
+        input_params="$input_params, denomination: \\\"$denomination\\\""
+    fi
     
     # Add optional obligation_address if provided (and not "null")
     if [[ -n "$obligation_address" && "$obligation_address" != "null" ]]; then
@@ -594,7 +721,7 @@ execute_create_obligation_ergonomic() {
         graphql_variables="$graphql_variables\"data\": $data"
         input_params="$input_params, data: \$data"
     fi
-    if [[ -n "$initial_payments_amount" && -n "$initial_payments_json" ]]; then
+    if [[ -n "$initial_payments_amount" && "$initial_payments_amount" != "null" && -n "$initial_payments_json" && "$initial_payments_json" != "null" ]]; then
         # Convert user-friendly payments to VaultPaymentInput format
         local vault_payments=$(echo "$initial_payments_json" | jq 'map({
             oracleAddress: null,
