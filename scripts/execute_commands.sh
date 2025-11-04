@@ -331,6 +331,9 @@ execute_command() {
         "cancel_swap")
             execute_cancel_swap "$command_name" "$user_email" "$user_password" "$swap_id" "$key" "$value" "$idempotency_key" "$group_name"
             ;;
+        "composed_operation")
+            execute_composed_operation "$command_index" "$command_name" "$user_email" "$user_password" "$group_name"
+            ;;
         "list_groups")
             execute_list_groups "$command_name" "$user_email" "$user_password" "$group_name"
             ;;

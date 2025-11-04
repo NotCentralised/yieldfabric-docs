@@ -4,7 +4,7 @@ commands:
   #   type: deposit
   #   user: 
   #     id: issuer@yieldfabric.com
-  #     password: issuerpass456
+  #     password: issuer_password
   #   parameters:
   #     asset_id: aud-token-asset
   #     amount: 1000
@@ -14,18 +14,18 @@ commands:
   #   type: instant
   #   user: 
   #     id: issuer@yieldfabric.com
-  #     password: issuerpass456
+  #     password: issuer_password
   #   parameters:
   #     asset_id: aud-token-asset
   #     amount: 100
   #     idempotency_key: instant-$(date +%s)
-  #     destination_id: counterpart@yieldfabric.com
+  #     destination_id: collateral@yieldfabric.com
 
   # - name: counterpart_accept_1
   #   type: accept
   #   user: 
-  #     id: counterpart@yieldfabric.com
-  #     password: counterpass789
+  #     id: collateral@yieldfabric.com
+  #     password: collateral_password
   #   parameters:
   #     idempotency_key: accept-$(date +%s)
   #     payment_id: $issuer_send_1.payment_id
@@ -37,14 +37,14 @@ commands:
     type: create_obligation
     user: 
       id: issuer@yieldfabric.com
-      password: issuerpass456
+      password: issuer_password
     parameters:
       idempotency_key: create_annuity_stream_obligation-ergonomic-$(date +%s)
-      counterpart: counterpart@yieldfabric.com
+      counterpart: collateral@yieldfabric.com
       denomination: aud-token-asset
-      obligor: counterpart@yieldfabric.com
+      obligor: collateral@yieldfabric.com
       notional: 100000000
-      expiry: 2025-10-30
+      expiry: 2025-11-04
       data: 
         name: "Annuity Stream"
         description: "Annuity Stream Obligation"
@@ -54,15 +54,15 @@ commands:
           - id: payment-1
             linear_vesting: true
             payer:
-              unlock: 2025-10-31
+              unlock: 2025-11-05
             payee:
-              unlock: 2025-10-31
+              unlock: 2025-11-05
 
   - name: issuer_accept_annuity_stream_obligation_1
     type: accept_obligation
     user: 
-      id: counterpart@yieldfabric.com
-      password: counterpass789
+      id: collateral@yieldfabric.com
+      password: collateral_password
     parameters:
       idempotency_key: accept_annuity_stream_obligation-ergonomic-$(date +%s)
       contract_id: $issuer_annuity_stream_obligation_1.contract_id
@@ -74,7 +74,7 @@ commands:
     type: deposit
     user: 
       id: issuer@yieldfabric.com
-      password: issuerpass456
+      password: issuer_password
     parameters:
       asset_id: aud-token-asset
       amount: 1000
@@ -87,7 +87,7 @@ commands:
     type: accept
     user: 
       id: issuer@yieldfabric.com
-      password: issuerpass456
+      password: issuer_password
     parameters:
       idempotency_key: accept-$(date +%s)
       payment_id: PAY-INITIAL-$issuer_annuity_stream_obligation_1.contract_id-0
@@ -98,18 +98,18 @@ commands:
     type: instant
     user: 
       id: issuer@yieldfabric.com
-      password: issuerpass456
+      password: issuer_password
     parameters:
       asset_id: aud-token-asset
       amount: 100
       idempotency_key: instant-$(date +%s)
-      destination_id: counterpart@yieldfabric.com
+      destination_id: collateral@yieldfabric.com
 
   - name: counterpart_accept_1
     type: accept
     user: 
-      id: counterpart@yieldfabric.com
-      password: counterpass789
+      id: collateral@yieldfabric.com
+      password: collateral_password
     parameters:
       idempotency_key: accept-$(date +%s)
       payment_id: $issuer_send_1.payment_id
@@ -120,7 +120,7 @@ commands:
     type: accept
     user: 
       id: issuer@yieldfabric.com
-      password: issuerpass456
+      password: issuer_password
     parameters:
       idempotency_key: accept-$(date +%s)
       payment_id: PAY-INITIAL-$issuer_annuity_stream_obligation_1.contract_id-0

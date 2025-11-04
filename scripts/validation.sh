@@ -392,9 +392,21 @@ validate_commands_file() {
                     echo_with_color $YELLOW "Warning: Command '$command_name' has no obligations or expected payments for either initiator or counterparty"
                 fi
                 ;;
+            "composed_operation")
+                # Validate composed operation has operations array
+                local operations_count=$(parse_yaml "$COMMANDS_FILE" ".commands[$i].parameters.operations | length")
+                
+                if [[ -z "$operations_count" || "$operations_count" == "0" || "$operations_count" == "null" ]]; then
+                    echo_with_color $RED "Error: Command '$command_name' missing or empty 'parameters.operations' array"
+                    return 1
+                fi
+                
+                # Composed operations are validated at runtime by the GraphQL resolver
+                # We just need to ensure the basic structure is present
+                ;;
             *)
                 echo_with_color $RED "Error: Command '$command_name' has unsupported type: '$command_type'"
-                echo_with_color $YELLOW "Supported types: deposit, withdraw, instant, accept, accept_all, balance, create_obligation, accept_obligation, transfer_obligation, cancel_obligation, obligations, total_supply, mint, burn, create_obligation_swap, create_payment_swap, create_swap, complete_swap, cancel_swap, list_groups, add_owner, remove_owner, add_account_member, remove_account_member, get_account_owners, get_account_members"
+                echo_with_color $YELLOW "Supported types: deposit, withdraw, instant, accept, accept_all, balance, create_obligation, accept_obligation, transfer_obligation, cancel_obligation, obligations, total_supply, mint, burn, create_obligation_swap, create_payment_swap, create_swap, complete_swap, cancel_swap, composed_operation, list_groups, add_owner, remove_owner, add_account_member, remove_account_member, get_account_owners, get_account_members"
                 return 1
                 ;;
         esac

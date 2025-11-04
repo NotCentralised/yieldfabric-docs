@@ -1,27 +1,35 @@
 users:
-  - id: admin2@yieldfabric.com
-    password: testpass123
+  - id: payer@yieldfabric.com
+    password: payer_password
+    role: SuperAdmin
+
+  - id: originator@yieldfabric.com
+    password: originator_password
+    role: SuperAdmin
+
+  - id: collateral@yieldfabric.com
+    password: collateral_password
     role: SuperAdmin
 
   - id: issuer@yieldfabric.com
-    password: issuerpass456
+    password: issuer_password
     role: SuperAdmin
 
-  - id: counterpart@yieldfabric.com
-    password: counterpass789
+  - id: investor@yieldfabric.com
+    password: investor_password
     role: SuperAdmin
 
 groups:
-  - id: admin-group
-    name: Admin Group
-    description: Administrative group for system management
+  - id: collateral-group
+    name: Collateral Group
+    description: Collateral Group Description
     group_type: project
     user:
-      id: admin2@yieldfabric.com
-      password: testpass123
-    members:
-      - id: counterpart@yieldfabric.com
-        role: owner
+      id: collateral@yieldfabric.com
+      password: collateral_password
+    # members:
+    #   - id: issuer@yieldfabric.com # need to enable NFT owner
+    #     role: owner
 
   - id: issuer-group
     name: Issuer Group
@@ -29,21 +37,12 @@ groups:
     group_type: project
     user:
       id: issuer@yieldfabric.com
-      password: issuerpass456
-    members:
-      - id: counterpart@yieldfabric.com
-        role: owner
-    
-  - id: counterpart-group
-    name: Counterpart Group
-    description: Counterpart Group Description
-    group_type: project
-    user:
-      id: counterpart@yieldfabric.com
-      password: counterpass789
-    members:
-      - id: issuer@yieldfabric.com
-        role: owner
+      password: issuer_password
+    # members:
+    #   - id: investor@yieldfabric.com
+    #     role: owner
+    #   - id: collateral@yieldfabric.com # need to enable NFT owner
+    #     role: owner
     
 tokens:
   - id: AUD
@@ -53,9 +52,9 @@ tokens:
     chain_id: 33117
     # address: 0xe764F77fbCa499E29Ec2B58506fB21CbE4BC2916
     # chain_id: 153
-  - id: USD
-    name: USD Token
-    description: USD Token Description
+  - id: CBDC
+    name: CBD Token
+    description: CBDC Token Description
     address: 0x3Aa5ebB10DC797CAC828524e59A333d0A371443c
     chain_id: 33117
     # address: 0x1797599D39EdDdBEF5eACD0313da2879F54aF245
@@ -69,33 +68,33 @@ assets:
     description: AUD Token Description
     token_id: AUD-token
     
-  - id: USD
-    name: USD Token
+  - id: CBDC
+    name: CBD Token
     type: Cash
-    currency: USD
-    description: USD Token Description
-    token_id: USD-token
-
-fiat_accounts:
-  - id: AUDBANK-001
-    user:
-      id: issuer@yieldfabric.com
-      password: issuerpass456
-    holder: Personal Inc
     currency: AUD
-    iban: AU12ABCD1234567890123456
-    bsb: 012345
-    account_number: 123456789
-    asset: aud-token-asset
+    description: CBDC Token Description
+    token_id: CBDC-token
 
-  - id: USDBANK-002
-    user:
-      id: admin2@yieldfabric.com
-      password: testpass123
-      group: Admin Group
-    holder: YieldFabric Inc
-    currency: USD
-    iban: US12ABCD1234567890123456
-    routing_number: 123456789
-    account_number: 123456789
-    asset: usd-token-asset
+# fiat_accounts:
+#   - id: AUDBANK-001
+#     user:
+#       id: issuer@yieldfabric.com
+#       password: issuerpass456
+#     holder: Personal Inc
+#     currency: AUD
+#     iban: AU12ABCD1234567890123456
+#     bsb: 012345
+#     account_number: 123456789
+#     asset: aud-token-asset
+
+#   - id: USDBANK-002
+#     user:
+#       id: admin2@yieldfabric.com
+#       password: testpass123
+#       group: Admin Group
+#     holder: YieldFabric Inc
+#     currency: USD
+#     iban: US12ABCD1234567890123456
+#     routing_number: 123456789
+#     account_number: 123456789
+#     asset: usd-token-asset

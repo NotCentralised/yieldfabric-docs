@@ -4,7 +4,7 @@ commands:
     type: deposit
     user: 
       id: issuer@yieldfabric.com
-      password: issuerpass456
+      password: issuer_password
     parameters:
       asset_id: aud-token-asset
       amount: 225
@@ -14,18 +14,18 @@ commands:
     type: instant
     user: 
       id: issuer@yieldfabric.com
-      password: issuerpass456
+      password: issuer_password
     parameters:
       asset_id: aud-token-asset
       amount: 100
       idempotency_key: instant-$(date +%s)
-      destination_id: counterpart@yieldfabric.com
+      destination_id: collateral@yieldfabric.com
 
   - name: counterpart_accept_1
     type: accept
     user: 
-      id: counterpart@yieldfabric.com
-      password: counterpass789
+      id: collateral@yieldfabric.com
+      password: collateral_password
     parameters:
       idempotency_key: accept-$(date +%s)
       payment_id: $issuer_send_1.payment_id
@@ -35,8 +35,8 @@ commands:
   - name: counterpart_accept_2
     type: accept
     user: 
-      id: counterpart@yieldfabric.com
-      password: counterpass789
+      id: collateral@yieldfabric.com
+      password: collateral_password
     parameters:
       idempotency_key: accept-$(date +%s)
       payment_id: $issuer_send_1.payment_id
@@ -45,8 +45,8 @@ commands:
   - name: counterpart_accept_3
     type: accept
     user: 
-      id: counterpart@yieldfabric.com
-      password: counterpass789
+      id: collateral@yieldfabric.com
+      password: collateral_password
     parameters:
       idempotency_key: accept-$(date +%s)
       payment_id: $issuer_send_1.payment_id
@@ -58,7 +58,7 @@ commands:
     type: create_obligation
     user: 
       id: issuer@yieldfabric.com
-      password: issuerpass456
+      password: issuer_password
     parameters:
       idempotency_key: create_annuity_stream_obligation-ergonomic-$(date +%s)
       counterpart: issuer@yieldfabric.com
@@ -157,7 +157,7 @@ commands:
     type: accept_obligation
     user: 
       id: issuer@yieldfabric.com
-      password: issuerpass456
+      password: issuer_password
     parameters:
       idempotency_key: accept_annuity_stream_obligation-ergonomic-$(date +%s)
       contract_id: $issuer_annuity_stream_obligation_1.contract_id
@@ -167,8 +167,8 @@ commands:
   - name: counterpart_accept_1
     type: accept_all
     user: 
-      id: counterpart@yieldfabric.com
-      password: counterpass789
+      id: collateral@yieldfabric.com
+      password: collateral_password
     parameters:
       idempotency_key: accept-$(date +%s)
       denomination: aud-token-asset
@@ -177,7 +177,7 @@ commands:
     type: accept_all
     user: 
       id: issuer@yieldfabric.com
-      password: issuerpass456
+      password: issuer_password
     parameters:
       idempotency_key: accept-$(date +%s)
       denomination: aud-token-asset

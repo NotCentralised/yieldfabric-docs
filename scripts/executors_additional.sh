@@ -7,6 +7,191 @@
 PAY_SERVICE_URL="${PAY_SERVICE_URL:-https://pay.yieldfabric.io}"
 AUTH_SERVICE_URL="${AUTH_SERVICE_URL:-https://auth.yieldfabric.io}"
 
+# Function to execute composed operation command using GraphQL
+execute_composed_operation() {
+    local command_index="$1"
+    local command_name="$2"
+    local user_email="$3"
+    local user_password="$4"
+    local group_name="$5"  # Optional group name for delegation
+    
+    echo_with_color $CYAN "🔄 Executing composed operation command via GraphQL: $command_name"
+    
+    # Login to get JWT token (with optional group delegation)
+    local jwt_token=$(login_user "$user_email" "$user_password" "$group_name")
+    if [[ -z "$jwt_token" ]]; then
+        echo_with_color $RED "❌ Failed to get JWT token for user: $user_email"
+        return 1
+    fi
+    
+    if [[ -n "$group_name" ]]; then
+        echo_with_color $CYAN "  🏢 Using delegation JWT for group: $group_name"
+    fi
+    
+    # Parse composed operation specific parameters
+    local idempotency_key=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.idempotency_key")
+    idempotency_key=$(substitute_variables "$idempotency_key")
+    
+    # Get the number of operations
+    local operations_count=$(yq eval ".commands[$command_index].parameters.operations | length" "$COMMANDS_FILE")
+    
+    echo_with_color $BLUE "  📋 Composed Operation Details:"
+    echo_with_color $BLUE "    Operation Count: $operations_count"
+    echo_with_color $BLUE "    Idempotency Key: $idempotency_key"
+    echo_with_color $CYAN "    ℹ️  Account address will be extracted from JWT token"
+    
+    # Build operations array for GraphQL
+    local operations_graphql="["
+    
+    for ((op_index=0; op_index<$operations_count; op_index++)); do
+        echo_with_color $CYAN "  🔍 Processing operation $((op_index + 1))/$operations_count"
+        
+        # Parse operation type and data
+        local op_type=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.operations[$op_index].operation_type")
+        local op_data_json=$(yq eval -o json -I 0 ".commands[$command_index].parameters.operations[$op_index].operation_data" "$COMMANDS_FILE")
+        
+        # Apply variable substitution to operation data
+        op_data_json=$(substitute_variables "$op_data_json")
+        
+        echo_with_color $BLUE "    Operation Type: $op_type"
+        echo_with_color $PURPLE "    Operation Data: $op_data_json"
+        
+        # Convert operation_type to GraphQL OperationType enum (capitalize first letter of each word)
+        local op_type_graphql
+        case "$op_type" in
+            "complete_swap") op_type_graphql="CompleteSwap" ;;
+            "transfer_obligation") op_type_graphql="TransferObligation" ;;
+            "accept_obligation") op_type_graphql="AcceptObligation" ;;
+            "cancel_obligation") op_type_graphql="CancelObligation" ;;
+            "create_obligation") op_type_graphql="CreateObligation" ;;
+            "deposit") op_type_graphql="Deposit" ;;
+            "instant"|"instant_send") op_type_graphql="InstantSend" ;;
+            "withdraw") op_type_graphql="Withdraw" ;;
+            "create_swap") op_type_graphql="CreateSwap" ;;
+            "cancel_swap") op_type_graphql="CancelSwap" ;;
+            *) 
+                echo_with_color $RED "    ❌ Unknown operation type: $op_type"
+                return 1
+                ;;
+        esac
+        
+        # Build operation item (escape the JSON properly for GraphQL)
+        local op_data_escaped=$(echo "$op_data_json" | jq -c . | sed 's/"/\\"/g')
+        
+        if [[ $op_index -gt 0 ]]; then
+            operations_graphql="$operations_graphql, "
+        fi
+        
+        # Add operation to array with proper JSON escaping
+        operations_graphql="$operations_graphql{ operationType: $op_type_graphql, operationData: \"$op_data_escaped\" }"
+    done
+    
+    operations_graphql="$operations_graphql]"
+    
+    echo_with_color $BLUE "  📤 Sending GraphQL composed operation mutation..."
+    
+    # Build the GraphQL mutation using variables to avoid escaping issues
+    local graphql_mutation='mutation($input: ComposedOperationInput!) { executeComposedOperations(input: $input) { success message messageId composedId accountAddress operationCount } }'
+    
+    # Build the variables JSON (no account_address - extracted from JWT)
+    local variables_json=$(jq -n \
+        --arg idempotency "$idempotency_key" \
+        --argjson operations_count "$operations_count" \
+        '{
+            input: {
+                idempotencyKey: $idempotency,
+                operations: []
+            }
+        }')
+    
+    # Build operations array properly
+    local operations_array="["
+    for ((op_index=0; op_index<$operations_count; op_index++)); do
+        local op_type=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.operations[$op_index].operation_type")
+        local op_data_json=$(yq eval -o json -I 0 ".commands[$command_index].parameters.operations[$op_index].operation_data" "$COMMANDS_FILE")
+        op_data_json=$(substitute_variables "$op_data_json")
+        
+        # Convert to GraphQL enum
+        local op_type_graphql
+        case "$op_type" in
+            "complete_swap") op_type_graphql="CompleteSwap" ;;
+            "transfer_obligation") op_type_graphql="TransferObligation" ;;
+            "accept_obligation") op_type_graphql="AcceptObligation" ;;
+            "cancel_obligation") op_type_graphql="CancelObligation" ;;
+            "create_obligation") op_type_graphql="CreateObligation" ;;
+            "deposit") op_type_graphql="Deposit" ;;
+            "instant"|"instant_send") op_type_graphql="InstantSend" ;;
+            "withdraw") op_type_graphql="Withdraw" ;;
+            "create_swap") op_type_graphql="CreateSwap" ;;
+            "cancel_swap") op_type_graphql="CancelSwap" ;;
+        esac
+        
+        if [[ $op_index -gt 0 ]]; then
+            operations_array="$operations_array, "
+        fi
+        
+        # Build operation JSON with proper structure
+        operations_array="$operations_array{\"operationType\": \"$op_type_graphql\", \"operationData\": $op_data_json}"
+    done
+    operations_array="$operations_array]"
+    
+    # Update variables with operations array
+    variables_json=$(echo "$variables_json" | jq --argjson ops "$operations_array" '.input.operations = $ops')
+    
+    # Build final GraphQL payload
+    local graphql_payload=$(jq -n \
+        --arg query "$graphql_mutation" \
+        --argjson variables "$variables_json" \
+        '{
+            query: $query,
+            variables: $variables
+        }')
+    
+    echo_with_color $PURPLE "  🔍 DEBUG: GraphQL Payload:"
+    echo_with_color $PURPLE "    $(echo "$graphql_payload" | jq -c .)"
+    
+    # Send GraphQL request to payments service
+    echo_with_color $BLUE "  🌐 Making GraphQL request to: ${PAY_SERVICE_URL}/graphql"
+    local http_response=$(curl -s -X POST "${PAY_SERVICE_URL}/graphql" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $jwt_token" \
+        -d "$graphql_payload")
+    
+    echo_with_color $BLUE "  📡 Raw GraphQL response: '$http_response'"
+    
+    # Parse GraphQL response
+    local success=$(echo "$http_response" | jq -r '.data.executeComposedOperations.success // empty')
+    if [[ "$success" == "true" ]]; then
+        local message=$(echo "$http_response" | jq -r '.data.executeComposedOperations.message // empty')
+        local message_id=$(echo "$http_response" | jq -r '.data.executeComposedOperations.messageId // empty')
+        local composed_id=$(echo "$http_response" | jq -r '.data.executeComposedOperations.composedId // empty')
+        local account_address=$(echo "$http_response" | jq -r '.data.executeComposedOperations.accountAddress // empty')
+        local operation_count=$(echo "$http_response" | jq -r '.data.executeComposedOperations.operationCount // empty')
+        
+        # Store outputs for variable substitution in future commands
+        store_command_output "$command_name" "message" "$message"
+        store_command_output "$command_name" "message_id" "$message_id"
+        store_command_output "$command_name" "composed_id" "$composed_id"
+        store_command_output "$command_name" "account_address" "$account_address"
+        store_command_output "$command_name" "operation_count" "$operation_count"
+        
+        echo_with_color $GREEN "    ✅ Composed operation successful!"
+        echo_with_color $BLUE "      Message: $message"
+        echo_with_color $BLUE "      Message ID: $message_id"
+        echo_with_color $BLUE "      Composed ID: $composed_id"
+        echo_with_color $BLUE "      Account Address: $account_address (from JWT)"
+        echo_with_color $BLUE "      Operation Count: $operation_count"
+        echo_with_color $CYAN "      📝 Stored outputs for variable substitution:"
+        echo_with_color $CYAN "        ${command_name}_message, ${command_name}_message_id, ${command_name}_composed_id, ${command_name}_account_address, ${command_name}_operation_count"
+        return 0
+    else
+        local error_message=$(echo "$http_response" | jq -r '.errors[0].message // "Unknown error"')
+        echo_with_color $RED "    ❌ Composed operation failed: $error_message"
+        echo_with_color $BLUE "      Full response: $http_response"
+        return 1
+    fi
+}
+
 # Function to execute accept obligation command using GraphQL
 execute_accept_obligation() {
     local command_name="$1"

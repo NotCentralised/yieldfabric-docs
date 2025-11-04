@@ -1,0 +1,138 @@
+# YieldFabric Composed Operations Examples
+# 
+# This file demonstrates the atomic composed operation feature.
+# Multiple operations can be batched into a single transaction that
+# succeeds or fails together, signed once, and executed atomically.
+#
+# NOTE: Account address is automatically extracted from JWT token - no need to specify!
+
+commands:
+  # Example 1: Complete Swap + Transfer Obligation
+  # Use case: Accept counterparty obligations and transfer them to another party
+  - name: example_swap_and_transfer
+    type: composed_operation
+    user:
+      id: trader@yieldfabric.com
+      password: trader_password
+      group: Trading Group
+    parameters:
+      idempotency_key: swap-transfer-$(date +%s)
+      operations:
+        - operation_type: complete_swap
+          operation_data:
+            swap_id: "12345"
+        - operation_type: transfer_obligation
+          operation_data:
+            contract_id: CONTRACT-OBLIGATION-123  # Contract ID (will be resolved to token_id)
+            destination_id: Final Recipient  # Entity name (will be resolved to address)
+
+  # Example 2: Multi-Payment Batch (Payroll)
+  # Use case: Pay multiple employees in one atomic transaction
+  - name: example_payroll_batch
+    type: composed_operation
+    user:
+      id: treasury@yieldfabric.com
+      password: treasury_password
+      group: Treasury Group
+    parameters:
+      idempotency_key: payroll-$(date +%s)
+      operations:
+        - operation_type: instant_send
+          operation_data:
+            token_address: "0xUSDC..."
+            destination_id: "alice"
+            amount: "5000"
+        - operation_type: instant_send
+          operation_data:
+            token_address: "0xUSDC..."
+            destination_id: "bob"
+            amount: "7500"
+        - operation_type: instant_send
+          operation_data:
+            token_address: "0xUSDC..."
+            destination_id: "charlie"
+            amount: "3500"
+
+  # Example 3: Accept Obligation + Complete Swap + Transfer
+  # Use case: Complex workflow with 3 steps atomically
+  - name: example_accept_swap_transfer
+    type: composed_operation
+    user:
+      id: market_maker@yieldfabric.com
+      password: mm_password
+      group: Market Maker Group
+    parameters:
+      idempotency_key: complex-workflow-$(date +%s)
+      operations:
+        # Step 1: Accept an incoming obligation
+        - operation_type: accept_obligation
+          operation_data:
+            contract_id: CONTRACT-OBLIGATION-999
+        # Step 2: Complete swap using the accepted obligation
+        - operation_type: complete_swap
+          operation_data:
+            swap_id: "67890"
+        # Step 3: Transfer the result to final destination
+        - operation_type: transfer_obligation
+          operation_data:
+            contract_id: CONTRACT-OBLIGATION-100
+            destination_id: Final Recipient
+
+  # Example 4: Create Multiple Obligations
+  # Use case: Issue multiple debt instruments atomically
+  - name: example_multi_obligation_creation
+    type: composed_operation
+    user:
+      id: issuer@yieldfabric.com
+      password: issuer_password
+      group: Issuer Group
+    parameters:
+      idempotency_key: multi-obligation-$(date +%s)
+      operations:
+        - operation_type: create_obligation
+          operation_data:
+            token_id: "1001"
+            counterpart: "Investor A"
+            obligation_address: "0xOBLIG..."
+            denomination: "USD"
+            notional: "100000"
+            expiry: 1735689600
+        - operation_type: create_obligation
+          operation_data:
+            token_id: "1002"
+            counterpart: "Investor B"
+            obligation_address: "0xOBLIG..."
+            denomination: "USD"
+            notional: "250000"
+            expiry: 1735689600
+        - operation_type: create_obligation
+          operation_data:
+            token_id: "1003"
+            counterpart: "Investor C"
+            obligation_address: "0xOBLIG..."
+            denomination: "USD"
+            notional: "150000"
+            expiry: 1735689600
+
+  # Example 5: Deposit + Send (Fund and Distribute)
+  # Use case: Deposit funds and immediately send them
+  - name: example_deposit_and_distribute
+    type: composed_operation
+    user:
+      id: distributor@yieldfabric.com
+      password: distributor_password
+      group: Distributor Group
+    parameters:
+      idempotency_key: deposit-distribute-$(date +%s)
+      operations:
+        - operation_type: deposit
+          operation_data:
+            token_address: "0xUSDC..."
+            amount: "10000"
+            chain_id: "31337"
+        - operation_type: instant_send
+          operation_data:
+            token_address: "0xUSDC..."
+            destination_id: "beneficiary"
+            amount: "10000"
+

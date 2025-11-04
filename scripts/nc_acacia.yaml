@@ -1,17 +1,16 @@
 commands:
 
   # CREATE INVOICE
-  - name: payer_CREATE_invoice_1
+  - name: originator_CREATE_invoice_1
     type: create_obligation
     user: 
-      id: payer@yieldfabric.com
-      password: payer_password
+      id: originator@yieldfabric.com
+      password: originator_password
     parameters:
       idempotency_key: create_invoice_1-ergonomic-$(date +%s)
-      counterpart: originator@yieldfabric.com
+      counterpart: payer@yieldfabric.com
       denomination: aud-token-asset
       obligor: payer@yieldfabric.com
-      # notional: 100
       expiry: 2025-11-30
       data: 
         name: "Invoice 1"
@@ -22,6 +21,15 @@ commands:
           - id: payment-1
             payee:
               unlock: 2025-12-31
+  
+  - name: payer_accept_obligation_obligor_1
+    type: accept_obligation
+    user: 
+      id: payer@yieldfabric.com
+      password: payer_password
+    parameters:
+      idempotency_key: accept_obligation-ergonomic-$(date +%s)
+      contract_id: $originator_CREATE_invoice_1.contract_id
 
 
   # ISSUANCE
@@ -67,6 +75,7 @@ commands:
         name: "Collateral Token"
         description: "Collateral Token Description"
 
+
   # ADD ACCOUNT MEMBER (NFT-based membership using obligation contracts)
   - name: add_issuer_group_member-1
     type: add_account_member
@@ -98,6 +107,7 @@ commands:
       idempotency_key: add-issuer-group-member-ergonomic-$(date +%s)
       obligation_id: $collateral_group_CREATE_collateral_token.contract_id
 
+
   # INVESTOR FUNDING
   - name: investor_deposit
     type: deposit
@@ -127,7 +137,6 @@ commands:
         expected_payments:
           denomination: aud-token-asset
           amount: 1000
-          # obligor: investor@yieldfabric.com
           payments:
             - id: swap-payment-1
       deadline: 2025-12-31
@@ -150,8 +159,8 @@ commands:
     parameters:
       idempotency_key: accept-$(date +%s)
       denomination: aud-token-asset
-      # obligor: issuer@yieldfabric.com
   
+
   # COLLATERAL BINDING
   - name: create_credit_swap-1
     type: create_swap
@@ -188,54 +197,54 @@ commands:
   - name: create_capital_swap-1
     type: create_swap
     user: 
-      id: payer@yieldfabric.com
-      password: payer_password
+      id: originator@yieldfabric.com
+      password: originator_password
     parameters:
       swap_id: "12345678912"
       idempotency_key: swap-ergonomic-$(date +%s)
       initiator:
         obligation_ids:
-          - $payer_CREATE_invoice_1.contract_id
+          - $originator_CREATE_invoice_1.contract_id
 
       counterparty:
         id: Issuer Group
         expected_payments:
           denomination: aud-token-asset
           amount: 90
-          # obligor: Issuer Group
           payments:
             - id: swap-payment-1
       deadline: 2025-12-31
 
+
+  # COMPOSED OPERATION: Complete Swap + Transfer Obligation Atomically
   - name: complete_capital_swap-1
-    type: complete_swap
+    type: composed_operation
     user: 
       id: collateral@yieldfabric.com
       password: collateral_password
       group: Issuer Group
     parameters:
-      swap_id: "12345678912"
       idempotency_key: complete-capital-swap-ergonomic-$(date +%s)
-  
-  - name: collateral_transfer_obligation_1
-    type: transfer_obligation
-    user: 
-      id: collateral@yieldfabric.com
-      password: collateral_password
-      group: Issuer Group
-    parameters:
-      idempotency_key: collateral-transfer-obligation-ergonomic-$(date +%s)
-      contract_id: $payer_CREATE_invoice_1.contract_id
-      destination_id: Collateral Group
-  # TODO: add transfer of invoice to collateral group as Atomic transaction
-  - name: payer_accept_1
+      operations:
+        # Operation 1: Complete the capital swap
+        - operation_type: complete_swap
+          operation_data:
+            swap_id: "12345678912"
+        # Operation 2: Transfer the obligation received from swap
+        - operation_type: transfer_obligation
+          operation_data:
+            contract_id: $originator_CREATE_invoice_1.contract_id
+            destination_id: Collateral Group
+
+  - name: originator_accept_1
     type: accept_all
     user: 
-      id: payer@yieldfabric.com
-      password: payer_password
+      id: originator@yieldfabric.com
+      password: originator_password
     parameters:
       idempotency_key: accept-$(date +%s)
       denomination: aud-token-asset
+
 
   # INVESTOR CAPITAL CALL
   - name: investor_send_1
@@ -247,7 +256,6 @@ commands:
     parameters:
       asset_id: aud-token-asset
       amount: 100
-      # obligor: Issuer Group
       idempotency_key: instant-$(date +%s)
       destination_id: investor@yieldfabric.com
 
