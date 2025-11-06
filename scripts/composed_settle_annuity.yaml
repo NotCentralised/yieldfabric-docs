@@ -1,0 +1,210 @@
+commands:
+  # START FUNDING COUNTERPART
+ 
+  - name: composed_issuer_deposit-1
+    type: composed_operation
+    user: 
+      id: issuer@yieldfabric.com
+      password: issuer_password
+    parameters:
+      idempotency_key: issuer_deposit_send-ergonomic-$(date +%s)
+      operations:
+        # Operation 1: Deposit
+        - operation_type: deposit
+          operation_data:
+            asset_id: aud-token-asset
+            amount: 125
+
+  - name: composed_issuer_send-1
+    type: composed_operation
+    user: 
+      id: issuer@yieldfabric.com
+      password: issuer_password
+    parameters:
+      idempotency_key: issuer_send-ergonomic-$(date +%s)
+      operations:
+        # Operation 2: Send
+        - operation_type: instant
+          operation_data:
+            asset_id: aud-token-asset
+            amount: 100
+            destination_id: collateral@yieldfabric.com
+
+  - name: counterpart_accept_1
+    type: accept
+    user: 
+      id: collateral@yieldfabric.com
+      password: collateral_password
+    parameters:
+      idempotency_key: accept-$(date +%s)
+      payment_id: $composed_issuer_send-1[0].payment_id
+
+  # START CREATING ANNUITY
+  - name: composed_issuer_create_annuity_stream_obligation_1
+    type: composed_operation
+    user: 
+      id: issuer@yieldfabric.com
+      password: issuer_password
+    parameters:
+      idempotency_key: issuer_send-ergonomic-$(date +%s)
+      operations:
+        # Operation 2: Send
+        - operation_type: create_obligation
+          operation_data:
+            counterpart: issuer@yieldfabric.com
+            denomination: aud-token-asset
+            obligor: issuer@yieldfabric.com
+            expiry: 2025-12-01
+            data:
+              name: "Annuity Stream"
+              description: "Annuity Stream Obligation"
+            initial_payments:
+              amount: 5
+              payments:
+                - id: payment-1
+                  payer:
+                    unlock: 2025-12-01
+                  payee:
+                    unlock: 2025-12-01
+                - id: payment-2
+                  payer:
+                    unlock: 2025-12-02
+                  payee:
+                    unlock: 2025-12-02
+                - id: payment-3
+                  payer:
+                    unlock: 2025-12-03
+                  payee:
+                    unlock: 2025-12-03
+                - id: payment-4
+                  payer:
+                    unlock: 2025-12-04
+                  payee:
+                    unlock: 2025-12-04
+                - id: payment-5
+                  payer:
+                    unlock: 2025-12-05
+                  payee:
+                    unlock: 2025-12-05
+
+
+  - name: composed_issuer_accept_annuity_stream_obligation_1
+    type: composed_operation
+    user: 
+      id: issuer@yieldfabric.com
+      password: issuer_password
+    parameters:
+      idempotency_key: accept_annuity_stream_obligation-ergonomic-$(date +%s)
+      operations:
+        - operation_type: accept_obligation
+          operation_data:
+            contract_id: $composed_issuer_create_annuity_stream_obligation_1[0].contract_id
+
+
+  - name: composed_issuer_redemption_obligation_1
+    type: composed_operation
+    user: 
+      id: issuer@yieldfabric.com
+      password: issuer_password
+    parameters:
+      idempotency_key: issuer_send-ergonomic-$(date +%s)
+      operations:
+        # Operation 2: Send
+        - operation_type: create_obligation
+          operation_data:
+            counterpart: issuer@yieldfabric.com
+            denomination: aud-token-asset
+            obligor: issuer@yieldfabric.com
+            expiry: 2025-12-01
+            data:
+              name: "Redemption"
+              description: "Redemption Obligation"
+            initial_payments:
+              amount: 100
+              payments:
+                - id: payment-1
+                  payer:
+                    unlock: 2025-12-06
+                  payee:
+                    unlock: 2025-12-06
+
+
+  - name: composed_issuer_redemption_obligation_1
+    type: composed_operation
+    user: 
+      id: issuer@yieldfabric.com
+      password: issuer_password
+    parameters:
+      idempotency_key: accept_annuity_stream_obligation-ergonomic-$(date +%s)
+      operations:
+        - operation_type: accept_obligation
+          operation_data:
+            contract_id: $composed_issuer_redemption_obligation_1[0].contract_id
+
+
+  # START ANNUITY SETTLEMENT
+  - name: create_obligation_swap_1
+    type: create_swap
+    user: 
+      id: issuer@yieldfabric.com
+      password: issuer_password
+    parameters:
+      swap_id: "123456789"
+      idempotency_key: swap-ergonomic-$(date +%s)
+      initiator:
+        obligation_ids:
+          # - $issuer_annuity_stream_obligation_1.contract_id
+          # - $issuer_redemption_obligation_1.contract_id
+          - $composed_issuer_create_annuity_stream_obligation_1[0].contract_id
+          - $composed_issuer_redemption_obligation_1[0].contract_id
+
+      counterparty:
+        id: collateral@yieldfabric.com
+        expected_payments:
+          denomination: aud-token-asset
+          amount: 100
+          payments:
+            - id: swap-payment-1
+      deadline: 2025-12-10
+
+  - name: complete_swap-1
+    type: complete_swap
+    user: 
+      id: collateral@yieldfabric.com
+      password: collateral_password
+    parameters:
+      swap_id: "123456789"
+      idempotency_key: complete-swap-ergonomic-$(date +%s)
+      
+  # - name: cancel_swap-1
+  #   type: cancel_swap
+  #   user: 
+  #     id: admin2@yieldfabric.com
+  #     password: testpass123
+  #     group: Admin Group
+  #   parameters:
+  #     swap_id: "1234567890"
+  #     key: "cancel_key"
+  #     value: "cancel_value"
+  #     idempotency_key: cancel-swap-ergonomic-$(date +%s)
+
+
+  - name: counterpart_accept_2
+    type: accept_all
+    user: 
+      id: collateral@yieldfabric.com
+      password: collateral_password
+    parameters:
+      idempotency_key: accept-$(date +%s)
+      denomination: aud-token-asset
+
+  - name: issuer_accept_2
+    type: accept_all
+    user: 
+      id: issuer@yieldfabric.com
+      password: issuer_password
+    parameters:
+      idempotency_key: accept-$(date +%s)
+      denomination: aud-token-asset
+
+

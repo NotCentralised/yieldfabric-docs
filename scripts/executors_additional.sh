@@ -91,7 +91,28 @@ execute_composed_operation() {
     echo_with_color $BLUE "  📤 Sending GraphQL composed operation mutation..."
     
     # Build the GraphQL mutation using variables to avoid escaping issues
-    local graphql_mutation='mutation($input: ComposedOperationInput!) { executeComposedOperations(input: $input) { success message messageId composedId accountAddress operationCount } }'
+    local graphql_mutation='mutation($input: ComposedOperationInput!) { 
+        executeComposedOperations(input: $input) { 
+            success 
+            message 
+            messageId 
+            composedId 
+            accountAddress 
+            operationCount 
+            operationResults {
+                operationType
+                success
+                message
+                paymentId
+                contractId
+                amount
+                idHash
+                destinationId
+                obligationId
+                swapId
+            }
+        } 
+    }'
     
     # Build the variables JSON (no account_address - extracted from JWT)
     local variables_json=$(jq -n \
@@ -110,6 +131,58 @@ execute_composed_operation() {
         local op_type=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.operations[$op_index].operation_type")
         local op_data_json=$(yq eval -o json -I 0 ".commands[$command_index].parameters.operations[$op_index].operation_data" "$COMMANDS_FILE")
         op_data_json=$(substitute_variables "$op_data_json")
+        
+        # Transform payment data for composed operations (convert nested payer/payee to flat VaultPayment structure)
+        # This matches what the single operation does, but for composed operations that go through MQ/serde
+        if [[ "$op_type" == "create_obligation" ]]; then
+            # Check if initial_payments.payments exists and has payer/payee structure
+            if echo "$op_data_json" | jq -e '.initial_payments.payments[0].payer' >/dev/null 2>&1; then
+                echo_with_color $CYAN "    🔄 Transforming initial_payments for create_obligation operation"
+                # Transform the payments array from nested structure to flat VaultPayment structure
+                op_data_json=$(echo "$op_data_json" | jq '.initial_payments.payments |= map({
+                    oracle_address: .oracle_address,
+                    oracle_owner: .owner,
+                    oracle_key_sender: (.payer.key // "0"),
+                    oracle_value_sender_secret: (.payer.valueSecret // "0"),
+                    oracle_key_recipient: (.payee.key // "0"),
+                    oracle_value_recipient_secret: (.payee.valueSecret // "0"),
+                    unlock_sender: .payer.unlock,
+                    unlock_receiver: .payee.unlock,
+                    linear_vesting: .linear_vesting
+                })')
+            fi
+        elif [[ "$op_type" == "create_swap" ]]; then
+            # Transform initiator expected payments if they have payer/payee structure
+            if echo "$op_data_json" | jq -e '.initiator_expected_payments.payments[0].payer' >/dev/null 2>&1; then
+                echo_with_color $CYAN "    🔄 Transforming initiator_expected_payments for create_swap operation"
+                op_data_json=$(echo "$op_data_json" | jq '.initiator_expected_payments.payments |= map({
+                    oracle_address: .oracle_address,
+                    oracle_owner: .owner,
+                    oracle_key_sender: (.payer.key // "0"),
+                    oracle_value_sender_secret: (.payer.valueSecret // "0"),
+                    oracle_key_recipient: (.payee.key // "0"),
+                    oracle_value_recipient_secret: (.payee.valueSecret // "0"),
+                    unlock_sender: .payer.unlock,
+                    unlock_receiver: .payee.unlock,
+                    linear_vesting: .linear_vesting
+                })')
+            fi
+            # Transform counterparty expected payments if they have payer/payee structure
+            if echo "$op_data_json" | jq -e '.counterparty_expected_payments.payments[0].payer' >/dev/null 2>&1; then
+                echo_with_color $CYAN "    🔄 Transforming counterparty_expected_payments for create_swap operation"
+                op_data_json=$(echo "$op_data_json" | jq '.counterparty_expected_payments.payments |= map({
+                    oracle_address: .oracle_address,
+                    oracle_owner: .owner,
+                    oracle_key_sender: (.payer.key // "0"),
+                    oracle_value_sender_secret: (.payer.valueSecret // "0"),
+                    oracle_key_recipient: (.payee.key // "0"),
+                    oracle_value_recipient_secret: (.payee.valueSecret // "0"),
+                    unlock_sender: .payer.unlock,
+                    unlock_receiver: .payee.unlock,
+                    linear_vesting: .linear_vesting
+                })')
+            fi
+        fi
         
         # Convert to GraphQL enum
         local op_type_graphql
@@ -168,12 +241,95 @@ execute_composed_operation() {
         local account_address=$(echo "$http_response" | jq -r '.data.executeComposedOperations.accountAddress // empty')
         local operation_count=$(echo "$http_response" | jq -r '.data.executeComposedOperations.operationCount // empty')
         
-        # Store outputs for variable substitution in future commands
+        # Store top-level outputs for variable substitution in future commands
         store_command_output "$command_name" "message" "$message"
         store_command_output "$command_name" "message_id" "$message_id"
         store_command_output "$command_name" "composed_id" "$composed_id"
         store_command_output "$command_name" "account_address" "$account_address"
         store_command_output "$command_name" "operation_count" "$operation_count"
+        
+        # Extract and store individual operation results for composed operation variable access
+        # This enables syntax like: $composed_command_name-0.payment_id, $composed_command_name-1.contract_id
+        echo_with_color $CYAN "      🔍 Extracting individual operation results..."
+        
+        # Check if operationResults array exists in response
+        local has_operation_results=$(echo "$http_response" | jq -e '.data.executeComposedOperations.operationResults' >/dev/null 2>&1 && echo "true" || echo "false")
+        
+        if [[ "$has_operation_results" == "true" ]]; then
+            local operation_results=$(echo "$http_response" | jq -c '.data.executeComposedOperations.operationResults // []')
+            local result_count=$(echo "$operation_results" | jq 'length')
+            
+            echo_with_color $CYAN "      📊 Found $result_count operation results to store"
+            
+            for ((op_idx=0; op_idx<$result_count; op_idx++)); do
+                local op_result=$(echo "$operation_results" | jq -c ".[$op_idx]")
+                local op_type=$(echo "$op_result" | jq -r '.operationType // empty')
+                
+                echo_with_color $BLUE "        • Operation $op_idx ($op_type): storing outputs..."
+                
+                # Extract all fields from this operation result and store with format: command_name-op_index.field_name
+                # Common fields across all operations
+                local op_message=$(echo "$op_result" | jq -r '.message // empty')
+                local op_success=$(echo "$op_result" | jq -r '.success // empty')
+                
+                [[ -n "$op_message" ]] && store_command_output "${command_name}[${op_idx}]" "message" "$op_message"
+                [[ -n "$op_success" ]] && store_command_output "${command_name}[${op_idx}]" "success" "$op_success"
+                
+                # Operation-specific fields
+                case "$op_type" in
+                    "Deposit")
+                        local payment_id=$(echo "$op_result" | jq -r '.paymentId // empty')
+                        local contract_id=$(echo "$op_result" | jq -r '.contractId // empty')
+                        local amount=$(echo "$op_result" | jq -r '.amount // empty')
+                        
+                        [[ -n "$payment_id" ]] && store_command_output "${command_name}[${op_idx}]" "payment_id" "$payment_id"
+                        [[ -n "$contract_id" ]] && store_command_output "${command_name}[${op_idx}]" "contract_id" "$contract_id"
+                        [[ -n "$amount" ]] && store_command_output "${command_name}[${op_idx}]" "amount" "$amount"
+                        ;;
+                    "InstantSend")
+                        local payment_id=$(echo "$op_result" | jq -r '.paymentId // empty')
+                        local contract_id=$(echo "$op_result" | jq -r '.contractId // empty')
+                        local amount=$(echo "$op_result" | jq -r '.amount // empty')
+                        local id_hash=$(echo "$op_result" | jq -r '.idHash // empty')
+                        local destination_id=$(echo "$op_result" | jq -r '.destinationId // empty')
+                        
+                        [[ -n "$payment_id" ]] && store_command_output "${command_name}[${op_idx}]" "payment_id" "$payment_id"
+                        [[ -n "$contract_id" ]] && store_command_output "${command_name}[${op_idx}]" "contract_id" "$contract_id"
+                        [[ -n "$amount" ]] && store_command_output "${command_name}[${op_idx}]" "amount" "$amount"
+                        [[ -n "$id_hash" ]] && store_command_output "${command_name}[${op_idx}]" "id_hash" "$id_hash"
+                        [[ -n "$destination_id" ]] && store_command_output "${command_name}[${op_idx}]" "destination_id" "$destination_id"
+                        ;;
+                    "CreateObligation")
+                        local contract_id=$(echo "$op_result" | jq -r '.contractId // empty')
+                        local obligation_id=$(echo "$op_result" | jq -r '.obligationId // empty')
+                        local id_hash=$(echo "$op_result" | jq -r '.idHash // empty')
+                        
+                        [[ -n "$contract_id" ]] && store_command_output "${command_name}[${op_idx}]" "contract_id" "$contract_id"
+                        [[ -n "$obligation_id" ]] && store_command_output "${command_name}[${op_idx}]" "obligation_id" "$obligation_id"
+                        [[ -n "$id_hash" ]] && store_command_output "${command_name}[${op_idx}]" "id_hash" "$id_hash"
+                        ;;
+                    "AcceptObligation"|"TransferObligation"|"CancelObligation")
+                        local contract_id=$(echo "$op_result" | jq -r '.contractId // empty')
+                        local obligation_id=$(echo "$op_result" | jq -r '.obligationId // empty')
+                        
+                        [[ -n "$contract_id" ]] && store_command_output "${command_name}[${op_idx}]" "contract_id" "$contract_id"
+                        [[ -n "$obligation_id" ]] && store_command_output "${command_name}[${op_idx}]" "obligation_id" "$obligation_id"
+                        ;;
+                    "CreateSwap"|"CompleteSwap"|"CancelSwap")
+                        local swap_id=$(echo "$op_result" | jq -r '.swapId // empty')
+                        
+                        [[ -n "$swap_id" ]] && store_command_output "${command_name}[${op_idx}]" "swap_id" "$swap_id"
+                        ;;
+                esac
+            done
+            
+            echo_with_color $CYAN "      ✅ Individual operation outputs stored for variable substitution"
+            echo_with_color $CYAN "         Format: \$${command_name}[{op_index}].{field_name}"
+            echo_with_color $CYAN "         Example: \$${command_name}[0].payment_id, \$${command_name}[1].contract_id"
+        else
+            echo_with_color $YELLOW "      ⚠️  No operationResults array in response - individual operation outputs not available"
+            echo_with_color $YELLOW "         Backend may need to be updated to return operationResults"
+        fi
         
         echo_with_color $GREEN "    ✅ Composed operation successful!"
         echo_with_color $BLUE "      Message: $message"

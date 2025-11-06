@@ -108,7 +108,9 @@ get_command_output() {
 }
 
 # Function to substitute variables in command parameters
-# Supports format: $command_name.field_name
+# Supports formats: 
+#   - $command_name.field_name (regular command outputs)
+#   - $command_name[op_index].field_name (composed operation: array notation ONLY)
 substitute_variables() {
     local value="$1"
     
@@ -127,22 +129,45 @@ substitute_variables() {
         local result="$value"
         
         # Find all variable references in the JSON array
-        while [[ "$result" =~ \$[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]* ]]; do
+        while [[ "$result" =~ \$[a-zA-Z_][a-zA-Z0-9_-]*(\[[0-9]+\])?\.[a-zA-Z_][a-zA-Z0-9_]* ]]; do
             local var_ref="${BASH_REMATCH[0]}"
-            local command_name=$(echo "$var_ref" | sed -n 's/.*\$\([a-zA-Z_][a-zA-Z0-9_]*\)\.[a-zA-Z0-9_]*.*/\1/p')
-            local field_name=$(echo "$var_ref" | sed -n 's/.*\$[a-zA-Z_][a-zA-Z0-9_]*\.\([a-zA-Z0-9_]*\).*/\1/p')
             
-            if [[ -n "$command_name" && -n "$field_name" ]]; then
-                local stored_value=$(get_command_output "$command_name" "$field_name")
+            # Try array notation: $command_name[op_index].field_name
+            if [[ "$var_ref" =~ \$([a-zA-Z_][a-zA-Z0-9_-]+)\[([0-9]+)\]\.([a-zA-Z_][a-zA-Z0-9_]*) ]]; then
+                local command_name="${BASH_REMATCH[1]}"
+                local op_index="${BASH_REMATCH[2]}"
+                local field_name="${BASH_REMATCH[3]}"
+                
+                echo_with_color $PURPLE "    🔍 DEBUG: Looking for composed var: cmd='${command_name}[${op_index}]' field='$field_name'" >&2
+                local stored_value=$(get_command_output "${command_name}[${op_index}]" "$field_name")
                 if [[ -n "$stored_value" ]]; then
-                    echo_with_color $CYAN "    🔄 Substituting $var_ref -> $stored_value in JSON array" >&2
-                    result="${result//$var_ref/$stored_value}"
+                    echo_with_color $CYAN "    🔄 Substituting $var_ref -> $stored_value in JSON array (composed op $op_index)" >&2
+                    # Escape special chars in var_ref for literal sed replacement: $, [, ], .
+                    local escaped_var_ref=$(echo "$var_ref" | sed 's/\$/\\$/g; s/\[/\\[/g; s/\]/\\]/g; s/\./\\./g')
+                    result=$(echo "$result" | sed "s|$escaped_var_ref|$stored_value|g")
                 else
-                    echo_with_color $YELLOW "    ⚠️  Variable $var_ref not found in stored outputs" >&2
+                    echo_with_color $YELLOW "    ⚠️  Composed variable $var_ref not found in stored outputs" >&2
                     break
                 fi
             else
-                break
+                # Parse as regular format: $command_name.field_name
+                local command_name=$(echo "$var_ref" | sed -n 's/.*\$\([a-zA-Z_][a-zA-Z0-9_-]*\)\.[a-zA-Z0-9_]*.*/\1/p')
+                local field_name=$(echo "$var_ref" | sed -n 's/.*\$[a-zA-Z_][a-zA-Z0-9_-]*\.\([a-zA-Z0-9_]*\).*/\1/p')
+                
+                if [[ -n "$command_name" && -n "$field_name" ]]; then
+                    local stored_value=$(get_command_output "$command_name" "$field_name")
+                    if [[ -n "$stored_value" ]]; then
+                        echo_with_color $CYAN "    🔄 Substituting $var_ref -> $stored_value in JSON array" >&2
+                        # Escape special chars in var_ref for literal sed replacement: $, .
+                        local escaped_var_ref=$(echo "$var_ref" | sed 's/\$/\\$/g; s/\./\\./g')
+                        result=$(echo "$result" | sed "s|$escaped_var_ref|$stored_value|g")
+                    else
+                        echo_with_color $YELLOW "    ⚠️  Variable $var_ref not found in stored outputs" >&2
+                        break
+                    fi
+                else
+                    break
+                fi
             fi
         done
         
@@ -151,7 +176,7 @@ substitute_variables() {
     fi
     
     # Check if the value contains variable references (supports multiple variables in one string)
-    if [[ "$value" =~ \$[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]* ]]; then
+    if [[ "$value" =~ \$[a-zA-Z_][a-zA-Z0-9_-]*(\[[0-9]+\])?\.[a-zA-Z_][a-zA-Z0-9_]* ]]; then
         local result="$value"
         local original_value="$value"
         
@@ -160,22 +185,49 @@ substitute_variables() {
         result="${result%\"}"
         
         # Find and replace ALL variable references in the string
-        while [[ "$result" =~ \$[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]* ]]; do
+        while [[ "$result" =~ \$[a-zA-Z_][a-zA-Z0-9_-]*(\[[0-9]+\])?\.[a-zA-Z_][a-zA-Z0-9_]* ]]; do
             local var_ref="${BASH_REMATCH[0]}"
-            local command_name=$(echo "$var_ref" | sed -n 's/\$\([a-zA-Z_][a-zA-Z0-9_]*\)\.\([a-zA-Z0-9_]*\)/\1/p')
-            local field_name=$(echo "$var_ref" | sed -n 's/\$\([a-zA-Z_][a-zA-Z0-9_]*\)\.\([a-zA-Z0-9_]*\)/\2/p')
             
-            if [[ -n "$command_name" && -n "$field_name" ]]; then
-                local stored_value=$(get_command_output "$command_name" "$field_name")
+            # Try array notation: $command_name[op_index].field_name
+            if [[ "$var_ref" =~ \$([a-zA-Z_][a-zA-Z0-9_-]+)\[([0-9]+)\]\.([a-zA-Z_][a-zA-Z0-9_]*) ]]; then
+                local command_name="${BASH_REMATCH[1]}"
+                local op_index="${BASH_REMATCH[2]}"
+                local field_name="${BASH_REMATCH[3]}"
+                
+                echo_with_color $PURPLE "    🔍 DEBUG: Looking for composed var: cmd='${command_name}[${op_index}]' field='$field_name'" >&2
+                local stored_value=$(get_command_output "${command_name}[${op_index}]" "$field_name")
                 if [[ -n "$stored_value" ]]; then
-                    echo_with_color $CYAN "    🔄 Substituting $var_ref -> $stored_value in: $original_value" >&2
-                    result="${result//$var_ref/$stored_value}"
+                    echo_with_color $CYAN "    🔄 Substituting $var_ref -> $stored_value in: $original_value (composed op $op_index)" >&2
+                    # Escape special chars in var_ref for literal sed replacement: $, [, ], .
+                    local escaped_var_ref=$(echo "$var_ref" | sed 's/\$/\\$/g; s/\[/\\[/g; s/\]/\\]/g; s/\./\\./g')
+                    result=$(echo "$result" | sed "s|$escaped_var_ref|$stored_value|g")
                 else
-                    echo_with_color $YELLOW "    ⚠️  Variable $var_ref not found in stored outputs" >&2
+                    echo_with_color $YELLOW "    ⚠️  Composed variable $var_ref not found in stored outputs" >&2
+                    echo_with_color $PURPLE "    🔍 DEBUG: All stored keys:" >&2
+                    for idx in "${!COMMAND_OUTPUT_KEYS[@]}"; do
+                        echo_with_color $PURPLE "        ${COMMAND_OUTPUT_KEYS[$idx]}" >&2
+                    done
                     break
                 fi
             else
-                break
+                # Parse as regular format: $command_name.field_name
+                local command_name=$(echo "$var_ref" | sed -n 's/\$\([a-zA-Z_][a-zA-Z0-9_-]*\)\.\([a-zA-Z0-9_]*\)/\1/p')
+                local field_name=$(echo "$var_ref" | sed -n 's/\$\([a-zA-Z_][a-zA-Z0-9_-]*\)\.\([a-zA-Z0-9_]*\)/\2/p')
+                
+                if [[ -n "$command_name" && -n "$field_name" ]]; then
+                    local stored_value=$(get_command_output "$command_name" "$field_name")
+                    if [[ -n "$stored_value" ]]; then
+                        echo_with_color $CYAN "    🔄 Substituting $var_ref -> $stored_value in: $original_value" >&2
+                        # Escape special chars in var_ref for literal sed replacement: $, .
+                        local escaped_var_ref=$(echo "$var_ref" | sed 's/\$/\\$/g; s/\./\\./g')
+                        result=$(echo "$result" | sed "s|$escaped_var_ref|$stored_value|g")
+                    else
+                        echo_with_color $YELLOW "    ⚠️  Variable $var_ref not found in stored outputs" >&2
+                        break
+                    fi
+                else
+                    break
+                fi
             fi
         done
         
