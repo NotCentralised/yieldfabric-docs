@@ -169,14 +169,14 @@ commands:
                   - id: swap-payment-1
             deadline: 2025-12-10
 
-  - name: complete_swap-1
-    type: complete_swap
-    user: 
-      id: collateral@yieldfabric.com
-      password: collateral_password
-    parameters:
-      swap_id: "123456789"
-      idempotency_key: complete-swap-ergonomic-$(date +%s)
+  # - name: complete_swap-1
+  #   type: complete_swap
+  #   user: 
+  #     id: collateral@yieldfabric.com
+  #     password: collateral_password
+  #   parameters:
+  #     swap_id: "123456789"
+  #     idempotency_key: complete-swap-ergonomic-$(date +%s)
       
   # - name: cancel_swap-1
   #   type: cancel_swap
@@ -190,6 +190,19 @@ commands:
   #     value: "cancel_value"
   #     idempotency_key: cancel-swap-ergonomic-$(date +%s)
 
+
+  - name: composed_complete_swap-1
+    type: composed_operation
+    user: 
+      id: collateral@yieldfabric.com
+      password: collateral_password
+    parameters:
+      idempotency_key: complete-capital-swap-ergonomic-$(date +%s)
+      operations:
+        # Operation 1: Complete the capital swap
+        - operation_type: complete_swap
+          operation_data:
+            swap_id: "123456789"
 
   - name: counterpart_accept_2
     type: accept_all
