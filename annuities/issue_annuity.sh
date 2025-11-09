@@ -174,7 +174,7 @@ main() {
     USER_EMAIL="${USER_EMAIL:-issuer@yieldfabric.com}"
     PASSWORD="${PASSWORD:-issuer_password}"
     DENOMINATION="${DENOMINATION:-aud-token-asset}"
-    COUNTERPART="${COUNTERPART:-collateral@yieldfabric.com}"
+    COUNTERPART="${COUNTERPART:-investor@yieldfabric.com}"
     START_DATE="${START_DATE:-2025-12-01}"
     END_DATE="${END_DATE:-2025-12-10}"
     COUPON_AMOUNT="${COUPON_AMOUNT:-5}"

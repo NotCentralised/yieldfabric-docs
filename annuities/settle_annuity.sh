@@ -144,8 +144,8 @@ main() {
     echo ""
     
     # Test parameters
-    USER_EMAIL="${USER_EMAIL:-collateral@yieldfabric.com}"
-    PASSWORD="${PASSWORD:-collateral_password}"
+    USER_EMAIL="${USER_EMAIL:-investor@yieldfabric.com}"
+    PASSWORD="${PASSWORD:-investor_password}"
     ANNUITY_ID="${ANNUITY_ID:-1762484837165}"
     ACCEPT_PAYMENTS="${ACCEPT_PAYMENTS:-true}"
     

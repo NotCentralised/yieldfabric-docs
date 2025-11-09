@@ -1,7 +1,49 @@
 commands:
 
+  # Group Accounts:
+  #
+  # - issuer: issuer account holds cash like assets and collateral assets.
+  # - collateral: collateral account holds credit token and invoices
+
+  # Tokens:
+  # 
+  # - invoice_token: payer obligation to pay 100 units of aud-token-asset to owner of the NFT
+  # - credit_token: issuer account grants a credit line to owner of the NFT. The credit line is offered by allowing the owner to transfer funds from the issuer account.
+  # - investment_token: issuer account grants the benefitial rights of all it's assets to the owner of the NFT. All distributions are made from the issuer account to the owner of the NFT.
+  # - collateral_token: collateral account grants the benefitial rights of all it's assets to the owner of the NFT. All distributions are made from the collateral account to the owner of the NFT.
+
+  # Flow:
+  #
+  # 1. Create Invoice:
+  #    a. create_obligation: Creates an invoice token with a payment obligation to pay 100 units of aud-token-asset to owner of the NFT.
+  #    b. accept_obligation: Accepts the invoice token.
+  # 2. Issuance:
+  #    a. create_obligation (investment_token): Issues an NFT granting beneficial rights to all issuer account assets and distributions.
+  #    b. create_obligation (credit_token): Issues an NFT that provides a credit line, allowing transfers from the issuer account.
+  #    c. create_obligation (collateral_token): Issues an NFT granting beneficial rights to the collateral account's assets and distributions.
+  # 3. Add Account Member:
+  #    a. add_account_member (credit_token): Grants issuer group membership tied to the credit facility obligation.
+  #    b. add_account_member (investment_token): Grants issuer group membership tied to the investment rights obligation.
+  #    c. add_account_member (collateral_token): Grants collateral group membership tied to the collateral rights obligation.
+  # 4. Investor Funding:
+  #    a. deposit: Investor funds their account with aud-token-asset.
+  #    b. create_swap: Issuer proposes an investment swap offering the investment token.
+  #    c. complete_swap: Investor accepts and executes the investment swap.
+  #    d. accept_all: Issuer clears the resulting aud-token-asset distributions.
+  # 5. Collateral Binding:
+  #    a. create_swap: Issuer proposes a collateral swap exchanging credit and collateral tokens.
+  #    b. complete_swap: Collateral group accepts and binds the collateral obligations.
+  # 6. Capital Deployment:
+  #    a. create_swap: Originator proposes factoring the invoice for 90% of its value.
+  #    b. composed_operation: Completes the capital swap and transfers the invoice obligation to the collateral group.
+  #    c. accept_all: Originator accepts the received aud-token-asset distributions.
+  # 7. Investor Capital Call:
+  #    a. instant: Investor sends additional capital to their own account under issuer group context.
+  #    b. accept: Investor confirms receipt of the capital call payment.
+
+
   # CREATE INVOICE
-  - name: originator_CREATE_invoice_1
+  - name: invoice_token
     type: create_obligation
     user: 
       id: originator@yieldfabric.com
@@ -22,18 +64,18 @@ commands:
             payee:
               unlock: 2025-12-31
   
-  - name: payer_accept_obligation_obligor_1
+  - name: payer_accept_invoice_token
     type: accept_obligation
     user: 
       id: payer@yieldfabric.com
       password: payer_password
     parameters:
       idempotency_key: accept_obligation-ergonomic-$(date +%s)
-      contract_id: $originator_CREATE_invoice_1.contract_id
+      contract_id: $invoice_token.contract_id
 
 
   # ISSUANCE
-  - name: issuer_group_CREATE_investment_token
+  - name: investment_token
     type: create_obligation
     user: 
       id: issuer@yieldfabric.com
@@ -47,7 +89,7 @@ commands:
         name: "Structured Product"
         description: "Structured Product Description"
 
-  - name: issuer_group_CREATE_credit_token
+  - name: credit_token
     type: create_obligation
     user: 
       id: issuer@yieldfabric.com
@@ -61,7 +103,7 @@ commands:
         name: "Credit Facility"
         description: "Credit Facility Description"
 
-  - name: collateral_group_CREATE_collateral_token
+  - name: collateral_token
     type: create_obligation
     user: 
       id: collateral@yieldfabric.com
@@ -77,7 +119,7 @@ commands:
 
 
   # ADD ACCOUNT MEMBER (NFT-based membership using obligation contracts)
-  - name: add_issuer_group_member-1
+  - name: add_issuer_group_member_1
     type: add_account_member
     user: 
       id: issuer@yieldfabric.com
@@ -85,9 +127,9 @@ commands:
       group: Issuer Group
     parameters:
       idempotency_key: add-issuer-group-member-ergonomic-$(date +%s)
-      obligation_id: $issuer_group_CREATE_credit_token.contract_id  # Contract ID (will extract numeric part) or use id_hash if available
+      obligation_id: $credit_token.contract_id  # Contract ID (will extract numeric part) or use id_hash if available
 
-  - name: add_issuer_group_member-2
+  - name: add_issuer_group_member_2
     type: add_account_member
     user: 
       id: issuer@yieldfabric.com
@@ -95,9 +137,9 @@ commands:
       group: Issuer Group
     parameters:
       idempotency_key: add-issuer-group-member-ergonomic-$(date +%s)
-      obligation_id: $issuer_group_CREATE_investment_token.contract_id
+      obligation_id: $investment_token.contract_id
 
-  - name: add_collateralgroup_member-1
+  - name: add_collateralgroup_member_1
     type: add_account_member
     user: 
       id: collateral@yieldfabric.com
@@ -105,7 +147,7 @@ commands:
       group: Collateral Group
     parameters:
       idempotency_key: add-issuer-group-member-ergonomic-$(date +%s)
-      obligation_id: $collateral_group_CREATE_collateral_token.contract_id
+      obligation_id: $collateral_token.contract_id
 
 
   # INVESTOR FUNDING
@@ -119,7 +161,7 @@ commands:
       amount: 1000
       idempotency_key: deposit-$(date +%s)
 
-  - name: create_investment_swap-1
+  - name: create_investment_swap_1
     type: create_swap
     user: 
       id: issuer@yieldfabric.com
@@ -130,7 +172,7 @@ commands:
       idempotency_key: swap-ergonomic-$(date +%s)
       initiator:
         obligation_ids:
-          - $issuer_group_CREATE_investment_token.contract_id
+          - $investment_token.contract_id
 
       counterparty:
         id: investor@yieldfabric.com
@@ -141,7 +183,7 @@ commands:
             - id: swap-payment-1
       deadline: 2025-12-31
 
-  - name: complete_investment_swap-1
+  - name: complete_investment_swap_1
     type: complete_swap
     user: 
       id: investor@yieldfabric.com
@@ -162,7 +204,7 @@ commands:
   
 
   # COLLATERAL BINDING
-  - name: create_credit_swap-1
+  - name: create_credit_swap_1
     type: create_swap
     user: 
       id: issuer@yieldfabric.com
@@ -173,15 +215,15 @@ commands:
       idempotency_key: create-credit-swap-ergonomic-$(date +%s)
       initiator:
         obligation_ids:
-          - $issuer_group_CREATE_credit_token.contract_id
+          - $credit_token.contract_id
 
       counterparty:
         id: Collateral Group
         obligation_ids:
-          - $collateral_group_CREATE_collateral_token.contract_id
+          - $collateral_token.contract_id
       deadline: 2025-12-31
 
-  - name: complete_credit_swap-1
+  - name: complete_credit_swap_1
     type: complete_swap
     user: 
       id: collateral@yieldfabric.com
@@ -194,7 +236,7 @@ commands:
 
   # CAPITAL DEPLOYMENT
   # NOTE: Factor invoice at 90% of the notional amount
-  - name: create_capital_swap-1
+  - name: create_capital_swap_1
     type: create_swap
     user: 
       id: originator@yieldfabric.com
@@ -204,7 +246,7 @@ commands:
       idempotency_key: swap-ergonomic-$(date +%s)
       initiator:
         obligation_ids:
-          - $originator_CREATE_invoice_1.contract_id
+          - $invoice_token.contract_id
 
       counterparty:
         id: Issuer Group
@@ -215,9 +257,7 @@ commands:
             - id: swap-payment-1
       deadline: 2025-12-31
 
-
-  # COMPOSED OPERATION: Complete Swap + Transfer Obligation Atomically
-  - name: complete_capital_swap-1
+  - name: complete_capital_swap_1
     type: composed_operation
     user: 
       id: collateral@yieldfabric.com
@@ -233,7 +273,7 @@ commands:
         # Operation 2: Transfer the obligation received from swap
         - operation_type: transfer_obligation
           operation_data:
-            contract_id: $originator_CREATE_invoice_1.contract_id
+            contract_id: $invoice_token.contract_id
             destination_id: Collateral Group
 
   - name: originator_accept_1
