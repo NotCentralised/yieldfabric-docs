@@ -9,7 +9,11 @@ All endpoints are authenticated with JWT tokens issued by the Auth service. Each
 | Endpoint | Method | Purpose | Example Script |
 | --- | --- | --- | --- |
 | `/api/annuity/issue` | `POST` | Orchestrates obligation creation, acceptance, and swap creation to issue a new annuity. | `issue_annuity.sh` |
+| `/api/annuity/issue_workflow` | `POST` | Starts the asynchronous annuity issuance WorkFlow and returns a `workflow_id`. | `issue_workflow.sh` |
+| `/api/annuity/issue_workflow/{workflow_id}` | `GET` | Polls the status/result of an ongoing annuity issuance WorkFlow. | `issue_workflow.sh`, `issue_polling.sh` |
 | `/api/annuity/settle` | `POST` | Completes an annuity swap and optionally accepts resulting payments. | `settle_annuity.sh` |
+| `/api/annuity/settle_workflow` | `POST` | Starts the asynchronous annuity settlement WorkFlow and returns a `workflow_id`. | `settle_workflow.sh` |
+| `/api/annuity/settle_workflow/{workflow_id}` | `GET` | Polls the status/result of an ongoing annuity settlement WorkFlow. | `settle_workflow.sh` |
 | `/api/annuity/{annuity_id}` | `GET` | Retrieves annuity (swap) details, including issuer info and aggregated payments with obligor metadata. | `get_annuity.sh` |
 | `/api/annuities` | `GET` | Lists annuities linked to the caller (issuer or counterparty) with basic status metadata. | `list_annuities.sh` |
 
@@ -252,9 +256,21 @@ cd yieldfabric-docs/annuities
   - Generates a millisecond timestamp for `annuity_id` and uses it consistently through the issuance flow.
   - Waits for contract tokens/status transitions using the polling utilities inside the issuance handler.
 
+- `issue_workflow.sh`
+  - Uses the asynchronous `/api/annuity/issue_workflow` endpoint to start issuance and receive a `workflow_id`.
+  - Polls `/api/annuity/issue_workflow/{workflow_id}` until the WorkFlow reaches a terminal state, then prints the final issuance result.
+
+- `issue_polling.sh`
+  - A lightweight helper that only polls `/api/annuity/issue_workflow/{workflow_id}` given an existing `workflow_id`.
+  - Useful when the initial issuance was triggered elsewhere (e.g., UI) and you just want to track completion from the CLI.
+
 - `settle_annuity.sh`
   - Accepts `ANNUITY_ID` to target the swap created in issuance.
   - Optionally toggles `ACCEPT_PAYMENTS=true` to trigger the accept-all mutation (default matches the handler’s behavior).
+
+- `settle_workflow.sh`
+  - Uses the asynchronous `/api/annuity/settle_workflow` endpoint to start settlement and receive a `workflow_id`.
+  - Polls `/api/annuity/settle_workflow/{workflow_id}` until the WorkFlow completes, then prints the settlement details.
 
 - `get_annuity.sh`
   - Requires a known `ANNUITY_ID`. Useful for verifying issuance/settlement side-effects without digging into the RDF store.

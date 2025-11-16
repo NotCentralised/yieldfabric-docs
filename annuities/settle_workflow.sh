@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# Test script for the Settle Annuity API endpoint
-# This script demonstrates how to use the /api/settle-annuity endpoint
-# Follows executor script conventions
+# Test script for the workflow-based Settle Annuity API endpoint
+# This script is modeled on settle_annuity.sh but uses the asynchronous
+# /api/annuity/settle_workflow + status endpoints.
 
 # Load environment variables from .env files (if present)
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -30,21 +30,18 @@ PURPLE='\033[0;35m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
-# Helper function to print colored output (matching executor scripts)
 echo_with_color() {
     local color=$1
     local message=$2
     echo -e "${color}${message}${NC}"
 }
 
-# Function to check if a service is running
 check_service_running() {
     local service_name=$1
     local service_url=$2
-    
+
     echo_with_color $BLUE "  🔍 Checking if ${service_name} is running..."
-    
-    # If URL is provided (remote service), check with curl
+
     if [[ "$service_url" =~ ^https?:// ]]; then
         if curl -s -f -o /dev/null --max-time 5 "${service_url}/health" 2>/dev/null || \
            curl -s -f -o /dev/null --max-time 5 "$service_url" 2>/dev/null; then
@@ -55,7 +52,6 @@ check_service_running() {
             return 1
         fi
     else
-        # Legacy: port-based check for localhost
         local port=$service_url
         if nc -z localhost $port 2>/dev/null; then
             echo_with_color $GREEN "    ✅ ${service_name} is running on port ${port}"
@@ -67,26 +63,25 @@ check_service_running() {
     fi
 }
 
-# Function to login user and get JWT token (matching auth.sh pattern)
 login_user() {
     local email="$1"
     local password="$2"
     local services_json='["vault", "payments"]'
 
-    # All informational output goes to stderr
     echo_with_color $BLUE "  🔐 Logging in user: $email" >&2
-    
-    local http_response=$(curl -s -X POST "${AUTH_SERVICE_URL}/auth/login/with-services" \
+
+    local http_response
+    http_response=$(curl -s -X POST "${AUTH_SERVICE_URL}/auth/login/with-services" \
         -H "Content-Type: application/json" \
         -d "{\"email\": \"$email\", \"password\": \"$password\", \"services\": $services_json}")
 
     echo_with_color $BLUE "    📡 Login response received" >&2
-    
+
     if [[ -n "$http_response" ]]; then
-        local token=$(echo "$http_response" | jq -r '.token // .access_token // .jwt // empty')
+        local token
+        token=$(echo "$http_response" | jq -r '.token // .access_token // .jwt // empty')
         if [[ -n "$token" && "$token" != "null" ]]; then
             echo_with_color $GREEN "    ✅ Login successful" >&2
-            # Only the token goes to stdout
             echo "$token"
             return 0
         else
@@ -100,55 +95,92 @@ login_user() {
     fi
 }
 
-# Function to call the settle annuity endpoint
-settle_annuity() {
+settle_annuity_workflow() {
     local jwt_token=$1
     local annuity_id=$2
     local accept_payments=$3
 
-    # Build request body
-    local request_body=$(cat <<EOF
+    local request_body
+    request_body=$(cat <<EOF
 {
     "annuity_id": "$annuity_id",
     "accept_payments": $accept_payments
 }
 EOF
 )
-    
+
     echo_with_color $BLUE "  📋 Request body:" >&2
     echo "$request_body" | jq '.' | sed 's/^/    /' >&2
-    
-    echo_with_color $BLUE "  🌐 Making REST API request to: ${PAY_SERVICE_URL}/api/annuity/settle" >&2
-    
-    # Use -w to get HTTP status code
-    local temp_file=$(mktemp)
-    local http_code=$(curl -s -w "%{http_code}" -o "$temp_file" -X POST "${PAY_SERVICE_URL}/api/annuity/settle" \
+
+    echo_with_color $BLUE "  🌐 Making REST API request to: ${PAY_SERVICE_URL}/api/annuity/settle_workflow" >&2
+
+    local temp_file
+    temp_file=$(mktemp)
+    local http_code
+    http_code=$(curl -s -w "%{http_code}" -o "$temp_file" -X POST "${PAY_SERVICE_URL}/api/annuity/settle_workflow" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer ${jwt_token}" \
         -d "$request_body")
-    
-    local http_response=$(cat "$temp_file")
+
+    local http_response
+    http_response=$(cat "$temp_file")
     rm -f "$temp_file"
-    
+
     echo_with_color $BLUE "    📡 HTTP Status: $http_code" >&2
     echo_with_color $BLUE "    📥 Response:" >&2
     echo "$http_response" | jq '.' | sed 's/^/    /' >&2
-    
-    # Return the response to stdout
+
     echo "$http_response"
 }
 
-# Main test execution
+poll_workflow_status() {
+    local workflow_id=$1
+    local max_attempts=${2:-60}
+    local delay_seconds=${3:-5}
+
+    echo_with_color $CYAN "🔄 Polling annuity settlement workflow status for ID: ${workflow_id}" >&2
+
+    local attempt
+    for ((attempt=1; attempt<=max_attempts; attempt++)); do
+        local url="${PAY_SERVICE_URL}/api/annuity/settle_workflow/${workflow_id}"
+        echo_with_color $BLUE "  📡 Attempt ${attempt}/${max_attempts}: GET ${url}" >&2
+
+        local response
+        response=$(curl -s "$url")
+
+        if [[ -z "$response" ]]; then
+            echo_with_color $YELLOW "  ⚠️  Empty response from status endpoint" >&2
+        else
+            local workflow_status
+            workflow_status=$(echo "$response" | jq -r '.workflow_status // empty' 2>/dev/null)
+
+            echo_with_color $BLUE "  🔎 Current workflow_status: ${workflow_status:-unknown}" >&2
+
+            if [[ "$workflow_status" == "completed" || "$workflow_status" == "failed" || "$workflow_status" == "cancelled" ]]; then
+                echo "$response"
+                return 0
+            fi
+        fi
+
+        if [[ $attempt -lt $max_attempts ]]; then
+            sleep "$delay_seconds"
+        fi
+    done
+
+    echo_with_color $RED "  ❌ Workflow did not complete within ${max_attempts} attempts" >&2
+    return 1
+}
+
 main() {
-    echo_with_color $CYAN "🚀 Starting Settle Annuity API Test"
+    echo_with_color $CYAN "🚀 Starting Settle Annuity WorkFlow API Test"
     echo ""
-    
-    # Test parameters
+
+    # Test parameters (aligned with settle_annuity.sh)
     USER_EMAIL="${USER_EMAIL:-investor@yieldfabric.com}"
     PASSWORD="${PASSWORD:-investor_password}"
-    ANNUITY_ID="${ANNUITY_ID:-1763180898558}"
+    ANNUITY_ID="${ANNUITY_ID:-1763267760735}"
     ACCEPT_PAYMENTS="${ACCEPT_PAYMENTS:-true}"
-    
+
     echo_with_color $PURPLE "📋 Test Configuration:"
     echo_with_color $BLUE "  🌐 Payment Service URL: $PAY_SERVICE_URL"
     echo_with_color $BLUE "  🌐 Auth Service URL: $AUTH_SERVICE_URL"
@@ -156,82 +188,92 @@ main() {
     echo_with_color $BLUE "  🔄 Annuity ID: $ANNUITY_ID"
     echo_with_color $BLUE "  ✅ Accept Payments: $ACCEPT_PAYMENTS"
     echo ""
-    
-    # Step 0: Check services are running
+
     echo_with_color $CYAN "🔍 Step 0: Checking services..."
     echo ""
-    
+
     if ! check_service_running "Auth Service" "$AUTH_SERVICE_URL"; then
         echo_with_color $RED "❌ Auth Service not available. Exiting."
         exit 1
     fi
-    
+
     if ! check_service_running "Payment Service" "$PAY_SERVICE_URL"; then
         echo_with_color $RED "❌ Payment Service not available. Exiting."
         exit 1
     fi
     echo ""
-    
-    # Step 1: Login and get JWT token
+
     echo_with_color $CYAN "🔐 Step 1: Logging in as $USER_EMAIL..."
     echo ""
-    
-    local jwt_token=$(login_user "$USER_EMAIL" "$PASSWORD")
+
+    local jwt_token
+    jwt_token=$(login_user "$USER_EMAIL" "$PASSWORD")
     if [[ -z "$jwt_token" ]]; then
         echo_with_color $RED "❌ Failed to obtain JWT token. Exiting."
         exit 1
     fi
-    
+
     echo_with_color $GREEN "  ✅ JWT token obtained (first 50 chars): ${jwt_token:0:50}..."
     echo ""
-    
-    # Step 2: Call settle annuity endpoint
-    echo_with_color $CYAN "📤 Step 2: Calling settle annuity endpoint..."
+
+    echo_with_color $CYAN "📤 Step 2: Calling settle annuity workflow endpoint..."
     echo ""
-    local response=$(settle_annuity \
+    local start_response
+    start_response=$(settle_annuity_workflow \
         "$jwt_token" \
         "$ANNUITY_ID" \
         "$ACCEPT_PAYMENTS")
-    
-    # Parse response
-    local status=$(echo "$response" | jq -r '.status // empty')
-    local result=$(echo "$response" | jq -r '.result // empty')
-    local error=$(echo "$response" | jq -r '.error // empty')
-    
+
+    local workflow_id
+    workflow_id=$(echo "$start_response" | jq -r '.workflow_id // empty' 2>/dev/null)
+
+    if [[ -z "$workflow_id" || "$workflow_id" == "null" ]]; then
+        echo_with_color $RED "❌ No workflow_id returned from start endpoint"
+        local error_msg
+        error_msg=$(echo "$start_response" | jq -r '.error // "Unknown error"' 2>/dev/null)
+        echo_with_color $RED "    Error: ${error_msg}"
+        exit 1
+    fi
+
+    echo_with_color $GREEN "  ✅ Settlement workflow started with ID: ${workflow_id}"
     echo ""
-    echo_with_color $CYAN "📊 Step 3: Analyzing results..."
+
+    local final_response
+    if ! final_response=$(poll_workflow_status "$workflow_id"); then
+        echo_with_color $RED "❌ Workflow did not complete successfully"
+        exit 1
+    fi
+
+    echo_with_color $BLUE "📡 Final Workflow Status Response:"
+    echo "$final_response" | jq '.' 2>/dev/null | sed 's/^/  /' || {
+        echo_with_color $RED "  ⚠️  Final response is not valid JSON:"
+        echo "$final_response" | sed 's/^/  /'
+    }
     echo ""
-    
-    if [[ "$status" == "success" ]]; then
-        echo_with_color $GREEN "✅ Settlement successful!"
+
+    local workflow_status
+    workflow_status=$(echo "$final_response" | jq -r '.workflow_status // empty' 2>/dev/null)
+
+    if [[ "$workflow_status" == "completed" ]]; then
+        echo_with_color $GREEN "✅ Settlement workflow completed successfully!"
         echo ""
         echo_with_color $PURPLE "📦 Settlement Details:"
-        echo "$result" | jq '.' | sed 's/^/  /'
-        
-        # Extract specific fields
-        local complete_swap_message_id=$(echo "$result" | jq -r '.complete_swap_message_id // empty')
-        local counterparty_accept_message_id=$(echo "$result" | jq -r '.counterparty_accept_message_id // empty')
-        
+        echo "$final_response" | jq -r '.result // empty' | jq '.' | sed 's/^/  /'
+
         echo ""
-        echo_with_color $BLUE "  🔄 Annuity ID: $ANNUITY_ID"
-        echo_with_color $BLUE "  📨 Complete Swap Message ID: $complete_swap_message_id"
-        if [[ -n "$counterparty_accept_message_id" && "$counterparty_accept_message_id" != "null" ]]; then
-            echo_with_color $BLUE "  📨 Counterparty Accept Message ID: $counterparty_accept_message_id"
-        fi
-        
-        echo ""
-        echo_with_color $GREEN "🎉 Settle Annuity API Test Completed Successfully!"
-        return 0
+        echo_with_color $GREEN "🎉 Settle Annuity WorkFlow API Test Completed Successfully!"
+        exit 0
     else
-        echo_with_color $RED "❌ Settlement failed!"
-        echo ""
-        echo_with_color $YELLOW "Error: $error"
-        echo ""
-        echo_with_color $RED "❌ Settle Annuity API Test Failed"
-        return 1
+        echo_with_color $RED "❌ Settlement workflow ended in status: ${workflow_status}"
+        local error_msg
+        error_msg=$(echo "$final_response" | jq -r '.error // "Unknown error"' 2>/dev/null)
+        echo_with_color $RED "    Error: ${error_msg}"
+        echo_with_color $BLUE "    Full response:"
+        echo "$final_response" | sed 's/^/      /'
+        exit 1
     fi
 }
 
-# Run the main function
 main "$@"
+
 

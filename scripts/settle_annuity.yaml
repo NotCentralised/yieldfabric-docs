@@ -20,15 +20,15 @@ commands:
   #           amount: 100
   #           destination_id: investor@yieldfabric.com
 
-  # - name: issuer_deposit
-  #   type: deposit
-  #   user: 
-  #     id: issuer@yieldfabric.com
-  #     password: issuer_password
-  #   parameters:
-  #     asset_id: aud-token-asset
-  #     amount: 125
-  #     idempotency_key: deposit-$(date +%s)
+  - name: issuer_deposit
+    type: deposit
+    user: 
+      id: issuer@yieldfabric.com
+      password: issuer_password
+    parameters:
+      asset_id: aud-token-asset
+      amount: 125
+      idempotency_key: deposit-$(date +%s)
 
   - name: issuer_send_1
     type: instant

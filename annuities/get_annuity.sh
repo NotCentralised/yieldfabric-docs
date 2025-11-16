@@ -120,7 +120,7 @@ main() {
 
     USER_EMAIL="${USER_EMAIL:-issuer@yieldfabric.com}"
     PASSWORD="${PASSWORD:-issuer_password}"
-    ANNUITY_ID="${ANNUITY_ID:-1762484837165}"
+    ANNUITY_ID="${ANNUITY_ID:-1763267760735}"
 
     echo_with_color $PURPLE "📋 Test Configuration:"
     echo_with_color $BLUE "  🌐 Payment Service URL: $PAY_SERVICE_URL"
