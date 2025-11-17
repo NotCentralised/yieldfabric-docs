@@ -243,10 +243,15 @@ main() {
     local user_email=${USER_EMAIL:-investor@yieldfabric.com}
     local password=${PASSWORD:-investor_password}
     local token
-    token=$(login "$user_email" "$password")
-    if [[ -z "$token" ]]; then
-        log "$COLOR_RED" "❌" "Unable to authenticate user ${user_email}"
-        exit 1
+    if [[ -n "${JWT_TOKEN:-}" ]]; then
+        log "$COLOR_GREEN" "✅" "Using JWT token from environment"
+        token="$JWT_TOKEN"
+    else
+        token=$(login "$user_email" "$password")
+        if [[ -z "$token" ]]; then
+            log "$COLOR_RED" "❌" "Unable to authenticate user ${user_email}"
+            exit 1
+        fi
     fi
 
     log "$COLOR_CYAN" "🔍" "Resolving loan via GraphQL"

@@ -181,8 +181,14 @@ poll_workflow_status() {
         else
             local workflow_status
             workflow_status=$(echo "$response" | jq -r '.workflow_status // empty' 2>/dev/null)
+            
+            local current_step
+            current_step=$(echo "$response" | jq -r '.current_step // empty' 2>/dev/null)
 
             echo_with_color $BLUE "  🔎 Current workflow_status: ${workflow_status:-unknown}" >&2
+            if [[ -n "$current_step" && "$current_step" != "unknown" ]]; then
+                echo_with_color $CYAN "  📍 Current step: ${current_step}" >&2
+            fi
 
             if [[ "$workflow_status" == "completed" || "$workflow_status" == "failed" || "$workflow_status" == "cancelled" ]]; then
                 echo "$response"

@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -euo pipefail
+
 # Test script for the Create Loan GraphQL endpoint
 # Mirrors the conventions from yieldfabric-docs/annuities/issue_annuity.sh
 
@@ -24,6 +26,7 @@ done
 PAY_SERVICE_URL="${PAY_SERVICE_URL:-https://pay.yieldfabric.io}"
 AUTH_SERVICE_URL="${AUTH_SERVICE_URL:-https://auth.yieldfabric.io}"
 GRAPHQL_ENDPOINT="${GRAPHQL_ENDPOINT:-${PAY_SERVICE_URL}/graphql}"
+ETH_RPC_URL="${ETH_RPC_URL:-http://127.0.0.1:8545/}"
 
 # ANSI colors (same palette as annuity script)
 RED='\033[0;31m'
@@ -41,6 +44,20 @@ echo_with_color() {
     local color=$1
     shift
     echo -e "${color}$*${NC}"
+}
+
+require_cmd() {
+    local cmd=$1
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        echo_with_color $RED "❌ Missing dependency: $cmd"
+        exit 1
+    fi
+}
+
+maybe_mine_block() {
+    curl -s -X POST \
+        --data '{"jsonrpc":"2.0","method":"evm_mine","params":[],"id":2}' \
+        "$ETH_RPC_URL" >/dev/null 2>&1 || true
 }
 
 check_service_running() {
@@ -99,6 +116,19 @@ login_user() {
 
     echo_with_color $RED "    ❌ Login failed: no response" >&2
     return 1
+}
+
+obtain_jwt_token() {
+    local email="$1"
+    local password="$2"
+
+    if [[ -n "${JWT_TOKEN:-}" ]]; then
+        echo_with_color $GREEN "  ✅ Using JWT token from environment"
+        echo "$JWT_TOKEN"
+        return 0
+    fi
+
+    login_user "$email" "$password"
 }
 
 # -----------------------------------------------------------------------------
@@ -305,6 +335,12 @@ detect_loan_mutation_entrypoint() {
 # Main execution
 # -----------------------------------------------------------------------------
 main() {
+    require_cmd curl
+    require_cmd jq
+    require_cmd python3
+    require_cmd nc
+    maybe_mine_block
+
     echo_with_color $CYAN "🚀 Starting Create Loan API Test"
     echo ""
 
@@ -359,8 +395,7 @@ PY
     echo ""
     echo_with_color $CYAN "🔐 Authenticating..."
     local jwt_token
-    jwt_token=$(login_user "$USER_EMAIL" "$PASSWORD")
-    if [[ -z "$jwt_token" ]]; then
+    if ! jwt_token=$(obtain_jwt_token "$USER_EMAIL" "$PASSWORD"); then
         echo_with_color $RED "❌ Failed to obtain JWT token"
         return 1
     fi
@@ -417,17 +452,17 @@ PY
     fi
 
     local success
-    success=$(echo "$response" | jq -r '.data.loanFlow.createLoan.success // false')
+    success=$(echo "$response" | jq -r '.data.loanFlow.createLoan.success // .data.createLoan.success // false')
     local message
-    message=$(echo "$response" | jq -r '.data.loanFlow.createLoan.message // "(no message)"')
+    message=$(echo "$response" | jq -r '.data.loanFlow.createLoan.message // .data.createLoan.message // "(no message)"')
 
     if [[ "$success" == "true" ]]; then
         echo ""
         echo_with_color $GREEN "✅ Loan created successfully!"
-        echo_with_color $BLUE "  Loan ID: $(echo "$response" | jq -r '.data.loanFlow.createLoan.loan.id')"
-        echo_with_color $BLUE "  Status: $(echo "$response" | jq -r '.data.loanFlow.createLoan.loan.status')"
+        echo_with_color $BLUE "  Loan ID: $(echo "$response" | jq -r '.data.loanFlow.createLoan.loan.id // .data.createLoan.loan.id')"
+        echo_with_color $BLUE "  Status: $(echo "$response" | jq -r '.data.loanFlow.createLoan.loan.status // .data.createLoan.loan.status')"
         echo_with_color $BLUE "  Initial State:"
-        echo "$response" | jq '.data.loanFlow.createLoan.loan.states[0]' | sed 's/^/    /'
+        echo "$response" | jq '.data.loanFlow.createLoan.loan.states[0] // .data.createLoan.loan.states[0]' | sed 's/^/    /'
     else
         echo ""
         echo_with_color $RED "❌ Loan creation failed"

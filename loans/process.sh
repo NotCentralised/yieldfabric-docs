@@ -3,8 +3,6 @@
 # Script to trigger loan payment processing via GraphQL.
 # Mirrors the structure of create.sh / accept.sh but targets the processLoan mutation.
 
-curl -X POST --data '{"jsonrpc":"2.0","method":"evm_mine","params":[],"id":2}' http://127.0.0.1:8545/
-
 set -euo pipefail
 
 # -----------------------------------------------------------------------------
@@ -28,6 +26,10 @@ done
 PAY_SERVICE_URL="${PAY_SERVICE_URL:-https://pay.yieldfabric.io}"
 AUTH_SERVICE_URL="${AUTH_SERVICE_URL:-https://auth.yieldfabric.io}"
 GRAPHQL_ENDPOINT="${GRAPHQL_ENDPOINT:-${PAY_SERVICE_URL}/graphql}"
+ETH_RPC_URL="${ETH_RPC_URL:-http://127.0.0.1:8545/}"
+ENABLE_WORKFLOW_POLLING="${ENABLE_WORKFLOW_POLLING:-true}"
+WORKFLOW_POLL_INTERVAL="${WORKFLOW_POLL_INTERVAL:-5}"
+WORKFLOW_POLL_ATTEMPTS="${WORKFLOW_POLL_ATTEMPTS:-24}"
 LOAN_ID="${1:-${LOAN_ID:-}}"
 PAYMENT_ID="${PAYMENT_ID:-}"
 
@@ -53,6 +55,24 @@ echo_with_color() {
     local color=$1
     shift
     echo -e "${color}$*${NC}"
+}
+
+require_cmd() {
+    local cmd=$1
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        echo_with_color $RED "❌ Missing dependency: $cmd"
+        exit 1
+    fi
+}
+
+maybe_mine_block() {
+    curl -s -X POST \
+        --data '{"jsonrpc":"2.0","method":"evm_mine","params":[],"id":2}' \
+        "$ETH_RPC_URL" >/dev/null 2>&1 || true
+}
+
+to_lower() {
+    echo "${1:-}" | tr '[:upper:]' '[:lower:]'
 }
 
 check_service_running() {
@@ -113,6 +133,19 @@ login_user() {
     return 1
 }
 
+obtain_jwt_token() {
+    local email="$1"
+    local password="$2"
+
+    if [[ -n "${JWT_TOKEN:-}" ]]; then
+        echo_with_color $GREEN "  ✅ Using JWT token from environment"
+        echo "$JWT_TOKEN"
+        return 0
+    fi
+
+    login_user "$email" "$password"
+}
+
 graphql_post() {
     local query="$1"
     local variables_json="$2"
@@ -135,16 +168,8 @@ run_process_mutation() {
   loanFlow {
     processLoan(input: $input) {
       success
+      workflowId
       message
-      loan {
-        id
-        status
-        states {
-          id
-          state
-          term
-        }
-      }
     }
   }
 }'
@@ -161,16 +186,8 @@ run_process_mutation() {
             local direct_mutation='mutation ProcessLoan($input: ProcessLoanInput!) {
   processLoan(input: $input) {
     success
+    workflowId
     message
-    loan {
-      id
-      status
-      states {
-        id
-        state
-        term
-      }
-    }
   }
 }'
             response=$(graphql_post "$direct_mutation" "$variables_json" "$jwt_token")
@@ -180,10 +197,59 @@ run_process_mutation() {
     echo "$response"
 }
 
+poll_workflow_status() {
+    local workflow_id="$1"
+
+    if [[ -z "${PAY_SERVICE_URL:-}" ]]; then
+        echo_with_color $YELLOW "  ⚠️ PAY_SERVICE_URL not set; skipping workflow polling."
+        return 0
+    fi
+
+    local base="${PAY_SERVICE_URL%/}"
+    local url="${base}/api/loan/process_workflow/${workflow_id}"
+
+    echo_with_color $BLUE "  🔁 Polling workflow status (${WORKFLOW_POLL_ATTEMPTS} attempts, every ${WORKFLOW_POLL_INTERVAL}s)"
+
+    for ((attempt = 1; attempt <= WORKFLOW_POLL_ATTEMPTS; attempt++)); do
+        local status_payload
+        status_payload=$(curl -s "$url" || true)
+
+        if [[ -z "$status_payload" ]]; then
+            echo_with_color $YELLOW "    ⚠️ Empty response while polling (attempt ${attempt})"
+        else
+            local workflow_status current_step error_msg
+            workflow_status=$(echo "$status_payload" | jq -r '.workflow_status // .workflowStatus // empty' 2>/dev/null || true)
+            current_step=$(echo "$status_payload" | jq -r '.current_step // .currentStep // empty' 2>/dev/null || true)
+            error_msg=$(echo "$status_payload" | jq -r '.error // empty' 2>/dev/null || true)
+
+            if [[ -n "$workflow_status" ]]; then
+                echo_with_color $CYAN "    [${attempt}] Status: ${workflow_status} (step: ${current_step:-unknown})"
+                if [[ "$workflow_status" == "completed" || "$workflow_status" == "failed" || "$workflow_status" == "cancelled" ]]; then
+                    if [[ -n "$error_msg" && "$error_msg" != "null" ]]; then
+                        echo_with_color $RED "    ⚠️ Error reported: ${error_msg}"
+                    fi
+                    return 0
+                fi
+            else
+                echo_with_color $YELLOW "    ⚠️ Unexpected payload while polling (attempt ${attempt})"
+            fi
+        fi
+
+        sleep "$WORKFLOW_POLL_INTERVAL"
+    done
+
+    echo_with_color $YELLOW "  ⚠️ Workflow did not reach a terminal state within allotted attempts"
+}
+
 # -----------------------------------------------------------------------------
 # Main execution
 # -----------------------------------------------------------------------------
 main() {
+    require_cmd curl
+    require_cmd jq
+    require_cmd nc
+    maybe_mine_block
+
     echo_with_color $CYAN "⚙️  Processing Loan Payment"
     echo_with_color $BLUE "📋 Configuration:" \
         "\n  API Base URL: ${PAY_SERVICE_URL}" \
@@ -201,8 +267,7 @@ main() {
     local password="${PASSWORD:-investor_password}"
 
     local jwt_token
-    jwt_token=$(login_user "$processor_email" "$password")
-    if [[ -z "$jwt_token" ]]; then
+    if ! jwt_token=$(obtain_jwt_token "$processor_email" "$password"); then
         echo_with_color $RED "❌ Failed to obtain JWT token"
         exit 1
     fi
@@ -238,17 +303,21 @@ main() {
     success=$(echo "$response" | jq -r '.data.loanFlow.processLoan.success // .data.processLoan.success // false')
     local message
     message=$(echo "$response" | jq -r '.data.loanFlow.processLoan.message // .data.processLoan.message // "(no message)"')
-    local loan
-    loan=$(echo "$response" | jq '.data.loanFlow.processLoan.loan // .data.processLoan.loan // null')
+    local workflow_id
+    workflow_id=$(echo "$response" | jq -r '.data.loanFlow.processLoan.workflowId // .data.processLoan.workflowId // empty')
 
     if [[ "$success" == "true" ]]; then
         echo_with_color $GREEN "✅ Loan processing request accepted"
         echo_with_color $BLUE "  Message: ${message}"
-        if [[ "$loan" != "null" ]]; then
-            echo_with_color $PURPLE "  Loan Snapshot:"
-            echo "$loan" | jq '.' | sed 's/^/    /'
+        if [[ -n "$workflow_id" && "$workflow_id" != "null" ]]; then
+            echo_with_color $CYAN "  🧭 Workflow ID: ${workflow_id}"
+            if [[ "$(to_lower "${ENABLE_WORKFLOW_POLLING}")" == "true" ]]; then
+                poll_workflow_status "$workflow_id"
+            else
+                echo_with_color $YELLOW "  ℹ️ Workflow polling disabled (set ENABLE_WORKFLOW_POLLING=true to enable)."
+            fi
         else
-            echo_with_color $YELLOW "  ⚠️ No loan snapshot returned (async processing may be pending)."
+            echo_with_color $YELLOW "  ⚠️ Workflow ID missing from response (cannot poll status)."
         fi
     else
         echo_with_color $RED "❌ Loan processing failed"

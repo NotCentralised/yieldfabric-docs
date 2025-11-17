@@ -3,8 +3,6 @@
 # Script to accept a loan via GraphQL.
 # Mirrors the conventions used in create.sh but focuses on the acceptLoan mutation.
 
-curl -X POST --data '{"jsonrpc":"2.0","method":"evm_mine","params":[],"id":2}' http://127.0.0.1:8545/
-
 set -euo pipefail
 
 # -----------------------------------------------------------------------------
@@ -28,6 +26,7 @@ done
 PAY_SERVICE_URL="${PAY_SERVICE_URL:-https://pay.yieldfabric.io}"
 AUTH_SERVICE_URL="${AUTH_SERVICE_URL:-https://auth.yieldfabric.io}"
 GRAPHQL_ENDPOINT="${GRAPHQL_ENDPOINT:-${PAY_SERVICE_URL}/graphql}"
+ETH_RPC_URL="${ETH_RPC_URL:-http://127.0.0.1:8545/}"
 LOAN_ID="${1:-${LOAN_ID:-}}"
 PAYMENT_ID="${PAYMENT_ID:-}"
 
@@ -53,6 +52,20 @@ echo_with_color() {
     local color=$1
     shift
     echo -e "${color}$*${NC}"
+}
+
+require_cmd() {
+    local cmd=$1
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        echo_with_color $RED "❌ Missing dependency: $cmd"
+        exit 1
+    fi
+}
+
+maybe_mine_block() {
+    curl -s -X POST \
+        --data '{"jsonrpc":"2.0","method":"evm_mine","params":[],"id":2}' \
+        "$ETH_RPC_URL" >/dev/null 2>&1 || true
 }
 
 check_service_running() {
@@ -111,6 +124,19 @@ login_user() {
 
     echo_with_color $RED "    ❌ Login failed: no response" >&2
     return 1
+}
+
+obtain_jwt_token() {
+    local email="$1"
+    local password="$2"
+
+    if [[ -n "${JWT_TOKEN:-}" ]]; then
+        echo_with_color $GREEN "  ✅ Using JWT token from environment"
+        echo "$JWT_TOKEN"
+        return 0
+    fi
+
+    login_user "$email" "$password"
 }
 
 graphql_post() {
@@ -187,6 +213,10 @@ run_accept_mutation() {
 # Main execution
 # -----------------------------------------------------------------------------
 main() {
+    require_cmd curl
+    require_cmd jq
+    maybe_mine_block
+
     echo_with_color $CYAN "🤝 Accepting Loan"
     echo_with_color $BLUE "📋 Configuration:" \
         "\n  API Base URL: ${PAY_SERVICE_URL}" \
@@ -204,8 +234,7 @@ main() {
     local password="${PASSWORD:-issuer_password}"
 
     local jwt_token
-    jwt_token=$(login_user "$borrower_email" "$password")
-    if [[ -z "$jwt_token" ]]; then
+    if ! jwt_token=$(obtain_jwt_token "$borrower_email" "$password"); then
         echo_with_color $RED "❌ Failed to obtain JWT token"
         exit 1
     fi
