@@ -50,14 +50,14 @@ tokens:
     description: AUD Token Description
     address: 0x68B1D87F95878fE05B998F19b66F4baba5De1aed
     chain_id: 33117
-    # address: 0xe764F77fbCa499E29Ec2B58506fB21CbE4BC2916
+    # address: 0xABf2564D8Bd74C8cbd26f53416D1f03Ed71e3FAc
     # chain_id: 153
   - id: CBDC
     name: CBD Token
     description: CBDC Token Description
     address: 0x3Aa5ebB10DC797CAC828524e59A333d0A371443c
     chain_id: 33117
-    # address: 0x1797599D39EdDdBEF5eACD0313da2879F54aF245
+    # address: 0xd4241C5563C052e10cce6ddB693335Aa3fa8D7e0
     # chain_id: 153
 
 assets:

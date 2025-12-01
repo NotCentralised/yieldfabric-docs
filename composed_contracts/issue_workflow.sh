@@ -1,8 +1,7 @@
 #!/bin/bash
 
-# Test script for the workflow-based Issue Annuity API endpoint
-# This script is modeled on issue_annuity.sh but uses the asynchronous
-# /api/annuity/issue_workflow + status endpoints.
+# Test script for the workflow-based Issue Composed Contract API endpoint
+# This script follows the pattern from issue_workflow.sh and process.sh
 
 # Load environment variables from .env files (if present)
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -18,6 +17,8 @@ for env_file in "${REPO_ROOT}/.env" "${REPO_ROOT}/.env.local" "${SCRIPT_DIR}/.en
 done
 
 # Configuration
+# To test locally, set: export PAY_SERVICE_URL=http://localhost:3002
+# To test locally, set: export AUTH_SERVICE_URL=http://localhost:3000
 PAY_SERVICE_URL="${PAY_SERVICE_URL:-https://pay.yieldfabric.com}"
 AUTH_SERVICE_URL="${AUTH_SERVICE_URL:-https://auth.yieldfabric.com}"
 
@@ -95,42 +96,21 @@ login_user() {
     fi
 }
 
-issue_annuity_workflow() {
+issue_composed_contract_workflow() {
     local jwt_token=$1
-    local denomination=$2
-    local counterpart=$3
-    local start_date=$4
-    local end_date=$5
-    local coupon_amount=$6
-    local initial_amount=$7
-    local redemption_amount=$8
-    shift 8
-    local coupon_dates=("$@")
+    local name=$2
+    local description=$3
+    shift 3
+    local obligations_json="$1"
 
-    echo_with_color $CYAN "🏦 Starting annuity issuance workflow..." >&2
-
-    # Build coupon_dates JSON array
-    local coupon_dates_json="["
-    local i
-    for i in "${!coupon_dates[@]}"; do
-        if [ "$i" -gt 0 ]; then
-            coupon_dates_json+=","
-        fi
-        coupon_dates_json+="\"${coupon_dates[$i]}\""
-    done
-    coupon_dates_json+="]"
+    echo_with_color $CYAN "🏦 Starting composed contract issuance workflow..." >&2
 
     local request_body
     request_body=$(cat <<EOF
 {
-    "denomination": "${denomination}",
-    "counterpart": "${counterpart}",
-    "start_date": "${start_date}",
-    "end_date": "${end_date}",
-    "coupon_amount": "${coupon_amount}",
-    "coupon_dates": ${coupon_dates_json},
-    "initial_amount": "${initial_amount}",
-    "redemption_amount": "${redemption_amount}"
+    "name": "${name}",
+    "description": "${description}",
+    "obligations": ${obligations_json}
 }
 EOF
 )
@@ -138,12 +118,12 @@ EOF
     echo_with_color $BLUE "  📋 Request body:" >&2
     echo "$request_body" | jq '.' | sed 's/^/    /' >&2
 
-    echo_with_color $BLUE "  🌐 Making REST API request to: ${PAY_SERVICE_URL}/api/annuity/issue_workflow" >&2
+    echo_with_color $BLUE "  🌐 Making REST API request to: ${PAY_SERVICE_URL}/api/composed_contract/issue_workflow" >&2
 
     local temp_file
     temp_file=$(mktemp)
     local http_code
-    http_code=$(curl -s -w "%{http_code}" -o "$temp_file" -X POST "${PAY_SERVICE_URL}/api/annuity/issue_workflow" \
+    http_code=$(curl -s -w "%{http_code}" -o "$temp_file" -X POST "${PAY_SERVICE_URL}/api/composed_contract/issue_workflow" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer ${jwt_token}" \
         -d "$request_body")
@@ -158,19 +138,25 @@ EOF
         echo_with_color $YELLOW "  ⚠️  Warning: Empty response body" >&2
     fi
 
+    # Log the full response for debugging (especially for 422 errors)
+    if [[ "$http_code" == "422" ]]; then
+        echo_with_color $YELLOW "  ⚠️  Validation error - full response:" >&2
+        echo "$http_response" | jq '.' 2>/dev/null | sed 's/^/    /' >&2 || echo "$http_response" | sed 's/^/    /' >&2
+    fi
+
     echo "$http_response"
 }
 
 poll_workflow_status() {
     local workflow_id=$1
-    local max_attempts=${2:-60}
+    local max_attempts=${2:-120}
     local delay_seconds=${3:-1}
 
     echo_with_color $CYAN "🔄 Polling workflow status for ID: ${workflow_id}" >&2
 
     local attempt
     for ((attempt=1; attempt<=max_attempts; attempt++)); do
-        local url="${PAY_SERVICE_URL}/api/annuity/issue_workflow/${workflow_id}"
+        local url="${PAY_SERVICE_URL}/api/composed_contract/issue_workflow/${workflow_id}"
         echo_with_color $BLUE "  📡 Attempt ${attempt}/${max_attempts}: GET ${url}" >&2
 
         local response
@@ -206,14 +192,14 @@ poll_workflow_status() {
 }
 
 main() {
-    echo_with_color $CYAN "🚀 Starting Issue Annuity WorkFlow API Test"
+    echo_with_color $CYAN "🚀 Starting Issue Composed Contract WorkFlow API Test"
     echo ""
 
-    # Test parameters (aligned with issue_annuity.sh)
+    # Test parameters (aligned with issue_workflow.sh)
     USER_EMAIL="${USER_EMAIL:-issuer@yieldfabric.com}"
     PASSWORD="${PASSWORD:-issuer_password}"
     DENOMINATION="${DENOMINATION:-aud-token-asset}"
-    COUNTERPART="${COUNTERPART:-investor@yieldfabric.com}"
+    COUNTERPART="${COUNTERPART:-issuer@yieldfabric.com}"
     START_DATE="${START_DATE:-2025-12-01}"
     END_DATE="${END_DATE:-2025-12-10}"
     COUPON_AMOUNT="${COUPON_AMOUNT:-5}"
@@ -228,6 +214,70 @@ main() {
         "2025-12-05T00:00:00Z"
     )
 
+    COMPOSED_CONTRACT_NAME="${COMPOSED_CONTRACT_NAME:-Annuity Stream Composed Contract}"
+    COMPOSED_CONTRACT_DESCRIPTION="${COMPOSED_CONTRACT_DESCRIPTION:-A composed contract with annuity stream and redemption obligations}"
+
+    # Build coupon payments array JSON using jq
+    local coupon_payments_json
+    coupon_payments_json=$(printf '%s\n' "${COUPON_DATES[@]}" | jq -R '{oracleAddress: null, oracleOwner: null, oracleKeySender: null, oracleValueSenderSecret: null, oracleKeyRecipient: null, oracleValueRecipientSecret: null, unlockSender: ., unlockReceiver: ., linearVesting: null}' | jq -s '.')
+
+    # Default obligations - mirrors annuity workflow structure
+    # 1. Annuity stream contract with 5 payments of 5 each
+    # 2. Redemption contract with 1 payment of 100
+    OBLIGATIONS_JSON="${OBLIGATIONS_JSON:-$(jq -n \
+        --arg counterpart "$COUNTERPART" \
+        --arg denomination "$DENOMINATION" \
+        --arg obligor "$USER_EMAIL" \
+        --arg initial_amount "$INITIAL_AMOUNT" \
+        --arg redemption_amount "$REDEMPTION_AMOUNT" \
+        --arg end_date "${END_DATE}T23:59:59Z" \
+        --arg coupon_amount "$COUPON_AMOUNT" \
+        --argjson coupon_payments "$coupon_payments_json" \
+        '[
+            {
+                counterpart: $counterpart,
+                denomination: $denomination,
+                obligor: $obligor,
+                notional: $initial_amount,
+                expiry: $end_date,
+                data: {
+                    name: "Annuity Stream",
+                    description: "Annuity Stream Obligation"
+                },
+                initialPayments: {
+                    amount: $coupon_amount,
+                    denomination: $denomination,
+                    payments: $coupon_payments
+                }
+            },
+            {
+                counterpart: $counterpart,
+                denomination: $denomination,
+                obligor: $obligor,
+                notional: $redemption_amount,
+                expiry: $end_date,
+                data: {
+                    name: "Redemption",
+                    description: "Redemption Obligation"
+                },
+                initialPayments: {
+                    amount: $redemption_amount,
+                    denomination: $denomination,
+                    payments: [{
+                        oracleAddress: null,
+                        oracleOwner: null,
+                        oracleKeySender: null,
+                        oracleValueSenderSecret: null,
+                        oracleKeyRecipient: null,
+                        oracleValueRecipientSecret: null,
+                        unlockSender: $end_date,
+                        unlockReceiver: $end_date,
+                        linearVesting: null
+                    }]
+                }
+            }
+        ]')}"
+
     echo_with_color $BLUE "📋 Configuration:"
     echo_with_color $BLUE "  API Base URL: ${PAY_SERVICE_URL}"
     echo_with_color $BLUE "  Auth Service: ${AUTH_SERVICE_URL}"
@@ -239,6 +289,9 @@ main() {
     echo_with_color $BLUE "  Initial Amount: ${INITIAL_AMOUNT}"
     echo_with_color $BLUE "  Redemption Amount: ${REDEMPTION_AMOUNT}"
     echo_with_color $BLUE "  Number of Coupons: ${#COUPON_DATES[@]}"
+    echo_with_color $BLUE "  Composed Contract Name: ${COMPOSED_CONTRACT_NAME}"
+    echo_with_color $BLUE "  Composed Contract Description: ${COMPOSED_CONTRACT_DESCRIPTION}"
+    echo_with_color $BLUE "  Number of Obligations: $(echo "$OBLIGATIONS_JSON" | jq '. | length')"
     echo ""
 
     if ! check_service_running "Auth Service" "$AUTH_SERVICE_URL"; then
@@ -250,8 +303,17 @@ main() {
         echo_with_color $RED "❌ Payments service is not reachable at $PAY_SERVICE_URL"
         echo_with_color $YELLOW "Please start the payments service:"
         echo "   Local: cd ../yieldfabric-payments && cargo run"
-        echo_with_color $BLUE "   REST API endpoint will be available at: $PAY_SERVICE_URL/api/annuity/issue_workflow"
+        echo_with_color $BLUE "   REST API endpoint will be available at: $PAY_SERVICE_URL/api/composed_contract/issue_workflow"
         return 1
+    fi
+
+    # Check if the endpoint exists (basic check)
+    local endpoint_check
+    endpoint_check=$(curl -s -o /dev/null -w "%{http_code}" "${PAY_SERVICE_URL}/api/composed_contract/issue_workflow" -X POST -H "Content-Type: application/json" -d '{}' 2>/dev/null || echo "000")
+    if [[ "$endpoint_check" == "404" ]]; then
+        echo_with_color $YELLOW "⚠️  Warning: Endpoint returned 404. The server may need to be restarted to pick up the new routes."
+        echo_with_color $YELLOW "   Make sure the server was built with the latest code including composed_contract_issuance workflow."
+        echo ""
     fi
 
     echo ""
@@ -267,20 +329,15 @@ main() {
     echo_with_color $GREEN "  ✅ JWT token obtained (first 50 chars): ${jwt_token:0:50}..."
     echo ""
 
-    echo_with_color $CYAN "📤 Calling issue annuity workflow endpoint..."
+    echo_with_color $CYAN "📤 Calling issue composed contract workflow endpoint..."
     echo ""
 
     local start_response
-    start_response=$(issue_annuity_workflow \
+    start_response=$(issue_composed_contract_workflow \
         "$jwt_token" \
-        "$DENOMINATION" \
-        "$COUNTERPART" \
-        "$START_DATE" \
-        "$END_DATE" \
-        "$COUPON_AMOUNT" \
-        "$INITIAL_AMOUNT" \
-        "$REDEMPTION_AMOUNT" \
-        "${COUPON_DATES[@]}")
+        "$COMPOSED_CONTRACT_NAME" \
+        "$COMPOSED_CONTRACT_DESCRIPTION" \
+        "$OBLIGATIONS_JSON")
 
     echo_with_color $BLUE "📡 Start API Response:"
     echo "$start_response" | jq '.' 2>/dev/null | sed 's/^/  /' || {
@@ -294,9 +351,26 @@ main() {
 
     if [[ -z "$workflow_id" || "$workflow_id" == "null" ]]; then
         echo_with_color $RED "❌ No workflow_id returned from start endpoint"
-        local error_msg
-        error_msg=$(echo "$start_response" | jq -r '.error // "Unknown error"' 2>/dev/null)
-        echo_with_color $RED "    Error: ${error_msg}"
+        
+        # Check if we got a 404 (route not found)
+        if echo "$start_response" | grep -qi "404\|not found" || [[ -z "$start_response" ]]; then
+            echo_with_color $YELLOW "    ⚠️  Received 404 or empty response - the endpoint may not be registered"
+            echo_with_color $YELLOW "    This usually means the server needs to be restarted with the latest code"
+            echo_with_color $BLUE "    Please ensure:"
+            echo_with_color $BLUE "      1. The server was built with: cd yieldfabric-payments && cargo build"
+            echo_with_color $BLUE "      2. The server was restarted after adding the composed_contract_issuance workflow"
+            echo_with_color $BLUE "      3. The route is registered at: /api/composed_contract/issue_workflow"
+        else
+            local error_msg
+            error_msg=$(echo "$start_response" | jq -r '.error // .message // "Unknown error"' 2>/dev/null)
+            if [[ -z "$error_msg" || "$error_msg" == "null" ]]; then
+                echo_with_color $RED "    Error: Invalid request (HTTP 422 - Unprocessable Entity)"
+                echo_with_color $YELLOW "    Full response:"
+                echo "$start_response" | jq '.' 2>/dev/null | sed 's/^/      /' || echo "$start_response" | sed 's/^/      /'
+            else
+                echo_with_color $RED "    Error: ${error_msg}"
+            fi
+        fi
         return 1
     fi
 
@@ -320,21 +394,17 @@ main() {
     workflow_status=$(echo "$final_response" | jq -r '.workflow_status // empty' 2>/dev/null)
 
     if [[ "$workflow_status" == "completed" ]]; then
-        echo_with_color $GREEN "    ✅ Annuity workflow completed successfully!"
+        echo_with_color $GREEN "    ✅ Composed contract workflow completed successfully!"
         echo ""
-        echo_with_color $BLUE "  📋 Annuity Details:"
-        echo_with_color $BLUE "      Annuity Contract ID: $(echo "$final_response" | jq -r '.result.annuity_contract_id // "N/A"')"
-        echo_with_color $BLUE "      Annuity Message ID: $(echo "$final_response" | jq -r '.result.annuity_message_id // "N/A"')"
-        echo_with_color $BLUE "      Annuity Accept Message ID: $(echo "$final_response" | jq -r '.result.annuity_accept_message_id // "N/A"')"
-        echo_with_color $BLUE "      Redemption Contract ID: $(echo "$final_response" | jq -r '.result.redemption_contract_id // "N/A"')"
-        echo_with_color $BLUE "      Redemption Message ID: $(echo "$final_response" | jq -r '.result.redemption_message_id // "N/A"')"
-        echo_with_color $BLUE "      Redemption Accept Message ID: $(echo "$final_response" | jq -r '.result.redemption_accept_message_id // "N/A"')"
-        echo_with_color $BLUE "      Annuity ID: $(echo "$final_response" | jq -r '.result.annuity_id // "N/A"')"
+        echo_with_color $BLUE "  📋 Composed Contract Details:"
+        echo_with_color $BLUE "      Composed Contract ID: $(echo "$final_response" | jq -r '.result.composed_contract_id // "N/A"')"
+        echo_with_color $BLUE "      Contract IDs: $(echo "$final_response" | jq -r '.result.contract_ids // [] | join(", ")' 2>/dev/null || echo "N/A")"
+        echo_with_color $BLUE "      Message ID: $(echo "$final_response" | jq -r '.result.message_id // "N/A"')"
         echo ""
         echo_with_color $GREEN "🎉 Workflow test completed successfully! ✨"
         return 0
     else
-        echo_with_color $RED "    ❌ Annuity workflow ended in status: ${workflow_status}"
+        echo_with_color $RED "    ❌ Composed contract workflow ended in status: ${workflow_status}"
         local error_msg
         error_msg=$(echo "$final_response" | jq -r '.error // "Unknown error"' 2>/dev/null)
         echo_with_color $RED "    Error: ${error_msg}"
@@ -345,5 +415,4 @@ main() {
 }
 
 main "$@"
-
 
