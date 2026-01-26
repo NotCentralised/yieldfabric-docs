@@ -1,0 +1,91 @@
+contract:
+  metadata:
+    name: "Capital Protected Equity-Linked Note"
+    description: "3-year structured product with capital protection and equity participation"
+    type: structured_product
+    version: "1.0"
+    effective_date: "2026-01-01T00:00:00Z"
+    expiry_date: "2028-12-31T23:59:59Z"
+    legal_document_id: "LEGAL-STRUCTURED-2026-001"
+  
+  parties:
+    issuer:
+      entity_id: "bank@yieldfabric.com"
+      role: issuer
+    
+    counterpart:
+      entity_id: "investor@yieldfabric.com"
+      role: counterpart
+    
+    obligor:
+      entity_id: "bank@yieldfabric.com"
+      role: obligor
+  
+  structured_product_terms:
+    principal: "1000000000000000000000000"  # 1,000,000
+    denomination: "usd-token-asset"
+    capital_protection: 100  # Percentage of principal guaranteed
+    participation_rate: 80  # Percentage of underlying performance
+    underlying_asset: "SP500"
+    barrier_level: 70  # Percentage - barrier for capital protection
+  
+  obligations:
+    # Capital protection component (zero-coupon bond)
+    - name: "Capital Protection"
+      description: "Guaranteed return of principal at maturity (subject to barrier)"
+      type: capital_protection
+      denomination: "usd-token-asset"
+      notional: "1000000000000000000000000"
+      expiry: "2028-12-31T23:59:59Z"
+      counterpart: "investor@yieldfabric.com"
+      obligor: "bank@yieldfabric.com"
+      payment_schedule:
+        amount: "1000000000000000000000000"
+        payments:
+          - date: "2028-12-31T23:59:59Z"
+            unlock_sender: "2028-12-31T23:59:59Z"
+            unlock_receiver: "2028-12-31T23:59:59Z"
+            oracle_conditions:
+              oracle_address: "0x1234567890123456789012345678901234567890"
+              oracle_owner: "oracle@yieldfabric.com"
+              oracle_key_recipient: "SP500_PRICE"
+              barrier_check: true
+              barrier_level: 70
+    
+    # Equity participation component
+    - name: "Equity Participation"
+      description: "Participation in underlying asset performance (SP500)"
+      type: equity_participation
+      denomination: "usd-token-asset"
+      notional: "1000000000000000000000000"
+      expiry: "2028-12-31T23:59:59Z"
+      counterpart: "investor@yieldfabric.com"
+      obligor: "bank@yieldfabric.com"
+      payment_schedule:
+        amount: "variable"  # Based on underlying performance
+        payments:
+          - date: "2028-12-31T23:59:59Z"
+            unlock_sender: "2028-12-31T23:59:59Z"
+            unlock_receiver: "2028-12-31T23:59:59Z"
+            oracle_conditions:
+              oracle_address: "0x1234567890123456789012345678901234567890"
+              oracle_owner: "oracle@yieldfabric.com"
+              oracle_key_recipient: "SP500_PRICE"
+              oracle_value_recipient_secret: "SP500_SECRET"
+              participation_rate: 80
+              barrier_level: 70
+  
+  composed_contract:
+    name: "Capital Protected Equity-Linked Note"
+    description: "3-year structured product with capital protection and equity participation"
+
+
+
+
+
+
+
+
+
+
+

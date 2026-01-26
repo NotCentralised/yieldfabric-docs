@@ -1,0 +1,21 @@
+commands:
+
+  # ACCEPT ORIGINATION DEPLOYMENT - issuer (Perpetual)
+  - name: issuer_accept_3
+    type: accept_all
+    user: 
+      id: acacia@perpetual.com.au
+      group: Issuer Group
+    parameters:
+      idempotency_key: accept-$(date +%s)
+      denomination: aud-token-asset
+
+  # ACCEPT ORIGINATION DEPLOYMENT - issuer (Perpetual)
+  - name: issuer_accept_4
+    type: accept_all
+    user: 
+      id: acacia@perpetual.com.au
+      group: Issuer Group
+    parameters:
+      idempotency_key: accept-$(date +%s)
+      denomination: wrbnt-token-asset

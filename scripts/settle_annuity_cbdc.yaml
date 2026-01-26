@@ -11,12 +11,12 @@ commands:
   #       # Operation 1: Deposit
   #       - operation_type: deposit
   #         operation_data:
-  #           asset_id: aud-token-asset
+  #           asset_id: cbdc-token-asset
   #           amount: 125
   #       # Operation 2: Send
   #       - operation_type: instant
   #         operation_data:
-  #           asset_id: aud-token-asset
+  #           asset_id: cbdc-token-asset
   #           amount: 100
   #           destination_id: investor@yieldfabric.com
 
@@ -26,8 +26,8 @@ commands:
       id: issuer@yieldfabric.com
       password: issuer_password
     parameters:
-      asset_id: aud-token-asset
-      amount: 125
+      asset_id: cbdc-token-asset
+      amount: 1250000
       idempotency_key: deposit-$(date +%s)
 
   - name: issuer_send_1
@@ -36,8 +36,8 @@ commands:
       id: issuer@yieldfabric.com
       password: issuer_password
     parameters:
-      asset_id: aud-token-asset
-      amount: 100
+      asset_id: cbdc-token-asset
+      amount: 1000000
       idempotency_key: instant-$(date +%s)
       destination_id: investor@yieldfabric.com
 
@@ -60,45 +60,44 @@ commands:
     parameters:
       idempotency_key: create_annuity_stream_obligation-ergonomic-$(date +%s)
       counterpart: issuer@yieldfabric.com
-      denomination: aud-token-asset
+      denomination: cbdc-token-asset
       obligor: issuer@yieldfabric.com
-      notional: 5 
-      expiry: 2025-12-01
+      expiry: 2025-12-20
       data: 
         name: "Annuity Stream"
         description: "Annuity Stream Obligation"
       initial_payments:
-        amount: 5
+        amount: 500
         payments:
           - id: payment-1
             payer:
-              unlock: 2025-12-01
+              unlock: 2025-12-20
             payee:
-              unlock: 2025-12-01
+              unlock: 2025-12-20
 
           - id: payment-2
             payer:
-              unlock: 2025-12-02
+              unlock: 2025-12-21
             payee:
-              unlock: 2025-12-02
+              unlock: 2025-12-21
 
           - id: payment-3
             payer:
-              unlock: 2025-12-03
+              unlock: 2025-12-22
             payee:
-              unlock: 2025-12-03
+              unlock: 2025-12-22
 
           - id: payment-4
             payer:
-              unlock: 2025-12-04
+              unlock: 2025-12-23
             payee:
-              unlock: 2025-12-04
+              unlock: 2025-12-23
 
           - id: payment-5
             payer:
-              unlock: 2025-12-05
+              unlock: 2025-12-24
             payee:
-              unlock: 2025-12-05
+              unlock: 2025-12-24
 
   - name: issuer_accept_annuity_stream_obligation_1
     type: accept_obligation
@@ -118,21 +117,21 @@ commands:
     parameters:
       idempotency_key: create_redemption_obligation-ergonomic-$(date +%s)
       counterpart: issuer@yieldfabric.com
-      denomination: aud-token-asset
+      denomination: cbdc-token-asset
       obligor: issuer@yieldfabric.com
-      notional: 100
-      expiry: 2025-12-01
+      notional: 1000000
+      expiry: 2025-12-20
       data: 
         name: "Redemption"
         description: "Redemption Obligation"
       initial_payments:
-        amount: 100
+        amount: 1000000
         payments:
           - id: payment-1
             payer:
-              unlock: 2025-12-06
+              unlock: 2025-12-25
             payee:
-              unlock: 2025-12-06
+              unlock: 2025-12-25
 
   - name: issuer_accept_redemption_obligation_1
     type: accept_obligation
@@ -151,7 +150,7 @@ commands:
       id: issuer@yieldfabric.com
       password: issuer_password
     parameters:
-      swap_id: "123456789"
+      swap_id: "1123456789"
       idempotency_key: swap-ergonomic-$(date +%s)
       initiator:
         obligation_ids:
@@ -161,11 +160,11 @@ commands:
       counterparty:
         id: investor@yieldfabric.com
         expected_payments:
-          denomination: aud-token-asset
-          amount: 100
+          denomination: cbdc-token-asset
+          amount: 1000000
           payments:
             - id: swap-payment-1
-      deadline: 2025-12-10
+      deadline: 2025-12-20
 
   - name: complete_swap-1
     type: complete_swap
@@ -173,7 +172,7 @@ commands:
       id: investor@yieldfabric.com
       password: investor_password
     parameters:
-      swap_id: "123456789"
+      swap_id: "1123456789"
       idempotency_key: complete-swap-ergonomic-$(date +%s)
       
   # - name: cancel_swap-1
@@ -196,7 +195,7 @@ commands:
       password: investor_password
     parameters:
       idempotency_key: accept-$(date +%s)
-      denomination: aud-token-asset
+      denomination: cbdc-token-asset
 
   - name: issuer_accept_1
     type: accept_all
@@ -205,6 +204,6 @@ commands:
       password: issuer_password
     parameters:
       idempotency_key: accept-$(date +%s)
-      denomination: aud-token-asset
+      denomination: cbdc-token-asset
 
 

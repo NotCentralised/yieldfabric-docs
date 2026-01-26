@@ -1,0 +1,117 @@
+users:
+  - id: acacia@redbelly.network # Redbelly
+    password: payer_password
+    role: SuperAdmin
+
+  - id: acacia@wisr.com.au # Wisr - Not Needed
+    password: originator_password
+    role: SuperAdmin
+
+  - id: acacia@iqeq.com # IQEQ
+    password: collateral_password
+    role: SuperAdmin
+
+  - id: acacia@perpetual.com.au # PCT
+    password: issuer_password
+    role: SuperAdmin
+
+  - id: acacia@beachhead.vc #BCV
+    password: investor_password
+    role: SuperAdmin
+
+groups:
+  - id: collateral-group
+    name: Collateral Group
+    description: Collateral Group Description
+    group_type: project
+    user:
+      id: acacia@iqeq.com
+      password: collateral_password
+    # members:
+    #   - id: acacia@perpetual.com.au # need to enable NFT owner
+    #     role: owner
+
+  - id: issuer-group
+    name: Issuer Group
+    description: Issuer Group Description
+    group_type: project
+    user:
+      id: acacia@perpetual.com.au
+      password: issuer_password
+    # members:
+    #   - id: acacia@beachhead.vc
+    #     role: owner
+    #   - id: acacia@iqeq.com # need to enable NFT owner
+    #     role: owner
+    
+tokens:
+  - id: AUD
+    name: AUD Token
+    description: AUD Token Description
+    address: 0xeCEBd533cc4817889cD4317100fBc724765F5a83
+    chain_id: 151
+    # address: 0x68B1D87F95878fE05B998F19b66F4baba5De1aed
+    # chain_id: 33117
+
+  - id: wRBNT
+    name: wRBNT Token
+    description: Wrapped RBNT Token Description
+    address: 0x810e8Ba74fD2f6e9D022EB4ca94F55834eC0ab15
+    chain_id: 151
+    # address: 0x3Aa5ebB10DC797CAC828524e59A333d0A371443c
+    # chain_id: 33117
+
+  - id: eAUD
+    name: eAUD Token
+    description: eAUD Token Description
+    address: 0xf9084f90107763Ab5d356FdE2e48235c79782155
+    chain_id: 151
+    # address: 0x3Aa5ebB10DC797CAC828524e59A333d0A371443c
+    # chain_id: 33117
+
+assets:
+  - id: AUD
+    name: AUD Token
+    type: Cash
+    currency: AUD
+    description: AUD Token Description
+    token_id: AUD-token
+    
+  - id: wRBNT
+    name: wRBNT Token
+    type: Cash
+    currency: USD
+    description: Wrapped RBNT Token Description
+    token_id: wRBNT-token
+
+  - id: eAUD
+    name: eAUD Token
+    type: Cash
+    currency: AUD
+    description: eAUD Token Description
+    token_id: eAUD-token
+
+
+# fiat_accounts:
+#   - id: AUDBANK-001
+#     user:
+#       id: acacia@perpetual.com.au
+#       password: issuerpass456
+#     holder: Personal Inc
+#     currency: AUD
+#     iban: AU12ABCD1234567890123456
+#     bsb: 012345
+#     account_number: 123456789
+#     asset: aud-token-asset
+
+#   - id: USDBANK-002
+#     user:
+#       id: admin2@yieldfabric.com
+#       password: testpass123
+#       group: Admin Group
+#     holder: YieldFabric Inc
+#     currency: USD
+#     iban: US12ABCD1234567890123456
+#     routing_number: 123456789
+#     account_number: 123456789
+#     asset: usd-token-asset

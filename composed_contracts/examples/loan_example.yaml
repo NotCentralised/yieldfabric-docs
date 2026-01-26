@@ -1,0 +1,91 @@
+contract:
+  metadata:
+    name: "Business Term Loan"
+    description: "3-year term loan with monthly principal and interest payments"
+    type: loan
+    version: "1.0"
+    effective_date: "2026-01-01T00:00:00Z"
+    expiry_date: "2029-01-01T23:59:59Z"
+    legal_document_id: "LEGAL-LOAN-2026-001"
+  
+  parties:
+    issuer:
+      entity_id: "lender@yieldfabric.com"
+      role: lender
+    
+    counterpart:
+      entity_id: "borrower@yieldfabric.com"
+      role: borrower
+    
+    obligor:
+      entity_id: "borrower@yieldfabric.com"
+      role: obligor
+  
+  loan_terms:
+    principal: "1000000000000000000000000"  # 1,000,000
+    interest_rate: 5.5  # Annual percentage
+    term_months: 36
+    payment_frequency: monthly
+    denomination: "usd-token-asset"
+  
+  obligations:
+    # Principal repayment stream
+    - name: "Principal Repayment"
+      description: "Monthly principal repayment over 36 months"
+      type: principal_stream
+      denomination: "usd-token-asset"
+      notional: "1000000000000000000000000"
+      expiry: "2029-01-01T23:59:59Z"
+      counterpart: "lender@yieldfabric.com"
+      obligor: "borrower@yieldfabric.com"
+      payment_schedule:
+        amount: "27777777777777777777778"  # Principal / 36 months
+        frequency: monthly
+        start_date: "2026-02-01T00:00:00Z"
+        end_date: "2029-01-01T23:59:59Z"
+        payments:
+          - date: "2026-02-01T00:00:00Z"
+            unlock_sender: "2026-02-01T00:00:00Z"
+            unlock_receiver: "2026-02-01T00:00:00Z"
+          - date: "2026-03-01T00:00:00Z"
+            unlock_sender: "2026-03-01T00:00:00Z"
+            unlock_receiver: "2026-03-01T00:00:00Z"
+          # ... continue for all 36 months
+    
+    # Interest payment stream
+    - name: "Interest Payments"
+      description: "Monthly interest payments at 5.5% annual rate"
+      type: interest_stream
+      denomination: "usd-token-asset"
+      notional: "1000000000000000000000000"
+      expiry: "2029-01-01T23:59:59Z"
+      counterpart: "lender@yieldfabric.com"
+      obligor: "borrower@yieldfabric.com"
+      payment_schedule:
+        amount: "4583333333333333333333"  # (Principal * 5.5% / 12)
+        frequency: monthly
+        start_date: "2026-02-01T00:00:00Z"
+        end_date: "2029-01-01T23:59:59Z"
+        payments:
+          - date: "2026-02-01T00:00:00Z"
+            unlock_sender: "2026-02-01T00:00:00Z"
+            unlock_receiver: "2026-02-01T00:00:00Z"
+          - date: "2026-03-01T00:00:00Z"
+            unlock_sender: "2026-03-01T00:00:00Z"
+            unlock_receiver: "2026-03-01T00:00:00Z"
+          # ... continue for all 36 months
+  
+  composed_contract:
+    name: "Business Term Loan"
+    description: "3-year term loan with monthly principal and interest payments"
+
+
+
+
+
+
+
+
+
+
+

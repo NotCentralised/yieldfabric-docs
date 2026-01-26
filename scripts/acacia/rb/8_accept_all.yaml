@@ -1,0 +1,19 @@
+commands:
+
+  # ACCEPT ORIGINATION DEPLOYMENT - payer (Redbelly)
+  - name: payer_accept_3
+    type: accept_all
+    user: 
+      id: acacia@redbelly.network
+    parameters:
+      idempotency_key: accept-$(date +%s)
+      denomination: aud-token-asset
+
+  # ACCEPT ORIGINATION DEPLOYMENT - payer (Redbelly)
+  - name: payer_accept_4
+    type: accept_all
+    user: 
+      id: acacia@redbelly.network
+    parameters:
+      idempotency_key: accept-$(date +%s)
+      denomination: wrbnt-token-asset

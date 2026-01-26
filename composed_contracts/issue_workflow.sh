@@ -156,7 +156,8 @@ poll_workflow_status() {
 
     local attempt
     for ((attempt=1; attempt<=max_attempts; attempt++)); do
-        local url="${PAY_SERVICE_URL}/api/composed_contract/issue_workflow/${workflow_id}"
+        # Use unified workflow status endpoint - works for all workflow types
+        local url="${PAY_SERVICE_URL}/api/workflows/${workflow_id}"
         echo_with_color $BLUE "  📡 Attempt ${attempt}/${max_attempts}: GET ${url}" >&2
 
         local response
@@ -170,8 +171,14 @@ poll_workflow_status() {
             
             local current_step
             current_step=$(echo "$response" | jq -r '.current_step // empty' 2>/dev/null)
+            
+            local workflow_type
+            workflow_type=$(echo "$response" | jq -r '.workflow_type // empty' 2>/dev/null)
 
             echo_with_color $BLUE "  🔎 Current workflow_status: ${workflow_status:-unknown}" >&2
+            if [[ -n "$workflow_type" && "$workflow_type" != "null" ]]; then
+                echo_with_color $CYAN "  📋 Workflow type: ${workflow_type}" >&2
+            fi
             if [[ -n "$current_step" && "$current_step" != "unknown" ]]; then
                 echo_with_color $CYAN "  📍 Current step: ${current_step}" >&2
             fi
@@ -195,103 +202,154 @@ main() {
     echo_with_color $CYAN "🚀 Starting Issue Composed Contract WorkFlow API Test"
     echo ""
 
-    # Test parameters (aligned with issue_workflow.sh)
-    USER_EMAIL="${USER_EMAIL:-issuer@yieldfabric.com}"
-    PASSWORD="${PASSWORD:-issuer_password}"
+    # Parse command-line arguments for username and password
+    # Usage: ./issue_workflow.sh [username] [password]
+    # If not provided, falls back to environment variables, then defaults
+    if [[ $# -ge 1 ]]; then
+        USER_EMAIL="$1"
+    elif [[ -n "${USER_EMAIL}" ]]; then
+        # Use environment variable if set
+        USER_EMAIL="${USER_EMAIL}"
+    else
+        # Default username
+        USER_EMAIL="issuer@yieldfabric.com"
+    fi
+
+    if [[ $# -ge 2 ]]; then
+        PASSWORD="$2"
+    elif [[ -n "${PASSWORD}" ]]; then
+        # Use environment variable if set
+        PASSWORD="${PASSWORD}"
+    else
+        # Default password
+        PASSWORD="issuer_password"
+    fi
+
+    # Test parameters
     DENOMINATION="${DENOMINATION:-aud-token-asset}"
     COUNTERPART="${COUNTERPART:-issuer@yieldfabric.com}"
-    START_DATE="${START_DATE:-2025-12-01}"
-    END_DATE="${END_DATE:-2025-12-10}"
-    COUPON_AMOUNT="${COUPON_AMOUNT:-5}"
-    INITIAL_AMOUNT="${INITIAL_AMOUNT:-100}"
-    REDEMPTION_AMOUNT="${REDEMPTION_AMOUNT:-100}"
+    END_DATE="${END_DATE:-2026-12-10}"
 
+    # Obligation amounts
+    # Coupon amount per payment (each coupon payment will be this amount)
+    COUPON_AMOUNT="${COUPON_AMOUNT:-5000000000000000000000}"
+    OBLIGATION_1_NAME="${OBLIGATION_1_NAME:-Annuity Stream}"
+    OBLIGATION_1_DESCRIPTION="${OBLIGATION_1_DESCRIPTION:-Annuity Stream Obligation}"
+    
+    OBLIGATION_2_NOTIONAL="${OBLIGATION_2_NOTIONAL:-10000000000000000000000}"
+    OBLIGATION_2_NAME="${OBLIGATION_2_NAME:-Redemption}"
+    OBLIGATION_2_DESCRIPTION="${OBLIGATION_2_DESCRIPTION:-Redemption Obligation}"
+
+    # Composed contract details
+    COMPOSED_CONTRACT_NAME="${COMPOSED_CONTRACT_NAME:-Composed Contract 2}"
+    COMPOSED_CONTRACT_DESCRIPTION="${COMPOSED_CONTRACT_DESCRIPTION:-A composed contract 2}"
+
+    # Coupon dates for obligation 1
     COUPON_DATES=(
-        "2025-12-01T00:00:00Z"
-        "2025-12-02T00:00:00Z"
-        "2025-12-03T00:00:00Z"
-        "2025-12-04T00:00:00Z"
-        "2025-12-05T00:00:00Z"
+        "2026-12-01T00:00:00Z"
+        "2026-12-02T00:00:00Z"
+        "2026-12-03T00:00:00Z"
+        "2026-12-04T00:00:00Z"
+        "2026-12-05T00:00:00Z"
     )
-
-    COMPOSED_CONTRACT_NAME="${COMPOSED_CONTRACT_NAME:-Annuity Stream Composed Contract}"
-    COMPOSED_CONTRACT_DESCRIPTION="${COMPOSED_CONTRACT_DESCRIPTION:-A composed contract with annuity stream and redemption obligations}"
 
     # Build coupon payments array JSON using jq
     local coupon_payments_json
     coupon_payments_json=$(printf '%s\n' "${COUPON_DATES[@]}" | jq -R '{oracleAddress: null, oracleOwner: null, oracleKeySender: null, oracleValueSenderSecret: null, oracleKeyRecipient: null, oracleValueRecipientSecret: null, unlockSender: ., unlockReceiver: ., linearVesting: null}' | jq -s '.')
 
-    # Default obligations - mirrors annuity workflow structure
-    # 1. Annuity stream contract with 5 payments of 5 each
-    # 2. Redemption contract with 1 payment of 100
-    OBLIGATIONS_JSON="${OBLIGATIONS_JSON:-$(jq -n \
+    # Build Obligation 1 JSON (Annuity stream with multiple payments)
+    # Calculate total notional using jq to handle large numbers correctly (coupon_amount * number_of_coupons)
+    local obligation_1_notional
+    obligation_1_notional=$(jq -n --arg coupon "$COUPON_AMOUNT" --arg count "${#COUPON_DATES[@]}" '($coupon | tonumber) * ($count | tonumber) | tostring')
+    
+    # Use OBLIGATION_1_NOTIONAL if explicitly set, otherwise use calculated value
+    OBLIGATION_1_NOTIONAL="${OBLIGATION_1_NOTIONAL:-$obligation_1_notional}"
+    
+    local obligation_1_json
+    obligation_1_json=$(jq -n \
         --arg counterpart "$COUNTERPART" \
         --arg denomination "$DENOMINATION" \
         --arg obligor "$USER_EMAIL" \
-        --arg initial_amount "$INITIAL_AMOUNT" \
-        --arg redemption_amount "$REDEMPTION_AMOUNT" \
+        --arg notional "$OBLIGATION_1_NOTIONAL" \
         --arg end_date "${END_DATE}T23:59:59Z" \
+        --arg name "$OBLIGATION_1_NAME" \
+        --arg description "$OBLIGATION_1_DESCRIPTION" \
         --arg coupon_amount "$COUPON_AMOUNT" \
-        --argjson coupon_payments "$coupon_payments_json" \
-        '[
-            {
-                counterpart: $counterpart,
-                denomination: $denomination,
-                obligor: $obligor,
-                notional: $initial_amount,
-                expiry: $end_date,
-                data: {
-                    name: "Annuity Stream",
-                    description: "Annuity Stream Obligation"
-                },
-                initialPayments: {
-                    amount: $coupon_amount,
-                    denomination: $denomination,
-                    payments: $coupon_payments
-                }
+        --argjson payments "$coupon_payments_json" \
+        '{
+            counterpart: $counterpart,
+            denomination: $denomination,
+            obligor: $obligor,
+            notional: $notional,
+            expiry: $end_date,
+            data: {
+                name: $name,
+                description: $description
             },
-            {
-                counterpart: $counterpart,
+            initialPayments: {
+                amount: $coupon_amount,
                 denomination: $denomination,
-                obligor: $obligor,
-                notional: $redemption_amount,
-                expiry: $end_date,
-                data: {
-                    name: "Redemption",
-                    description: "Redemption Obligation"
-                },
-                initialPayments: {
-                    amount: $redemption_amount,
-                    denomination: $denomination,
-                    payments: [{
-                        oracleAddress: null,
-                        oracleOwner: null,
-                        oracleKeySender: null,
-                        oracleValueSenderSecret: null,
-                        oracleKeyRecipient: null,
-                        oracleValueRecipientSecret: null,
-                        unlockSender: $end_date,
-                        unlockReceiver: $end_date,
-                        linearVesting: null
-                    }]
-                }
+                payments: $payments
             }
-        ]')}"
+        }')
+
+    # Build Obligation 2 JSON (Redemption with single payment)
+    local obligation_2_json
+    obligation_2_json=$(jq -n \
+        --arg counterpart "$COUNTERPART" \
+        --arg denomination "$DENOMINATION" \
+        --arg obligor "$USER_EMAIL" \
+        --arg notional "$OBLIGATION_2_NOTIONAL" \
+        --arg end_date "${END_DATE}T23:59:59Z" \
+        --arg name "$OBLIGATION_2_NAME" \
+        --arg description "$OBLIGATION_2_DESCRIPTION" \
+        '{
+            counterpart: $counterpart,
+            denomination: $denomination,
+            obligor: $obligor,
+            notional: $notional,
+            expiry: $end_date,
+            data: {
+                name: $name,
+                description: $description
+            },
+            initialPayments: {
+                amount: $notional,
+                denomination: $denomination,
+                payments: [{
+                    oracleAddress: null,
+                    oracleOwner: null,
+                    oracleKeySender: null,
+                    oracleValueSenderSecret: null,
+                    oracleKeyRecipient: null,
+                    oracleValueRecipientSecret: null,
+                    unlockSender: $end_date,
+                    unlockReceiver: $end_date,
+                    linearVesting: null
+                }]
+            }
+        }')
 
     echo_with_color $BLUE "📋 Configuration:"
     echo_with_color $BLUE "  API Base URL: ${PAY_SERVICE_URL}"
     echo_with_color $BLUE "  Auth Service: ${AUTH_SERVICE_URL}"
-    echo_with_color $BLUE "  User: ${USER_EMAIL}"
+    echo_with_color $BLUE "  User (Initiator): ${USER_EMAIL}"
+    echo_with_color $BLUE "  Counterparty: ${COUNTERPART}"
     echo_with_color $BLUE "  Denomination: ${DENOMINATION}"
-    echo_with_color $BLUE "  Counterpart: ${COUNTERPART}"
-    echo_with_color $BLUE "  Date Range: ${START_DATE} to ${END_DATE}"
-    echo_with_color $BLUE "  Coupon Amount: ${COUPON_AMOUNT}"
-    echo_with_color $BLUE "  Initial Amount: ${INITIAL_AMOUNT}"
-    echo_with_color $BLUE "  Redemption Amount: ${REDEMPTION_AMOUNT}"
-    echo_with_color $BLUE "  Number of Coupons: ${#COUPON_DATES[@]}"
-    echo_with_color $BLUE "  Composed Contract Name: ${COMPOSED_CONTRACT_NAME}"
-    echo_with_color $BLUE "  Composed Contract Description: ${COMPOSED_CONTRACT_DESCRIPTION}"
-    echo_with_color $BLUE "  Number of Obligations: $(echo "$OBLIGATIONS_JSON" | jq '. | length')"
+    echo_with_color $BLUE "  End Date: ${END_DATE}"
+    echo ""
+    echo_with_color $PURPLE "📦 Composed Contract:"
+    echo_with_color $BLUE "    Name: ${COMPOSED_CONTRACT_NAME}"
+    echo_with_color $BLUE "    Description: ${COMPOSED_CONTRACT_DESCRIPTION}"
+    echo ""
+    echo_with_color $PURPLE "📄 Obligation 1 (${OBLIGATION_1_NAME}):"
+    echo_with_color $BLUE "    Coupon Amount (per payment): ${COUPON_AMOUNT}"
+    echo_with_color $BLUE "    Total Notional: ${OBLIGATION_1_NOTIONAL}"
+    echo_with_color $BLUE "    Payments: ${#COUPON_DATES[@]} coupon payments"
+    echo ""
+    echo_with_color $PURPLE "📄 Obligation 2 (${OBLIGATION_2_NAME}):"
+    echo_with_color $BLUE "    Notional: ${OBLIGATION_2_NOTIONAL}"
+    echo_with_color $BLUE "    Payments: 1 redemption payment"
     echo ""
 
     if ! check_service_running "Auth Service" "$AUTH_SERVICE_URL"; then
@@ -312,7 +370,7 @@ main() {
     endpoint_check=$(curl -s -o /dev/null -w "%{http_code}" "${PAY_SERVICE_URL}/api/composed_contract/issue_workflow" -X POST -H "Content-Type: application/json" -d '{}' 2>/dev/null || echo "000")
     if [[ "$endpoint_check" == "404" ]]; then
         echo_with_color $YELLOW "⚠️  Warning: Endpoint returned 404. The server may need to be restarted to pick up the new routes."
-        echo_with_color $YELLOW "   Make sure the server was built with the latest code including composed_contract_issuance workflow."
+        echo_with_color $YELLOW "   Make sure the server was built with the latest code including composed_contract_issue workflow."
         echo ""
     fi
 
@@ -332,12 +390,16 @@ main() {
     echo_with_color $CYAN "📤 Calling issue composed contract workflow endpoint..."
     echo ""
 
+    # Combine obligations into an array
+    local obligations_json
+    obligations_json=$(jq -n --argjson ob1 "$obligation_1_json" --argjson ob2 "$obligation_2_json" '[$ob1, $ob2]')
+
     local start_response
     start_response=$(issue_composed_contract_workflow \
         "$jwt_token" \
         "$COMPOSED_CONTRACT_NAME" \
         "$COMPOSED_CONTRACT_DESCRIPTION" \
-        "$OBLIGATIONS_JSON")
+        "$obligations_json")
 
     echo_with_color $BLUE "📡 Start API Response:"
     echo "$start_response" | jq '.' 2>/dev/null | sed 's/^/  /' || {
@@ -358,7 +420,7 @@ main() {
             echo_with_color $YELLOW "    This usually means the server needs to be restarted with the latest code"
             echo_with_color $BLUE "    Please ensure:"
             echo_with_color $BLUE "      1. The server was built with: cd yieldfabric-payments && cargo build"
-            echo_with_color $BLUE "      2. The server was restarted after adding the composed_contract_issuance workflow"
+            echo_with_color $BLUE "      2. The server was restarted after adding the composed_contract_issue workflow"
             echo_with_color $BLUE "      3. The route is registered at: /api/composed_contract/issue_workflow"
         else
             local error_msg
@@ -396,12 +458,31 @@ main() {
     if [[ "$workflow_status" == "completed" ]]; then
         echo_with_color $GREEN "    ✅ Composed contract workflow completed successfully!"
         echo ""
-        echo_with_color $BLUE "  📋 Composed Contract Details:"
+        echo_with_color $BLUE "  📋 Result Details:"
         echo_with_color $BLUE "      Composed Contract ID: $(echo "$final_response" | jq -r '.result.composed_contract_id // "N/A"')"
-        echo_with_color $BLUE "      Contract IDs: $(echo "$final_response" | jq -r '.result.contract_ids // [] | join(", ")' 2>/dev/null || echo "N/A")"
+        
+        # Display obligation IDs from the array
+        local obligation_ids
+        obligation_ids=$(echo "$final_response" | jq -r '.result.obligation_ids // []' 2>/dev/null)
+        if [[ -n "$obligation_ids" && "$obligation_ids" != "[]" && "$obligation_ids" != "null" ]]; then
+            local obligation_count
+            obligation_count=$(echo "$obligation_ids" | jq 'length' 2>/dev/null || echo "0")
+            echo_with_color $BLUE "      Obligations ($obligation_count):"
+            echo "$obligation_ids" | jq -r '.[]' | while IFS= read -r obligation_id; do
+                echo_with_color $BLUE "        • $obligation_id"
+            done
+        else
+            echo_with_color $BLUE "      Obligations: N/A"
+        fi
+        
         echo_with_color $BLUE "      Message ID: $(echo "$final_response" | jq -r '.result.message_id // "N/A"')"
         echo ""
-        echo_with_color $GREEN "🎉 Workflow test completed successfully! ✨"
+        echo_with_color $GREEN "🎉 Issue composed contract workflow test completed successfully! ✨"
+        echo ""
+        echo_with_color $CYAN "📝 Summary:"
+        echo_with_color $BLUE "   • Created composed contract: ${COMPOSED_CONTRACT_NAME}"
+        echo_with_color $BLUE "   • Created 2 obligations (${OBLIGATION_1_NAME} and ${OBLIGATION_2_NAME})"
+        echo_with_color $BLUE "   • Accepted both obligations"
         return 0
     else
         echo_with_color $RED "    ❌ Composed contract workflow ended in status: ${workflow_status}"
@@ -413,6 +494,25 @@ main() {
         return 1
     fi
 }
+
+# Show usage if help is requested
+if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+    echo "Usage: $0 [username] [password]"
+    echo ""
+    echo "Arguments:"
+    echo "  username    User email for authentication (default: issuer@yieldfabric.com)"
+    echo "  password    User password for authentication (default: issuer_password)"
+    echo ""
+    echo "Environment variables (used as fallback if arguments not provided):"
+    echo "  USER_EMAIL    User email for authentication"
+    echo "  PASSWORD     User password for authentication"
+    echo ""
+    echo "Examples:"
+    echo "  $0"
+    echo "  $0 user@example.com mypassword"
+    echo "  USER_EMAIL=user@example.com PASSWORD=mypassword $0"
+    exit 0
+fi
 
 main "$@"
 

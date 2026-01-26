@@ -156,13 +156,14 @@ execute_composed_operation() {
             if echo "$op_data_json" | jq -e '.initiator' >/dev/null 2>&1; then
                 echo_with_color $CYAN "    🔄 Flattening nested initiator/counterparty structure for create_swap operation"
                 # Build object with only non-null fields using jq's del function to remove nulls
+                # Handle both initial_payments and expected_payments for initiator (initial_payments is an alias)
                 op_data_json=$(echo "$op_data_json" | jq '{
                     swap_id: .swap_id,
                     counterparty: (.counterparty.id // .counterparty),
                     initiator_obligation_ids: (.initiator.obligation_ids // []),
-                    initiator_expected_payments: .initiator.expected_payments,
+                    initiator_expected_payments: (.initiator.expected_payments // .initiator.initial_payments),
                     counterparty_obligation_ids: (.counterparty.obligation_ids // []),
-                    counterparty_expected_payments: .counterparty.expected_payments,
+                    counterparty_expected_payments: (.counterparty.expected_payments // .counterparty.initial_payments),
                     deadline: .deadline
                 } | with_entries(select(.value != null))')
             fi
@@ -1267,6 +1268,7 @@ execute_create_swap() {
     echo_with_color $PURPLE "    initiator_expected_payments_amount: '$initiator_expected_payments_amount'"
     echo_with_color $PURPLE "    initiator_expected_payments_denomination: '$initiator_expected_payments_denomination'"
     echo_with_color $PURPLE "    initiator_expected_payments_obligor: '$initiator_expected_payments_obligor'"
+    echo_with_color $PURPLE "    initiator_expected_payments_json: '$initiator_expected_payments_json'"
     echo_with_color $PURPLE "    counterparty_obligation_ids_json: '$counterparty_obligation_ids_json'"
     echo_with_color $PURPLE "    counterparty_expected_payments_amount: '$counterparty_expected_payments_amount'"
     echo_with_color $PURPLE "    counterparty_expected_payments_denomination: '$counterparty_expected_payments_denomination'"
@@ -1289,6 +1291,15 @@ execute_create_swap() {
     fi
     
     # Add initiator expected payments if provided
+    # Debug: Check why condition might fail
+    if [[ -z "$initiator_expected_payments_amount" || "$initiator_expected_payments_amount" == "null" ]]; then
+        echo_with_color $YELLOW "  ⚠️  initiator_expected_payments_amount is empty/null - cannot add initiatorExpectedPayments to mutation"
+    fi
+    if [[ -z "$initiator_expected_payments_json" || "$initiator_expected_payments_json" == "[]" || "$initiator_expected_payments_json" == "null" ]]; then
+        echo_with_color $YELLOW "  ⚠️  initiator_expected_payments_json is empty/null/[] - cannot add initiatorExpectedPayments to mutation"
+        echo_with_color $YELLOW "      Value was: '$initiator_expected_payments_json'"
+    fi
+    
     if [[ -n "$initiator_expected_payments_amount" && "$initiator_expected_payments_amount" != "null" && -n "$initiator_expected_payments_json" && "$initiator_expected_payments_json" != "[]" && "$initiator_expected_payments_json" != "null" ]]; then
         local initiator_expected_payments_input="initiatorExpectedPayments: { amount: \\\"$initiator_expected_payments_amount\\\""
         
@@ -1675,12 +1686,27 @@ execute_add_account_member() {
     fi
     
     # Make request to add member
+    echo_with_color $BLUE "  📋 Request payload: $json_payload"
     local http_response=$(curl -s -X POST "${AUTH_SERVICE_URL}/auth/groups/${group_id}/add-account-member" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer $jwt_token" \
         -d "$json_payload")
     
     echo_with_color $BLUE "  📡 Response: $http_response"
+    
+    # Check if the response is empty
+    if [[ -z "$http_response" || "$http_response" == "" ]]; then
+        echo_with_color $RED "    ❌ Add account member failed: Empty response from server"
+        echo_with_color $YELLOW "    💡 This may indicate the contract_id '${obligation_id}' cannot be resolved to an obligation_id yet."
+        echo_with_color $YELLOW "    💡 The obligation may still be processing. Wait for it to complete before adding account members."
+        return 1
+    fi
+    
+    # Check if it's a valid JSON response
+    if ! echo "$http_response" | jq . >/dev/null 2>&1; then
+        echo_with_color $RED "    ❌ Add account member failed: Invalid JSON response: $http_response"
+        return 1
+    fi
     
     # Check if successful
     local status=$(echo "$http_response" | jq -r '.status // empty')
@@ -1705,6 +1731,11 @@ execute_add_account_member() {
     else
         local error_message=$(echo "$http_response" | jq -r '.message // .error // "Unknown error"')
         echo_with_color $RED "    ❌ Add account member failed: $error_message"
+        echo_with_color $BLUE "      Full response: $http_response"
+        if [[ "$error_message" == *"Cannot resolve"* ]] || [[ "$error_message" == *"token_id"* ]]; then
+            echo_with_color $YELLOW "    💡 The contract_id '${obligation_id}' may not have a token_id yet."
+            echo_with_color $YELLOW "    💡 Wait for the obligation to complete processing before adding account members."
+        fi
         return 1
     fi
 }

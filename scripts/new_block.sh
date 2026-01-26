@@ -1,0 +1,2 @@
+# Mine blocks with time intervals (Hardhat-specific)
+curl -X POST http://localhost:8545 -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"hardhat_mine","params":["0x5", "0x3c"],"id":1}'

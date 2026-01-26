@@ -1,0 +1,87 @@
+commands:
+
+  # REDEMPTION INITIATION - COLLATERAL (IQEQ)
+  - name: create_redemption_swap_1
+    type: create_swap
+    user:
+      id: acacia@redbelly.network
+    parameters:
+      swap_id: "123456789123"
+      idempotency_key: swap-ergonomic-$(date +%s)
+      
+      initiator:
+        initial_payments:
+          denomination: aud-token-asset
+          amount: 5000000000000000000000
+          payments:
+            - id: swap-payment-1
+
+      counterparty:
+        id: Collateral Group
+        expected_payments: ## Digital Loan Collateral
+          denomination: wrbnt-token-asset
+          amount: 5000000000000000000000
+          payments:
+            - id: swap-payment-1
+        obligation_ids:
+          - loan_token_1
+
+      
+      deadline: 2025-12-20T00:00:00Z
+
+  # COMPLETE COLLATERAL BINDING - collateral (IQEQ)
+  - name: complete_redemption_swap_1
+    type: complete_swap
+    user: 
+      id: acacia@iqeq.com
+      group: Collateral Group
+    parameters:
+      swap_id: "123456789123"
+      idempotency_key: complete-credit-swap-ergonomic-$(date +%s)
+
+
+  # ACCEPT ORIGINATION DEPLOYMENT - collateral (IQEQ)
+  - name: collateral_accept_3
+    type: accept_all
+    user: 
+      id: acacia@iqeq.com
+      group: Collateral Group
+    parameters:
+      idempotency_key: accept-$(date +%s)
+      denomination: aud-token-asset
+
+  # ACCEPT ORIGINATION DEPLOYMENT - collateral (IQEQ)
+  - name: collateral_accept_4
+    type: accept_all
+    user: 
+      id: acacia@iqeq.com
+      group: Collateral Group
+    parameters:
+      idempotency_key: accept-$(date +%s)
+      denomination: wrbnt-token-asset
+
+
+
+  # REDEMPTION SEND - collateral (IQEQ)
+  - name: collateral_send_2
+    type: instant
+    user: 
+      id: acacia@iqeq.com
+      group: Collateral Group
+    parameters:
+      asset_id: aud-token-asset
+      amount: 5000000000000000000000
+      idempotency_key: instant-$(date +%s)
+      destination_id: Issuer Group
+
+  # ACCEPT ORIGINATION SEND - collateral (IQEQ)
+  - name: collateral_accept_3
+    type: accept
+    user: 
+      id: acacia@iqeq.com
+      group: Issuer Group
+    parameters:
+      idempotency_key: accept-$(date +%s)
+      payment_id: $collateral_send_2.payment_id
+
+  

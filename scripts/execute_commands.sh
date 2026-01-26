@@ -84,6 +84,7 @@ execute_command() {
     local data=$(yq eval -o json -I 0 ".commands[$command_index].parameters.data" "$COMMANDS_FILE" 2>/dev/null || echo "null")
     local initial_payments_amount=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.initial_payments.amount")
     local initial_payments_json=$(yq eval -o json -I 0 ".commands[$command_index].parameters.initial_payments.payments" "$COMMANDS_FILE" 2>/dev/null || echo "[]")
+    local create_obligation_contract_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.contract_id")
     
     # Parse accept_obligation specific parameters
     local contract_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.contract_id")
@@ -112,10 +113,42 @@ execute_command() {
     
     # Parse unified swap specific parameters (new format)
     local initiator_obligation_ids_json=$(yq eval -o json -I 0 ".commands[$command_index].parameters.initiator.obligation_ids" "$COMMANDS_FILE" 2>/dev/null || echo "[]")
-    local initiator_expected_payments_amount=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.initiator.expected_payments.amount")
-    local initiator_expected_payments_denomination=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.initiator.expected_payments.denomination")
-    local initiator_expected_payments_obligor=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.initiator.expected_payments.obligor")
-    local initiator_expected_payments_json=$(yq eval -o json -I 0 ".commands[$command_index].parameters.initiator.expected_payments.payments" "$COMMANDS_FILE" 2>/dev/null || echo "[]")
+    # Handle both expected_payments and initial_payments (initial_payments is an alias for expected_payments in initiator context)
+    # Try expected_payments first, then fallback to initial_payments
+    local initiator_expected_payments_amount=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.initiator.expected_payments.amount" 2>/dev/null)
+    if [[ -z "$initiator_expected_payments_amount" || "$initiator_expected_payments_amount" == "null" ]]; then
+        initiator_expected_payments_amount=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.initiator.initial_payments.amount" 2>/dev/null)
+    fi
+    
+    local initiator_expected_payments_denomination=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.initiator.expected_payments.denomination" 2>/dev/null)
+    if [[ -z "$initiator_expected_payments_denomination" || "$initiator_expected_payments_denomination" == "null" ]]; then
+        initiator_expected_payments_denomination=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.initiator.initial_payments.denomination" 2>/dev/null)
+    fi
+    
+    local initiator_expected_payments_obligor=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.initiator.expected_payments.obligor" 2>/dev/null)
+    if [[ -z "$initiator_expected_payments_obligor" || "$initiator_expected_payments_obligor" == "null" ]]; then
+        initiator_expected_payments_obligor=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.initiator.initial_payments.obligor" 2>/dev/null)
+    fi
+    
+    local initiator_expected_payments_json=$(yq eval -o json -I 0 ".commands[$command_index].parameters.initiator.expected_payments.payments" "$COMMANDS_FILE" 2>/dev/null)
+    if [[ -z "$initiator_expected_payments_json" || "$initiator_expected_payments_json" == "null" || "$initiator_expected_payments_json" == "[]" ]]; then
+        initiator_expected_payments_json=$(yq eval -o json -I 0 ".commands[$command_index].parameters.initiator.initial_payments.payments" "$COMMANDS_FILE" 2>/dev/null)
+        if [[ -z "$initiator_expected_payments_json" || "$initiator_expected_payments_json" == "null" ]]; then
+            initiator_expected_payments_json="[]"
+        fi
+    fi
+    
+    # Debug output for initial_payments parsing
+    echo_with_color $CYAN "  🔍 DEBUG: Parsed initiator payment values:"
+    echo_with_color $CYAN "    amount: '$initiator_expected_payments_amount'"
+    echo_with_color $CYAN "    denomination: '$initiator_expected_payments_denomination'"
+    echo_with_color $CYAN "    obligor: '$initiator_expected_payments_obligor'"
+    echo_with_color $CYAN "    payments_json: '$initiator_expected_payments_json'"
+    if [[ -n "$initiator_expected_payments_amount" && "$initiator_expected_payments_amount" != "null" ]] || [[ -n "$initiator_expected_payments_json" && "$initiator_expected_payments_json" != "[]" && "$initiator_expected_payments_json" != "null" ]]; then
+        echo_with_color $CYAN "  ✅ Found initiator payments (from initial_payments or expected_payments)"
+    else
+        echo_with_color $YELLOW "  ⚠️  No initiator payments found in YAML"
+    fi
     
     local counterparty_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.counterparty.id")
     local counterparty_obligation_ids_json=$(yq eval -o json -I 0 ".commands[$command_index].parameters.counterparty.obligation_ids" "$COMMANDS_FILE" 2>/dev/null || echo "[]")
@@ -153,6 +186,7 @@ execute_command() {
     expiry=$(substitute_variables "$expiry")
     data=$(substitute_variables "$data")
     initial_payments_amount=$(substitute_variables "$initial_payments_amount")
+    create_obligation_contract_id=$(substitute_variables "$create_obligation_contract_id")
     
     # Apply variable substitution to accept_obligation specific parameters
     contract_id=$(substitute_variables "$contract_id")
@@ -225,6 +259,7 @@ execute_command() {
     if [[ -n "$expiry" && "$expiry" != "null" ]]; then echo_with_color $BLUE "    expiry: $expiry"; fi
     if [[ -n "$data" && "$data" != "null" ]]; then echo_with_color $BLUE "    data: $data"; fi
     if [[ -n "$initial_payments_amount" ]]; then echo_with_color $BLUE "    initial_payments_amount: $initial_payments_amount"; fi
+    if [[ -n "$create_obligation_contract_id" && "$create_obligation_contract_id" != "null" ]]; then echo_with_color $BLUE "    contract_id: $create_obligation_contract_id"; fi
     
     # Display accept_obligation specific parameters
     if [[ -n "$contract_id" ]]; then echo_with_color $BLUE "    contract_id: $contract_id"; fi
@@ -293,7 +328,7 @@ execute_command() {
             execute_balance "$command_name" "$user_email" "$user_password" "$denomination" "$obligor" "$group_id" "$group_name"
             ;;
         "create_obligation")
-            execute_create_obligation_ergonomic "$command_name" "$user_email" "$user_password" "$counterpart" "$obligation_address" "$obligation_group_id" "$denomination" "$obligor" "$notional" "$expiry" "$data" "$initial_payments_amount" "$initial_payments_json" "$idempotency_key" "$group_name"
+            execute_create_obligation_ergonomic "$command_name" "$user_email" "$user_password" "$counterpart" "$obligation_address" "$obligation_group_id" "$denomination" "$obligor" "$notional" "$expiry" "$data" "$initial_payments_amount" "$initial_payments_json" "$idempotency_key" "$group_name" "$create_obligation_contract_id"
             ;;
         "accept_obligation")
             execute_accept_obligation "$command_name" "$user_email" "$user_password" "$contract_id" "$idempotency_key" "$group_name"

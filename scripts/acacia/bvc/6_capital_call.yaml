@@ -1,0 +1,22 @@
+commands:
+
+  # Investor uses the programmed rights in the investment token to transfer 5,000 AUD from the Issuer Group account to their own account
+  - name: investor_send_1
+    type: instant
+    user: 
+      id: acacia@beachhead.vc
+      group: Issuer Group
+    parameters:
+      asset_id: aud-token-asset
+      amount: 5000000000000000000000
+      idempotency_key: instant-$(date +%s)
+      destination_id: acacia@beachhead.vc
+
+  # Investor confirms receipt of the capital call payment
+  - name: investor_accept_1
+    type: accept
+    user: 
+      id: acacia@beachhead.vc
+    parameters:
+      idempotency_key: accept-$(date +%s)
+      payment_id: $investor_send_1.payment_id

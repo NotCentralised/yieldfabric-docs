@@ -98,27 +98,30 @@ login_user() {
 
 issue_and_swap_workflow() {
     local jwt_token=$1
-    local obligation_1_json=$2
-    local obligation_2_json=$3
-    local counterparty=$4
-    local payment_amount=$5
-    local payment_denomination=$6
-    local deadline=$7
+    local name=$2
+    local description=$3
+    local obligations_json=$4
+    local counterparty=$5
+    local payment_amount=$6
+    local payment_denomination=$7
+    local deadline=$8
 
     echo_with_color $CYAN "🏦 Starting issue and swap workflow..." >&2
 
     local request_body
     if [[ -n "$deadline" && "$deadline" != "null" ]]; then
         request_body=$(jq -n \
-            --argjson obligation_1 "$obligation_1_json" \
-            --argjson obligation_2 "$obligation_2_json" \
+            --arg name "$name" \
+            --arg description "$description" \
+            --argjson obligations "$obligations_json" \
             --arg counterparty "$counterparty" \
             --arg payment_amount "$payment_amount" \
             --arg payment_denomination "$payment_denomination" \
             --arg deadline "$deadline" \
             '{
-                obligation_1: $obligation_1,
-                obligation_2: $obligation_2,
+                name: $name,
+                description: $description,
+                obligations: $obligations,
                 counterparty: $counterparty,
                 payment_amount: $payment_amount,
                 payment_denomination: $payment_denomination,
@@ -126,14 +129,16 @@ issue_and_swap_workflow() {
             }')
     else
         request_body=$(jq -n \
-            --argjson obligation_1 "$obligation_1_json" \
-            --argjson obligation_2 "$obligation_2_json" \
+            --arg name "$name" \
+            --arg description "$description" \
+            --argjson obligations "$obligations_json" \
             --arg counterparty "$counterparty" \
             --arg payment_amount "$payment_amount" \
             --arg payment_denomination "$payment_denomination" \
             '{
-                obligation_1: $obligation_1,
-                obligation_2: $obligation_2,
+                name: $name,
+                description: $description,
+                obligations: $obligations,
                 counterparty: $counterparty,
                 payment_amount: $payment_amount,
                 payment_denomination: $payment_denomination
@@ -181,7 +186,8 @@ poll_workflow_status() {
 
     local attempt
     for ((attempt=1; attempt<=max_attempts; attempt++)); do
-        local url="${PAY_SERVICE_URL}/api/composed_contract/issue_swap_workflow/${workflow_id}"
+        # Use unified workflow status endpoint - works for all workflow types
+        local url="${PAY_SERVICE_URL}/api/workflows/${workflow_id}"
         echo_with_color $BLUE "  📡 Attempt ${attempt}/${max_attempts}: GET ${url}" >&2
 
         local response
@@ -195,8 +201,14 @@ poll_workflow_status() {
             
             local current_step
             current_step=$(echo "$response" | jq -r '.current_step // empty' 2>/dev/null)
+            
+            local workflow_type
+            workflow_type=$(echo "$response" | jq -r '.workflow_type // empty' 2>/dev/null)
 
             echo_with_color $BLUE "  🔎 Current workflow_status: ${workflow_status:-unknown}" >&2
+            if [[ -n "$workflow_type" && "$workflow_type" != "null" ]]; then
+                echo_with_color $CYAN "  📋 Workflow type: ${workflow_type}" >&2
+            fi
             if [[ -n "$current_step" && "$current_step" != "unknown" ]]; then
                 echo_with_color $CYAN "  📍 Current step: ${current_step}" >&2
             fi
@@ -220,34 +232,60 @@ main() {
     echo_with_color $CYAN "🚀 Starting Issue and Swap Composed Contract WorkFlow API Test"
     echo ""
 
+    # Parse command-line arguments for username and password
+    # Usage: ./issue_swap_workflow.sh [username] [password]
+    # If not provided, falls back to environment variables, then defaults
+    if [[ $# -ge 1 ]]; then
+        USER_EMAIL="$1"
+    elif [[ -n "${USER_EMAIL}" ]]; then
+        # Use environment variable if set
+        USER_EMAIL="${USER_EMAIL}"
+    else
+        # Default username
+        USER_EMAIL="issuer@yieldfabric.com"
+    fi
+
+    if [[ $# -ge 2 ]]; then
+        PASSWORD="$2"
+    elif [[ -n "${PASSWORD}" ]]; then
+        # Use environment variable if set
+        PASSWORD="${PASSWORD}"
+    else
+        # Default password
+        PASSWORD="issuer_password"
+    fi
+
     # Test parameters
-    USER_EMAIL="${USER_EMAIL:-issuer@yieldfabric.com}"
-    PASSWORD="${PASSWORD:-issuer_password}"
     DENOMINATION="${DENOMINATION:-aud-token-asset}"
     COUNTERPART="${COUNTERPART:-investor@yieldfabric.com}"
-    END_DATE="${END_DATE:-2025-12-31}"
+    END_DATE="${END_DATE:-2026-01-31}"
 
     # Obligation amounts
-    OBLIGATION_1_NOTIONAL="${OBLIGATION_1_NOTIONAL:-100}"
+    # Coupon amount per payment (each coupon payment will be this amount)
+    COUPON_AMOUNT="${COUPON_AMOUNT:-10000000000000000000000}"
     OBLIGATION_1_NAME="${OBLIGATION_1_NAME:-Annuity Stream}"
     OBLIGATION_1_DESCRIPTION="${OBLIGATION_1_DESCRIPTION:-Annuity Stream Obligation}"
     
-    OBLIGATION_2_NOTIONAL="${OBLIGATION_2_NOTIONAL:-50}"
+    OBLIGATION_2_NOTIONAL="${OBLIGATION_2_NOTIONAL:-5000000000000000000000}"
     OBLIGATION_2_NAME="${OBLIGATION_2_NAME:-Redemption}"
     OBLIGATION_2_DESCRIPTION="${OBLIGATION_2_DESCRIPTION:-Redemption Obligation}"
 
     # Payment expected from counterparty
-    PAYMENT_AMOUNT="${PAYMENT_AMOUNT:-125}"
+    PAYMENT_AMOUNT="${PAYMENT_AMOUNT:-12500000000000000000000}"
     PAYMENT_DENOMINATION="${PAYMENT_DENOMINATION:-$DENOMINATION}"
     DEADLINE="${DEADLINE:-${END_DATE}T23:59:59Z}"
 
+    # Composed contract details
+    COMPOSED_CONTRACT_NAME="${COMPOSED_CONTRACT_NAME:-Issue and Swap Composed Contract}"
+    COMPOSED_CONTRACT_DESCRIPTION="${COMPOSED_CONTRACT_DESCRIPTION:-A composed contract with two obligations and a swap}"
+
     # Coupon dates for obligation 1
     COUPON_DATES=(
-        "2025-12-01T00:00:00Z"
-        "2025-12-05T00:00:00Z"
-        "2025-12-10T00:00:00Z"
-        "2025-12-15T00:00:00Z"
-        "2025-12-20T00:00:00Z"
+        "2026-12-01T00:00:00Z"
+        "2026-12-05T00:00:00Z"
+        "2026-12-10T00:00:00Z"
+        "2026-12-15T00:00:00Z"
+        "2026-12-20T00:00:00Z"
     )
 
     # Build coupon payments array JSON using jq
@@ -257,6 +295,13 @@ main() {
     # Build Obligation 1 JSON (Annuity stream with multiple payments)
     # NOTE: counterpart = obligor = issuer so that issuer can auto-accept
     # The swap will transfer these obligations to the actual counterparty (investor)
+    # Calculate total notional using jq to handle large numbers correctly (coupon_amount * number_of_coupons)
+    local obligation_1_notional
+    obligation_1_notional=$(jq -n --arg coupon "$COUPON_AMOUNT" --arg count "${#COUPON_DATES[@]}" '($coupon | tonumber) * ($count | tonumber) | tostring')
+    
+    # Use OBLIGATION_1_NOTIONAL if explicitly set, otherwise use calculated value
+    OBLIGATION_1_NOTIONAL="${OBLIGATION_1_NOTIONAL:-$obligation_1_notional}"
+    
     local obligation_1_json
     obligation_1_json=$(jq -n \
         --arg counterpart "$USER_EMAIL" \
@@ -266,7 +311,7 @@ main() {
         --arg end_date "${END_DATE}T23:59:59Z" \
         --arg name "$OBLIGATION_1_NAME" \
         --arg description "$OBLIGATION_1_DESCRIPTION" \
-        --arg coupon_amount "$(( OBLIGATION_1_NOTIONAL / ${#COUPON_DATES[@]} ))" \
+        --arg coupon_amount "$COUPON_AMOUNT" \
         --argjson payments "$coupon_payments_json" \
         '{
             counterpart: $counterpart,
@@ -332,8 +377,13 @@ main() {
     echo_with_color $BLUE "  Denomination: ${DENOMINATION}"
     echo_with_color $BLUE "  End Date: ${END_DATE}"
     echo ""
+    echo_with_color $PURPLE "📦 Composed Contract:"
+    echo_with_color $BLUE "    Name: ${COMPOSED_CONTRACT_NAME}"
+    echo_with_color $BLUE "    Description: ${COMPOSED_CONTRACT_DESCRIPTION}"
+    echo ""
     echo_with_color $PURPLE "📄 Obligation 1 (${OBLIGATION_1_NAME}):"
-    echo_with_color $BLUE "    Notional: ${OBLIGATION_1_NOTIONAL}"
+    echo_with_color $BLUE "    Coupon Amount (per payment): ${COUPON_AMOUNT}"
+    echo_with_color $BLUE "    Total Notional: ${OBLIGATION_1_NOTIONAL}"
     echo_with_color $BLUE "    Payments: ${#COUPON_DATES[@]} coupon payments"
     echo ""
     echo_with_color $PURPLE "📄 Obligation 2 (${OBLIGATION_2_NAME}):"
@@ -383,11 +433,16 @@ main() {
     echo_with_color $CYAN "📤 Calling issue and swap workflow endpoint..."
     echo ""
 
+    # Combine obligations into an array
+    local obligations_json
+    obligations_json=$(jq -n --argjson ob1 "$obligation_1_json" --argjson ob2 "$obligation_2_json" '[$ob1, $ob2]')
+
     local start_response
     start_response=$(issue_and_swap_workflow \
         "$jwt_token" \
-        "$obligation_1_json" \
-        "$obligation_2_json" \
+        "$COMPOSED_CONTRACT_NAME" \
+        "$COMPOSED_CONTRACT_DESCRIPTION" \
+        "$obligations_json" \
         "$COUNTERPART" \
         "$PAYMENT_AMOUNT" \
         "$PAYMENT_DENOMINATION" \
@@ -451,14 +506,29 @@ main() {
         echo_with_color $GREEN "    ✅ Issue and swap workflow completed successfully!"
         echo ""
         echo_with_color $BLUE "  📋 Result Details:"
-        echo_with_color $BLUE "      Obligation 1 ID: $(echo "$final_response" | jq -r '.result.obligation_1_id // "N/A"')"
-        echo_with_color $BLUE "      Obligation 2 ID: $(echo "$final_response" | jq -r '.result.obligation_2_id // "N/A"')"
+        echo_with_color $BLUE "      Composed Contract ID: $(echo "$final_response" | jq -r '.result.composed_contract_id // "N/A"')"
+        
+        # Display obligation IDs from the array
+        local obligation_ids
+        obligation_ids=$(echo "$final_response" | jq -r '.result.obligation_ids // []' 2>/dev/null)
+        if [[ -n "$obligation_ids" && "$obligation_ids" != "[]" && "$obligation_ids" != "null" ]]; then
+            local obligation_count
+            obligation_count=$(echo "$obligation_ids" | jq 'length' 2>/dev/null || echo "0")
+            echo_with_color $BLUE "      Obligations ($obligation_count):"
+            echo "$obligation_ids" | jq -r '.[]' | while IFS= read -r obligation_id; do
+                echo_with_color $BLUE "        • $obligation_id"
+            done
+        else
+            echo_with_color $BLUE "      Obligations: N/A"
+        fi
+        
         echo_with_color $BLUE "      Swap ID: $(echo "$final_response" | jq -r '.result.swap_id // "N/A"')"
         echo_with_color $BLUE "      Swap Message ID: $(echo "$final_response" | jq -r '.result.swap_message_id // "N/A"')"
         echo ""
         echo_with_color $GREEN "🎉 Issue and swap workflow test completed successfully! ✨"
         echo ""
         echo_with_color $CYAN "📝 Summary:"
+        echo_with_color $BLUE "   • Created composed contract: ${COMPOSED_CONTRACT_NAME}"
         echo_with_color $BLUE "   • Created 2 obligations (${OBLIGATION_1_NAME} and ${OBLIGATION_2_NAME})"
         echo_with_color $BLUE "   • Accepted both obligations"
         echo_with_color $BLUE "   • Created swap: both obligations vs ${PAYMENT_AMOUNT} ${PAYMENT_DENOMINATION} from ${COUNTERPART}"
@@ -473,6 +543,25 @@ main() {
         return 1
     fi
 }
+
+# Show usage if help is requested
+if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+    echo "Usage: $0 [username] [password]"
+    echo ""
+    echo "Arguments:"
+    echo "  username    User email for authentication (default: issuer@yieldfabric.com)"
+    echo "  password    User password for authentication (default: issuer_password)"
+    echo ""
+    echo "Environment variables (used as fallback if arguments not provided):"
+    echo "  USER_EMAIL    User email for authentication"
+    echo "  PASSWORD     User password for authentication"
+    echo ""
+    echo "Examples:"
+    echo "  $0"
+    echo "  $0 user@example.com mypassword"
+    echo "  USER_EMAIL=user@example.com PASSWORD=mypassword $0"
+    exit 0
+fi
 
 main "$@"
 

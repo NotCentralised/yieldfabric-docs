@@ -163,8 +163,8 @@ EOF
 
 poll_workflow_status() {
     local workflow_id=$1
-    local max_attempts=${2:-60}
-    local delay_seconds=${3:-1}
+    local max_attempts=${2:-120}
+    local delay_seconds=${3:-5}
 
     echo_with_color $CYAN "🔄 Polling workflow status for ID: ${workflow_id}" >&2
 
@@ -214,19 +214,50 @@ main() {
     PASSWORD="${PASSWORD:-issuer_password}"
     DENOMINATION="${DENOMINATION:-aud-token-asset}"
     COUNTERPART="${COUNTERPART:-investor@yieldfabric.com}"
-    START_DATE="${START_DATE:-2025-12-01}"
-    END_DATE="${END_DATE:-2025-12-10}"
-    COUPON_AMOUNT="${COUPON_AMOUNT:-5}"
-    INITIAL_AMOUNT="${INITIAL_AMOUNT:-100}"
-    REDEMPTION_AMOUNT="${REDEMPTION_AMOUNT:-100}"
+    # Calculate dates relative to current UTC time
+    # Using epoch seconds for portability across different date implementations
+    NOW_EPOCH=$(date -u +%s)
+    
+    # START_DATE = now UTC + 1 minute
+    START_DATE="${START_DATE:-$(date -u -r $((NOW_EPOCH + 60)) +"%Y-%m-%dT%H:%M:%SZ")}"
+    
+    # END_DATE = now UTC + 5 minutes
+    END_DATE="${END_DATE:-$(date -u -r $((NOW_EPOCH + 300)) +"%Y-%m-%dT%H:%M:%SZ")}"
+    
+    # START_DATE="${START_DATE:-2025-11-30T13:00:00.000Z}"
+    # END_DATE="${END_DATE:-2025-12-19T12:59:59.000Z}"
+    COUPON_AMOUNT="${COUPON_AMOUNT:-2000000000000000000}"
+    INITIAL_AMOUNT="${INITIAL_AMOUNT:-10000000000000000000000}"
+    REDEMPTION_AMOUNT="${REDEMPTION_AMOUNT:-10000000000000000000000}"
+    # COUPON_AMOUNT="${COUPON_AMOUNT:-2 000000000000000000}"
+    # INITIAL_AMOUNT="${INITIAL_AMOUNT:-10000 000000000000000000}"
+    # REDEMPTION_AMOUNT="${REDEMPTION_AMOUNT:-10000 000000000000000000}"
 
-    COUPON_DATES=(
-        "2025-12-01T00:00:00Z"
-        "2025-12-02T00:00:00Z"
-        "2025-12-03T00:00:00Z"
-        "2025-12-04T00:00:00Z"
-        "2025-12-05T00:00:00Z"
-    )
+    # COUPON_DATES = (now UTC + 1min 30sec, 2min, 3min, 4min, 5min)
+    if [ -z "${COUPON_DATES[*]}" ]; then
+        COUPON_DATES=(
+            "$(date -u -r $((NOW_EPOCH + 90)) +"%Y-%m-%dT%H:%M:%SZ")"   # +1min 30sec
+            "$(date -u -r $((NOW_EPOCH + 120)) +"%Y-%m-%dT%H:%M:%SZ")"  # +2min
+            "$(date -u -r $((NOW_EPOCH + 180)) +"%Y-%m-%dT%H:%M:%SZ")"  # +3min
+            "$(date -u -r $((NOW_EPOCH + 240)) +"%Y-%m-%dT%H:%M:%SZ")"  # +4min
+            "$(date -u -r $((NOW_EPOCH + 300)) +"%Y-%m-%dT%H:%M:%SZ")"  # +5min
+        )
+    fi
+    # Old commented coupon dates:
+    # "2025-12-02T00:00:00+11:00"
+    # "2025-12-03T00:00:00+11:00"
+    # "2025-12-04T00:00:00+11:00"
+    # "2025-12-05T00:00:00+11:00"
+    # "2025-12-08T00:00:00+11:00"
+    # "2025-12-09T00:00:00+11:00"
+    # "2025-12-10T00:00:00+11:00"
+    # "2025-12-11T00:00:00+11:00"
+    # "2025-12-12T00:00:00+11:00"
+    # "2025-12-15T00:00:00+11:00"
+    # "2025-12-16T00:00:00+11:00"
+    # "2025-12-17T00:00:00+11:00"
+    # "2025-12-18T00:00:00+11:00"
+    # "2025-12-19T23:59:59+11:00"
 
     echo_with_color $BLUE "📋 Configuration:"
     echo_with_color $BLUE "  API Base URL: ${PAY_SERVICE_URL}"

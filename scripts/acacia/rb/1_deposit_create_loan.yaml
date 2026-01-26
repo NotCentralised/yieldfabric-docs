@@ -1,0 +1,73 @@
+commands:
+
+  # PAYER FUNDING
+  - name: payer_deposit
+    type: deposit
+    user: 
+      id: acacia@redbelly.network
+    parameters:
+      asset_id: wrbnt-token-asset
+      amount: 10000000000000000000000
+      idempotency_key: deposit-$(date +%s)
+
+  # CREATE LOAN
+  - name: loan_token
+    type: create_obligation
+    user:
+      id: acacia@redbelly.network
+    parameters:
+      idempotency_key: create_loan_1-ergonomic-$(date +%s)
+      counterpart: acacia@redbelly.network
+      denomination: aud-token-asset
+      obligor: acacia@redbelly.network
+      expiry: 2025-12-20T00:00:00Z
+      contract_id: loan_token_1
+      data: 
+        name: "Loan 1"
+        description: "Loan 1 Description"
+      initial_payments:
+        amount: 5000000000000000000000
+        payments:
+          - id: payment-1
+            payee:
+              # unlock: 2025-12-20T00:00:00Z
+              unlock: 2025-12-20T00:00:00Z
+            payer:
+              # unlock: 2025-12-20T00:00:00Z
+              unlock: 2025-12-20T00:00:00Z
+
+          
+  
+  - name: payer_accept_loan_token
+    type: accept_obligation
+    user: 
+      id: acacia@redbelly.network
+    parameters:
+      idempotency_key: accept_obligation-ergonomic-$(date +%s)
+      contract_id: loan_token_1
+
+  # ORIGINATION DEPLOYMENT INITIATION
+  - name: create_origination_swap_1
+    type: create_swap
+    user:
+      id: acacia@redbelly.network
+    parameters:
+      swap_id: "12345678912"
+      idempotency_key: swap-ergonomic-$(date +%s)
+      initiator:
+        initial_payments: ## Digital Loan Collateral
+          denomination: wrbnt-token-asset
+          amount: 5000000000000000000000
+          payments:
+            - id: swap-payment-1
+        obligation_ids:
+          - loan_token_1
+
+      counterparty:
+        id: Issuer Group
+        expected_payments:
+          denomination: aud-token-asset
+          amount: 5000000000000000000000
+          payments:
+            - id: swap-payment-1
+      deadline: 2025-12-20T00:00:00Z

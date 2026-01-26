@@ -184,7 +184,7 @@ main() {
     # Test parameters (aligned with settle_annuity.sh)
     USER_EMAIL="${USER_EMAIL:-investor@yieldfabric.com}"
     PASSWORD="${PASSWORD:-investor_password}"
-    ANNUITY_ID="${ANNUITY_ID:-1763363848527}"
+    ANNUITY_ID="${ANNUITY_ID:-1765072538019}"
     ACCEPT_PAYMENTS="${ACCEPT_PAYMENTS:-true}"
 
     echo_with_color $PURPLE "📋 Test Configuration:"

@@ -1,0 +1,54 @@
+commands:
+  
+  # - name: issuer_balance_1
+  #   type: balance
+  #   user: 
+  #     id: investor@yieldfabric.com
+  #     password: investor_password
+  #   parameters:
+  #     denomination: audm-token-asset
+
+  # - name: admin2_balance_4
+  #   type: balance
+  #   user: 
+  #     id: investor@yieldfabric.com
+  #     password: investor_password
+  #   parameters:
+  #     denomination: audm-token-asset
+  #     obligor: issuer@yieldfabric.com
+
+  
+  
+  # - name: admin2_obligations
+  #   type: obligations
+  #   user: 
+  #     id: investor@yieldfabric.com
+  #     password: investor_password
+  #   parameters:
+  #     denomination: audm-token-asset
+
+  - name: counterpart_accept_1
+    type: accept
+    user: 
+      id: issuer@yieldfabric.com
+      password: issuer_password
+      group: Collateral Group
+
+      # id: originator@yieldfabric.com
+      # password: originator_password
+    parameters:
+      # idempotency_key: accept-2
+      idempotency_key: accept-$(date +%s)
+      payment_id: "PAY-INITIAL-CONTRACT-OBLIGATION-1765891117122-0"
+
+  # - name: issuer_accept_1
+  #   type: accept_all
+  #   user: 
+  #     id: issuer@yieldfabric.com
+  #     password: issuer_password
+  #     group: Issuer Group
+  #   parameters:
+  #     idempotency_key: accept-$(date +%s)
+  #     denomination: aud-token-asset
+  #     obligor: payer@yieldfabric.com
+

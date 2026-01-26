@@ -1,0 +1,638 @@
+commands:
+
+  # Participants:
+  #
+  # - BVC (acacia@beachhead.vc): Investor providing capital
+  # - Perpetual (acacia@perpetual.com.au): Issuer managing the structured product
+  # - IQEQ (acacia@iqeq.com): Collateral manager holding credit tokens and loans
+  # - Redbelly (acacia@redbelly.network): Originator/payer creating loan obligations
+
+  # Group Accounts:
+  #
+  # - Issuer Group: Managed by Perpetual, holds cash-like assets (AUD) and collateral assets (CBDC)
+  # - Collateral Group: Managed by IQEQ, holds credit tokens and loan obligations
+
+  # Tokens:
+  #
+  # - loan_token_1: Obligation created by Redbelly to pay 2.5 AUD (in two installments) to the owner of the NFT
+  # - investment_token_1: NFT granting beneficial rights to all Issuer Group assets and distributions
+  # - credit_token_1: NFT providing a credit line, allowing transfers from the Issuer Group account
+  # - collateral_token_1: NFT granting beneficial rights to all Collateral Group assets and distributions
+
+  # Flow:
+  #
+  # PHASE 1: INDEPENDENT SETUP FLOWS
+  #
+  # 1. Investor Funding (BVC):
+  #    a. deposit: Investor funds their account with 10,000 AUD
+  #
+  # 2. Issuance (Perpetual):
+  #    a. create_obligation (investment_token_1): Issues NFT granting beneficial rights to Issuer Group assets
+  #    b. create_obligation (credit_token_1): Issues NFT providing credit line from Issuer Group
+  #    c. add_account_member (credit_token_1): Grants Issuer Group membership tied to credit facility
+  #    d. add_account_member (investment_token_1): Grants Issuer Group membership tied to investment rights
+  #
+  # 3. Collateral Setup (IQEQ):
+  #    a. create_obligation (collateral_token_1): Issues NFT granting beneficial rights to Collateral Group assets
+  #    b. add_account_member (collateral_token_1): Grants Collateral Group membership tied to collateral rights
+  #
+  # 4. Loan Origination (Redbelly):
+  #    a. deposit: Payer funds account with 1,000,000 CBDC
+  #    b. create_obligation (loan_token_1): Creates loan obligation to pay 2.5 AUD in two installments
+  #    c. accept_obligation: Payer accepts the loan token
+  #
+  # PHASE 2: DEPENDENT OPERATIONS
+  #
+  # 5. Investment Swap:
+  #    a. create_swap: Issuer proposes investment swap offering investment_token_1 for 10,000 AUD
+  #    b. complete_swap: Investor accepts and executes the investment swap
+  #    c. accept_all: Issuer clears the resulting AUD distributions
+  #
+  # 6. Collateral Binding:
+  #    a. create_swap: Issuer proposes collateral swap exchanging credit_token_1 for collateral_token_1
+  #    b. complete_swap: Collateral group accepts and binds the collateral obligations
+  #
+  # 7. Capital Deployment (Origination):
+  #    a. create_swap: Originator proposes origination swap offering loan_token_1 + 500,000 CBDC for 5 AUD
+  #    b. composed_operation: Collateral group completes swap and transfers loan_token_1 to Collateral Group
+  #    c. accept_all: All parties accept resulting distributions (AUD and CBDC)
+  #    d. instant + accept: Collateral group transfers CBDC internally within groups
+  #
+  # 8. Investor Capital Call:
+  #    a. instant: Investor sends additional 5 AUD to their own account under Issuer Group context
+  #    b. accept: Investor confirms receipt of the capital call payment
+  #
+  # PHASE 3: REDEMPTION FLOW
+  #
+  # 9. Redemption:
+  #    a. create_swap: Payer proposes redemption swap offering 5 AUD for loan_token_1 + 500,000 CBDC
+  #    b. complete_swap: Collateral group accepts redemption and returns loan obligation
+  #    c. accept_all: All parties accept resulting distributions
+  #    d. instant + accept: Collateral group transfers AUD to Issuer Group
+  #
+  # 10. Additional Capital Call:
+  #     a. instant: Investor sends another 5 AUD capital call
+  #     b. accept: Investor confirms receipt
+
+
+  ##### BVC INDEPENDENT FLOW #####
+  # INVESTOR FUNDING - investor
+  - name: investor_deposit
+    type: deposit
+    user: 
+      id: acacia@beachhead.vc
+      password: investor_password
+    parameters:
+      asset_id: aud-token-asset
+      amount: 10000000000000000000000
+      idempotency_key: deposit-$(date +%s)
+
+  
+  ##### PERPETUAL INDEPENDENT FLOW #####
+  # ISSUANCE
+  - name: investment_token
+    type: create_obligation
+    user: 
+      id: acacia@perpetual.com.au
+      password: issuer_password
+      group: Issuer Group
+    parameters:
+      idempotency_key: create_investment_token-ergonomic-$(date +%s)
+      counterpart: Issuer Group
+      expiry: 2025-12-20T00:00:00Z
+      contract_id: investment_token_1
+      data: 
+        name: "Structured Product"
+        description: "Structured Product Description"
+
+  # CREDIT FACILITY
+  - name: credit_token
+    type: create_obligation
+    user: 
+      id: acacia@perpetual.com.au
+      password: issuer_password
+      group: Issuer Group
+    parameters:
+      idempotency_key: create_credit_token-ergonomic-$(date +%s)
+      counterpart: Issuer Group
+      expiry: 2025-12-20T00:00:00Z
+      contract_id: credit_token_1
+      data: 
+        name: "Credit Facility"
+        description: "Credit Facility Description"
+
+  # ADD ISSUER GROUP MEMBER
+  - name: add_issuer_group_member_1
+    type: add_account_member
+    user: 
+      id: acacia@perpetual.com.au
+      password: issuer_password
+      group: Issuer Group
+    parameters:
+      idempotency_key: add-issuer-group-member-ergonomic-$(date +%s)
+      # obligation_id: $credit_token.contract_id
+      obligation_id: credit_token_1
+
+  - name: add_issuer_group_member_2
+    type: add_account_member
+    user: 
+      id: acacia@perpetual.com.au
+      password: issuer_password
+      group: Issuer Group
+    parameters:
+      idempotency_key: add-issuer-group-member-ergonomic-$(date +%s)
+      # obligation_id: $investment_token.contract_id
+      obligation_id: investment_token_1
+
+  # CREATE INVESTMENT SWAP
+  - name: create_investment_swap_1
+    type: create_swap
+    user: 
+      id: acacia@perpetual.com.au
+      password: issuer_password
+      group: Issuer Group
+    parameters:
+      swap_id: "123456789"
+      idempotency_key: swap-ergonomic-$(date +%s)
+      initiator:
+        obligation_ids:
+          # - $investment_token.contract_id
+          - investment_token_1
+
+      counterparty:
+        id: acacia@beachhead.vc
+        expected_payments:
+          denomination: aud-token-asset
+          amount: 10000000000000000000000
+          payments:
+            - id: swap-payment-1
+      deadline: 2025-12-20T00:00:00Z
+  
+  
+  ##### IQEQ INDEPENDENT FLOW #####
+  # COLLATERAL TOKEN
+  - name: collateral_token
+    type: create_obligation
+    user: 
+      id: acacia@iqeq.com
+      password: collateral_password
+      group: Collateral Group
+    parameters:
+      idempotency_key: create_collateral_token-ergonomic-$(date +%s)
+      counterpart: Collateral Group
+      expiry: 2025-12-20T00:00:00Z
+      contract_id: collateral_token_1
+      data: 
+        name: "Collateral Token"
+        description: "Collateral Token Description"
+
+  # ADD COLLATERAL GROUP MEMBER
+  - name: add_collateral_group_member_1
+    type: add_account_member
+    user: 
+      id: acacia@iqeq.com
+      password: collateral_password
+      group: Collateral Group
+    parameters:
+      idempotency_key: add-issuer-group-member-ergonomic-$(date +%s)
+      # obligation_id: $collateral_token.contract_id
+      obligation_id: collateral_token_1
+
+  
+  
+  ##### REDBELLY INDEPENDENT FLOW #####
+  # PAYER FUNDING
+  - name: payer_deposit
+    type: deposit
+    user: 
+      id: acacia@redbelly.network
+      password: payer_password
+    parameters:
+      asset_id: wrbnt-token-asset
+      amount: 10000000000000000000000
+      idempotency_key: deposit-$(date +%s)
+
+  # CREATE LOAN
+  - name: loan_token
+    type: create_obligation
+    user:
+      id: acacia@redbelly.network
+      password: payer_password
+    parameters:
+      idempotency_key: create_loan_1-ergonomic-$(date +%s)
+      counterpart: acacia@redbelly.network
+      denomination: aud-token-asset
+      obligor: acacia@redbelly.network
+      expiry: 2025-12-20T00:00:00Z
+      contract_id: loan_token_1
+      data: 
+        name: "Loan 1"
+        description: "Loan 1 Description"
+      initial_payments:
+        amount: 2500000000000000000000
+        payments:
+          - id: payment-1
+            payee:
+              unlock: 2025-12-20T00:00:00Z
+            payer:
+              unlock: 2025-12-20T00:00:00Z
+          - id: payment-2
+            payee:
+              unlock: 2025-12-21T00:00:00Z
+            payer:
+              unlock: 2025-12-21T00:00:00Z
+
+          
+  
+  - name: payer_accept_loan_token
+    type: accept_obligation
+    user: 
+      id: acacia@redbelly.network
+      password: payer_password
+    parameters:
+      idempotency_key: accept_obligation-ergonomic-$(date +%s)
+      # contract_id: $loan_token.contract_id
+      contract_id: loan_token_1
+
+  # ORIGINATION DEPLOYMENT INITIATION
+  - name: create_origination_swap_1
+    type: create_swap
+    user:
+      id: acacia@redbelly.network
+      password: payer_password
+    parameters:
+      swap_id: "12345678912"
+      idempotency_key: swap-ergonomic-$(date +%s)
+      initiator:
+        initial_payments: ## Digital Loan Collateral
+          denomination: wrbnt-token-asset
+          amount: 5000000000000000000000
+          payments:
+            - id: swap-payment-1
+        obligation_ids:
+          # - $loan_token.contract_id
+          - loan_token_1
+
+      counterparty:
+        id: Issuer Group
+        expected_payments:
+          denomination: aud-token-asset
+          amount: 5000000000000000000000
+          payments:
+            - id: swap-payment-1
+      deadline: 2025-12-20T00:00:00Z
+
+
+  
+  
+  ##### DEPENDENT INDEPENDENT FLOW #####
+
+  # COMPLETE INVESTMENT SWAP - investor (BVC)
+  - name: complete_investment_swap_1
+    type: complete_swap
+    user: 
+      id: acacia@beachhead.vc
+      password: investor_password
+    parameters:
+      swap_id: "123456789"
+      idempotency_key: complete-investment-swap-ergonomic-$(date +%s)
+
+  # ACCEPT INVESTMENT SWAP - issuer (Perpetual)
+  - name: issuer_accept_1
+    type: accept_all
+    user: 
+      id: acacia@perpetual.com.au
+      password: issuer_password
+      group: Issuer Group
+    parameters:
+      idempotency_key: accept-$(date +%s)
+      denomination: aud-token-asset
+  
+
+  # COLLATERAL BINDING - issuer (Perpetual)
+  - name: create_credit_swap_1
+    type: create_swap
+    user: 
+      id: acacia@perpetual.com.au
+      password: issuer_password
+      group: Issuer Group
+    parameters:
+      swap_id: "1234567891"
+      idempotency_key: create-credit-swap-ergonomic-$(date +%s)
+      initiator:
+        obligation_ids:
+          # - $credit_token.contract_id
+          - credit_token_1
+
+      counterparty:
+        id: Collateral Group
+        obligation_ids:
+          # - $collateral_token.contract_id
+          - collateral_token_1
+      deadline: 2025-12-20T00:00:00Z
+
+  # COMPLETE COLLATERAL BINDING - collateral (IQEQ)
+  - name: complete_credit_swap_1
+    type: complete_swap
+    user: 
+      id: acacia@iqeq.com
+      password: collateral_password
+      group: Collateral Group
+    parameters:
+      swap_id: "1234567891"
+      idempotency_key: complete-credit-swap-ergonomic-$(date +%s)
+      
+  # COMPLETE ORIGINATION DEPLOYMENT - collateral (IQEQ)
+  - name: complete_origination_swap_1
+    type: composed_operation
+    user: 
+      id: acacia@iqeq.com
+      password: collateral_password
+      group: Issuer Group
+    parameters:
+      idempotency_key: complete-origination-swap-ergonomic-$(date +%s)
+      operations:
+        # Operation 1: Complete the capital swap
+        - operation_type: complete_swap
+          operation_data:
+            swap_id: "12345678912"
+        # Operation 2: Transfer the obligation received from swap
+        - operation_type: transfer_obligation
+          operation_data:
+            # contract_id: $loan_token.contract_id
+            contract_id: loan_token_1
+            destination_id: Collateral Group
+
+  # ACCEPT ORIGINATION SWAP - collateral (IQEQ)
+  - name: collateral_accept_2
+    type: accept_all
+    user: 
+      id: acacia@iqeq.com
+      password: collateral_password
+      group: Issuer Group
+    parameters:
+      idempotency_key: accept-$(date +%s)
+      denomination: wrbnt-token-asset
+
+
+  # ORIGINATION SEND - collateral (IQEQ)
+  - name: collateral_send_1
+    type: instant
+    user: 
+      id: acacia@iqeq.com
+      password: collateral_password
+      group: Issuer Group
+    parameters:
+      asset_id: wrbnt-token-asset
+      amount: 5000000000000000000000
+      idempotency_key: instant-$(date +%s)
+      destination_id: Collateral Group
+
+  # ACCEPT ORIGINATION SEND - collateral (IQEQ)
+  - name: collateral_accept_1
+    type: accept
+    user: 
+      id: acacia@iqeq.com
+      password: collateral_password
+      group: Collateral Group
+    parameters:
+      idempotency_key: accept-$(date +%s)
+      payment_id: $collateral_send_1.payment_id
+
+  
+
+
+
+  # ACCEPT ORIGINATION DEPLOYMENT - payer (Redbelly)
+  - name: payer_accept_1
+    type: accept_all
+    user: 
+      id: acacia@redbelly.network
+      password: payer_password
+    parameters:
+      idempotency_key: accept-$(date +%s)
+      denomination: aud-token-asset
+
+  # ACCEPT ORIGINATION DEPLOYMENT - payer (Redbelly)
+  - name: payer_accept_2
+    type: accept_all
+    user: 
+      id: acacia@redbelly.network
+      password: payer_password
+    parameters:
+      idempotency_key: accept-$(date +%s)
+      denomination: wrbnt-token-asset
+
+  # ACCEPT ORIGINATION DEPLOYMENT - issuer (Perpetual)
+  - name: issuer_accept_3
+    type: accept_all
+    user: 
+      id: acacia@perpetual.com.au
+      password: issuer_password
+      group: Issuer Group
+    parameters:
+      idempotency_key: accept-$(date +%s)
+      denomination: aud-token-asset
+
+  # ACCEPT ORIGINATION DEPLOYMENT - issuer (Perpetual)
+  - name: issuer_accept_4
+    type: accept_all
+    user: 
+      id: acacia@perpetual.com.au
+      password: issuer_password
+      group: Issuer Group
+    parameters:
+      idempotency_key: accept-$(date +%s)
+      denomination: wrbnt-token-asset
+
+  # ACCEPT ORIGINATION DEPLOYMENT - collateral (IQEQ)
+  - name: collateral_accept_1
+    type: accept_all
+    user: 
+      id: acacia@iqeq.com
+      password: collateral_password
+      group: Collateral Group
+    parameters:
+      idempotency_key: accept-$(date +%s)
+      denomination: aud-token-asset
+
+  # ACCEPT ORIGINATION DEPLOYMENT - collateral (IQEQ)
+  - name: collateral_accept_2
+    type: accept_all
+    user: 
+      id: acacia@iqeq.com
+      password: collateral_password
+      group: Collateral Group
+    parameters:
+      idempotency_key: accept-$(date +%s)
+      denomination: wrbnt-token-asset
+
+
+
+
+  # INVESTOR CAPITAL CALL - investor (BVC)
+  - name: investor_send_1
+    type: instant
+    user: 
+      id: acacia@beachhead.vc
+      password: investor_password
+      group: Issuer Group
+    parameters:
+      asset_id: aud-token-asset
+      amount: 5000000000000000000000
+      idempotency_key: instant-$(date +%s)
+      destination_id: acacia@beachhead.vc
+
+  # ACCEPT INVESTOR CAPITAL CALL - investor (BVC)
+  - name: investor_accept_1
+    type: accept
+    user: 
+      id: acacia@beachhead.vc
+      password: investor_password
+    parameters:
+      idempotency_key: accept-$(date +%s)
+      payment_id: $investor_send_1.payment_id
+
+  
+
+  # REDEMPTION INITIATION - COLLATERAL (IQEQ)
+  - name: create_redemption_swap_1
+    type: create_swap
+    user:
+      id: acacia@redbelly.network
+      password: payer_password
+    parameters:
+      swap_id: "123456789123"
+      idempotency_key: swap-ergonomic-$(date +%s)
+      
+      initiator:
+        initial_payments:
+          denomination: aud-token-asset
+          amount: 5000000000000000000000
+          payments:
+            - id: swap-payment-1
+
+      counterparty:
+        # id: acacia@redbelly.network
+        id: Collateral Group
+        expected_payments: ## Digital Loan Collateral
+          denomination: wrbnt-token-asset
+          amount: 5000000000000000000000
+          payments:
+            - id: swap-payment-1
+        obligation_ids:
+          # - $loan_token.contract_id
+          - loan_token_1
+
+      
+      deadline: 2025-12-20T00:00:00Z
+
+  # COMPLETE COLLATERAL BINDING - collateral (IQEQ)
+  - name: complete_redemption_swap_1
+    type: complete_swap
+    user: 
+      # id: acacia@redbelly.network
+      # password: payer_password
+      id: acacia@iqeq.com
+      password: collateral_password
+      group: Collateral Group
+    parameters:
+      swap_id: "123456789123"
+      idempotency_key: complete-credit-swap-ergonomic-$(date +%s)
+
+
+
+  # ACCEPT ORIGINATION DEPLOYMENT - payer (Redbelly)
+  - name: payer_accept_3
+    type: accept_all
+    user: 
+      id: acacia@redbelly.network
+      password: payer_password
+    parameters:
+      idempotency_key: accept-$(date +%s)
+      denomination: aud-token-asset
+
+  # ACCEPT ORIGINATION DEPLOYMENT - payer (Redbelly)
+  - name: payer_accept_4
+    type: accept_all
+    user: 
+      id: acacia@redbelly.network
+      password: payer_password
+    parameters:
+      idempotency_key: accept-$(date +%s)
+      denomination: wrbnt-token-asset
+
+  # ACCEPT ORIGINATION DEPLOYMENT - collateral (IQEQ)
+  - name: collateral_accept_3
+    type: accept_all
+    user: 
+      id: acacia@iqeq.com
+      password: collateral_password
+      group: Collateral Group
+    parameters:
+      idempotency_key: accept-$(date +%s)
+      denomination: aud-token-asset
+
+  # ACCEPT ORIGINATION DEPLOYMENT - collateral (IQEQ)
+  - name: collateral_accept_4
+    type: accept_all
+    user: 
+      id: acacia@iqeq.com
+      password: collateral_password
+      group: Collateral Group
+    parameters:
+      idempotency_key: accept-$(date +%s)
+      denomination: wrbnt-token-asset
+
+
+
+  # REDEMPTION SEND - collateral (IQEQ)
+  - name: collateral_send_2
+    type: instant
+    user: 
+      id: acacia@iqeq.com
+      password: collateral_password
+      group: Collateral Group
+    parameters:
+      asset_id: aud-token-asset
+      amount: 5000000000000000000000
+      idempotency_key: instant-$(date +%s)
+      destination_id: Issuer Group
+
+  # ACCEPT ORIGINATION SEND - collateral (IQEQ)
+  - name: collateral_accept_3
+    type: accept
+    user: 
+      id: acacia@iqeq.com
+      password: collateral_password
+      group: Issuer Group
+    parameters:
+      idempotency_key: accept-$(date +%s)
+      payment_id: $collateral_send_2.payment_id
+
+  
+
+  # INVESTOR CAPITAL CALL - investor (BVC)
+  - name: investor_send_2
+    type: instant
+    user: 
+      id: acacia@beachhead.vc
+      password: investor_password
+      group: Issuer Group
+    parameters:
+      asset_id: aud-token-asset
+      amount: 5000000000000000000000
+      idempotency_key: instant-$(date +%s)
+      destination_id: acacia@beachhead.vc
+
+  # ACCEPT INVESTOR CAPITAL CALL - investor (BVC)
+  - name: investor_accept_2
+    type: accept
+    user: 
+      id: acacia@beachhead.vc
+      password: investor_password
+    parameters:
+      idempotency_key: accept-$(date +%s)
+      payment_id: $investor_send_2.payment_id
+
+  

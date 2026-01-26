@@ -636,7 +636,7 @@ create_asset() {
     echo_with_color $BLUE "  💎 $name ($asset_id)"
     
     # Create asset using GraphQL API with input object
-    local create_asset_query="{\"query\": \"mutation { assetFlow { createAsset(input: { name: \\\"$name\\\", description: \\\"$description\\\", assetType: \\\"$asset_type\\\", currency: \\\"$currency\\\", tokenId: \\\"$token_id\\\" }) { success message asset { id name description assetType currency tokenId obligationAssetId obligorId createdAt deleted transactionId } transactionId signature timestamp } } }\"}"
+    local create_asset_query="{\"query\": \"mutation { assetFlow { createAsset(input: { name: \\\"$name\\\", description: \\\"$description\\\", assetType: \\\"$asset_type\\\", currency: \\\"$currency\\\", tokenId: \\\"$token_id\\\" }) { success message asset { id name description assetType currency tokenId obligorId createdAt deleted transactionId } transactionId signature timestamp } } }\"}"
     
     local response=$(curl -s -X POST "${PAY_SERVICE_URL}/graphql" \
         -H "Content-Type: application/json" \

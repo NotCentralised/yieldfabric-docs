@@ -1,0 +1,66 @@
+commands:
+
+  # Complete the collateral binding swap
+  - name: complete_credit_swap_1
+    type: complete_swap
+    user: 
+      id: acacia@iqeq.com
+      group: Collateral Group
+    parameters:
+      swap_id: "1234567891"
+      idempotency_key: complete-credit-swap-ergonomic-$(date +%s)
+      
+  # Complete the origination swap
+  - name: complete_origination_swap_1
+    type: composed_operation
+    user: 
+      id: acacia@iqeq.com
+      group: Issuer Group
+    parameters:
+      idempotency_key: complete-origination-swap-ergonomic-$(date +%s)
+      operations:
+        # Operation 1: Complete the capital swap
+        - operation_type: complete_swap
+          operation_data:
+            swap_id: "12345678912"
+        # Operation 2: Transfer the obligation received from swap
+        - operation_type: transfer_obligation
+          operation_data:
+            contract_id: loan_token_1
+            destination_id: Collateral Group
+
+  # Accept the origination swap
+  - name: collateral_accept_2
+    type: accept_all
+    user: 
+      id: acacia@iqeq.com
+      group: Issuer Group
+    parameters:
+      idempotency_key: accept-$(date +%s)
+      denomination: wrbnt-token-asset
+
+
+  # Send Collateral to Collateral Group
+  - name: collateral_send_1
+    type: instant
+    user: 
+      id: acacia@iqeq.com
+      group: Issuer Group
+    parameters:
+      asset_id: wrbnt-token-asset
+      amount: 5000000000000000000000
+      idempotency_key: instant-$(date +%s)
+      destination_id: Collateral Group
+
+  # Accept the collateral
+  - name: collateral_accept_1
+    type: accept
+    user: 
+      id: acacia@iqeq.com
+      group: Collateral Group
+    parameters:
+      idempotency_key: accept-$(date +%s)
+      payment_id: $collateral_send_1.payment_id
+
+  
+

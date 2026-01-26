@@ -1,0 +1,14 @@
+commands:
+
+  # Investor completes the investment swap by accepting the investment token
+  # Investor confirmation of the investment swap transfers the expected AUD 10,000 into the swap contract
+  # Swap matches expected payments and transfers the investment token to the investor
+  # Investor receives the investment token
+  # Issuer receives the AUD 10,000
+  - name: complete_investment_swap_1
+    type: complete_swap
+    user: 
+      id: acacia@beachhead.vc
+    parameters:
+      swap_id: "123456789"
+      idempotency_key: complete-investment-swap-ergonomic-$(date +%s)

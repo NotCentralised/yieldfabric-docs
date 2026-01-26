@@ -1,0 +1,30 @@
+commands:
+
+  
+  # Collateral trustee creates a collateral token to represent the collateral held by the beneficial rights holders
+  - name: collateral_token
+    type: create_obligation
+    user: 
+      id: acacia@iqeq.com
+      group: Collateral Group
+    parameters:
+      idempotency_key: create_collateral_token-ergonomic-$(date +%s)
+      counterpart: Collateral Group
+      expiry: 2025-12-20T00:00:00Z
+      contract_id: collateral_token_1
+      data: 
+        name: "Collateral Token"
+        description: "Collateral Token Description"
+
+  # Collateral trustee adds the Collateral Group as a member of the collateral token to grant programmatic rights to the collateral pool
+  - name: add_collateral_group_member_1
+    type: add_account_member
+    user: 
+      id: acacia@iqeq.com
+      group: Collateral Group
+    parameters:
+      idempotency_key: add-issuer-group-member-ergonomic-$(date +%s)
+      obligation_id: collateral_token_1
+
+  
+  

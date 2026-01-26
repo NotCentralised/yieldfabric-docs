@@ -1,0 +1,22 @@
+commands:
+
+  # ACCEPT ORIGINATION DEPLOYMENT - collateral (IQEQ)
+  - name: collateral_accept_1
+    type: accept_all
+    user: 
+      id: acacia@iqeq.com
+      group: Collateral Group
+    parameters:
+      idempotency_key: accept-$(date +%s)
+      denomination: aud-token-asset
+
+  # ACCEPT ORIGINATION DEPLOYMENT - collateral (IQEQ)
+  - name: collateral_accept_2
+    type: accept_all
+    user: 
+      id: acacia@iqeq.com
+      group: Collateral Group
+    parameters:
+      idempotency_key: accept-$(date +%s)
+      denomination: wrbnt-token-asset
+

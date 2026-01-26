@@ -1,21 +1,21 @@
 users:
-  - id: payer@yieldfabric.com
+  - id: payer@yieldfabric.com # Redbelly
     password: payer_password
     role: SuperAdmin
 
-  - id: originator@yieldfabric.com
+  - id: originator@yieldfabric.com # Wisr - Not Needed
     password: originator_password
     role: SuperAdmin
 
-  - id: collateral@yieldfabric.com
+  - id: collateral@yieldfabric.com # IQEQ
     password: collateral_password
     role: SuperAdmin
 
-  - id: issuer@yieldfabric.com
+  - id: issuer@yieldfabric.com # PCT
     password: issuer_password
     role: SuperAdmin
 
-  - id: investor@yieldfabric.com
+  - id: investor@yieldfabric.com #BCV
     password: investor_password
     role: SuperAdmin
 
@@ -50,15 +50,30 @@ tokens:
     description: AUD Token Description
     address: 0x68B1D87F95878fE05B998F19b66F4baba5De1aed
     chain_id: 33117
-    # address: 0xABf2564D8Bd74C8cbd26f53416D1f03Ed71e3FAc
-    # chain_id: 153
-  - id: CBDC
-    name: CBD Token
-    description: CBDC Token Description
+
+  - id: wRBNT
+    name: wRBNT Token
+    description: wRBNT Token Description
     address: 0x3Aa5ebB10DC797CAC828524e59A333d0A371443c
     chain_id: 33117
-    # address: 0xd4241C5563C052e10cce6ddB693335Aa3fa8D7e0
-    # chain_id: 153
+
+  - id: USDC
+    name: USDC Token
+    description: USDC Token Description
+    address: 0xc6e7DF5E7b4f2A278906862b61205850344D4e7d
+    chain_id: 33117
+
+  - id: wBTC
+    name: wBTC Token
+    description: wBTC Token Description
+    address: 0x59b670e9fA9D0A427751Af201D676719a970857b
+    chain_id: 33117
+
+  - id: wAAPL
+    name: wAAPL Token
+    description: wAAPL Token Description
+    address: 0x4ed7c70F96B99c776995fB64377f0d4aB3B0e1C1
+    chain_id: 33117
 
 assets:
   - id: AUD
@@ -68,12 +83,35 @@ assets:
     description: AUD Token Description
     token_id: AUD-token
     
-  - id: CBDC
-    name: CBD Token
+  - id: wRBNT
+    name: wRBNT
     type: Cash
-    currency: AUD
-    description: CBDC Token Description
-    token_id: CBDC-token
+    currency: USD
+    description: wRBNT Token Description
+    token_id: wRBNT-token
+    
+  - id: USDC
+    name: USDC
+    type: Cash
+    currency: USD
+    description: USDC Token Description
+    token_id: USDC-token
+    
+  - id: wBTC
+    name: wBTC
+    type: Cash
+    currency: USD
+    description: wBTC Token Description
+    token_id: wBTC-token
+    
+  - id: wAAPL
+    name: wAAPL
+    type: Cash
+    currency: USD
+    description: wAAPL Token Description
+    token_id: wAAPL-token
+
+
 
 # fiat_accounts:
 #   - id: AUDBANK-001

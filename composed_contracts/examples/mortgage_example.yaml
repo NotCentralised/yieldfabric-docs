@@ -1,0 +1,94 @@
+contract:
+  metadata:
+    name: "30-Year Fixed-Rate Mortgage"
+    description: "Residential mortgage with monthly P&I payments and property tax escrow"
+    type: mortgage
+    version: "1.0"
+    effective_date: "2026-01-01T00:00:00Z"
+    expiry_date: "2056-01-01T23:59:59Z"
+    legal_document_id: "LEGAL-MORTGAGE-2026-001"
+  
+  parties:
+    issuer:
+      entity_id: "bank@yieldfabric.com"
+      role: lender
+    
+    counterpart:
+      entity_id: "homeowner@yieldfabric.com"
+      role: borrower
+    
+    obligor:
+      entity_id: "homeowner@yieldfabric.com"
+      role: obligor
+  
+  mortgage_terms:
+    principal: "500000000000000000000000"  # 500,000
+    interest_rate: 4.25  # Annual percentage
+    term_years: 30
+    payment_frequency: monthly
+    denomination: "usd-token-asset"
+    property_address: "123 Main Street, City, State 12345"
+    property_value: "600000000000000000000000"  # 600,000
+    ltv_ratio: 83.33  # Loan-to-value percentage
+  
+  obligations:
+    # Principal and Interest combined (P&I)
+    - name: "Mortgage Payments"
+      description: "Monthly principal and interest payments"
+      type: p_and_i_stream
+      denomination: "usd-token-asset"
+      notional: "500000000000000000000000"
+      expiry: "2056-01-01T23:59:59Z"
+      counterpart: "bank@yieldfabric.com"
+      obligor: "homeowner@yieldfabric.com"
+      payment_schedule:
+        amount: "2460000000000000000000"  # P&I payment (calculated)
+        frequency: monthly
+        start_date: "2026-02-01T00:00:00Z"
+        end_date: "2056-01-01T23:59:59Z"
+        payments:
+          - date: "2026-02-01T00:00:00Z"
+            unlock_sender: "2026-02-01T00:00:00Z"
+            unlock_receiver: "2026-02-01T00:00:00Z"
+          - date: "2026-03-01T00:00:00Z"
+            unlock_sender: "2026-03-01T00:00:00Z"
+            unlock_receiver: "2026-03-01T00:00:00Z"
+          # ... continue for all 360 months (30 years)
+    
+    # Property tax escrow (optional)
+    - name: "Property Tax Escrow"
+      description: "Monthly property tax payments held in escrow"
+      type: escrow_stream
+      denomination: "usd-token-asset"
+      notional: "12000000000000000000000"  # Annual tax / 12
+      expiry: "2056-01-01T23:59:59Z"
+      counterpart: "bank@yieldfabric.com"
+      obligor: "homeowner@yieldfabric.com"
+      payment_schedule:
+        amount: "1000000000000000000000"  # Monthly tax
+        frequency: monthly
+        start_date: "2026-02-01T00:00:00Z"
+        end_date: "2056-01-01T23:59:59Z"
+        payments:
+          - date: "2026-02-01T00:00:00Z"
+            unlock_sender: "2026-02-01T00:00:00Z"
+            unlock_receiver: "2026-02-01T00:00:00Z"
+          - date: "2026-03-01T00:00:00Z"
+            unlock_sender: "2026-03-01T00:00:00Z"
+            unlock_receiver: "2026-03-01T00:00:00Z"
+          # ... continue for all 360 months
+  
+  composed_contract:
+    name: "30-Year Fixed-Rate Mortgage"
+    description: "Residential mortgage with monthly P&I payments and property tax escrow"
+
+
+
+
+
+
+
+
+
+
+

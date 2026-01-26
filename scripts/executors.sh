@@ -668,6 +668,7 @@ execute_create_obligation_ergonomic() {
     local initial_payments_json="${13}"
     local idempotency_key="${14}"
     local group_name="${15}"  # Optional group name for delegation
+    local contract_id="${16}"  # Optional contract ID - if not provided, one will be auto-generated
     
     echo_with_color $CYAN "🤝 Executing create obligation command via GraphQL: $command_name"
     
@@ -748,6 +749,11 @@ execute_create_obligation_ergonomic() {
     fi
     if [[ -n "$idempotency_key" ]]; then
         input_params="$input_params, idempotencyKey: \\\"$idempotency_key\\\""
+    fi
+    
+    # Add optional contract_id if provided (and not "null")
+    if [[ -n "$contract_id" && "$contract_id" != "null" ]]; then
+        input_params="$input_params, contractId: \\\"$contract_id\\\""
     fi
     
     # Build GraphQL mutation with variables if needed

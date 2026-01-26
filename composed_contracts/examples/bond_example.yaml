@@ -1,0 +1,95 @@
+contract:
+  metadata:
+    name: "5-Year Corporate Bond"
+    description: "Quarterly coupon bond with principal redemption at maturity"
+    type: bond
+    version: "1.0"
+    effective_date: "2026-01-01T00:00:00Z"
+    expiry_date: "2031-12-31T23:59:59Z"
+    legal_document_id: "LEGAL-2026-001"
+  
+  parties:
+    issuer:
+      entity_id: "corporation@yieldfabric.com"
+      role: issuer
+    
+    counterpart:
+      entity_id: "investor@yieldfabric.com"
+      role: counterpart
+    
+    obligor:
+      entity_id: "corporation@yieldfabric.com"
+      role: obligor
+  
+  obligations:
+    # Coupon stream: Quarterly interest payments
+    - name: "Quarterly Coupons"
+      description: "Quarterly interest payments at 5% annual rate"
+      type: coupon_stream
+      denomination: "usd-token-asset"
+      notional: "100000000000000000000000"  # 100,000 tokens
+      expiry: "2031-12-31T23:59:59Z"
+      counterpart: "investor@yieldfabric.com"
+      obligor: "corporation@yieldfabric.com"
+      payment_schedule:
+        amount: "1250000000000000000000"  # 1.25% quarterly (5% / 4)
+        frequency: quarterly
+        start_date: "2026-03-31T00:00:00Z"
+        end_date: "2031-12-31T23:59:59Z"
+        payments:
+          - date: "2026-03-31T00:00:00Z"
+            unlock_sender: "2026-03-31T00:00:00Z"
+            unlock_receiver: "2026-03-31T00:00:00Z"
+          - date: "2026-06-30T00:00:00Z"
+            unlock_sender: "2026-06-30T00:00:00Z"
+            unlock_receiver: "2026-06-30T00:00:00Z"
+          - date: "2026-09-30T00:00:00Z"
+            unlock_sender: "2026-09-30T00:00:00Z"
+            unlock_receiver: "2026-09-30T00:00:00Z"
+          - date: "2026-12-31T00:00:00Z"
+            unlock_sender: "2026-12-31T00:00:00Z"
+            unlock_receiver: "2026-12-31T00:00:00Z"
+          - date: "2027-03-31T00:00:00Z"
+            unlock_sender: "2027-03-31T00:00:00Z"
+            unlock_receiver: "2027-03-31T00:00:00Z"
+          - date: "2027-06-30T00:00:00Z"
+            unlock_sender: "2027-06-30T00:00:00Z"
+            unlock_receiver: "2027-06-30T00:00:00Z"
+          - date: "2027-09-30T00:00:00Z"
+            unlock_sender: "2027-09-30T00:00:00Z"
+            unlock_receiver: "2027-09-30T00:00:00Z"
+          - date: "2027-12-31T00:00:00Z"
+            unlock_sender: "2027-12-31T00:00:00Z"
+            unlock_receiver: "2027-12-31T00:00:00Z"
+          # ... continue for all 20 quarters (5 years * 4 quarters)
+    
+    # Redemption: Principal repayment at maturity
+    - name: "Principal Redemption"
+      description: "Return of principal at maturity"
+      type: redemption
+      denomination: "usd-token-asset"
+      notional: "100000000000000000000000"
+      expiry: "2031-12-31T23:59:59Z"
+      counterpart: "investor@yieldfabric.com"
+      obligor: "corporation@yieldfabric.com"
+      payment_schedule:
+        amount: "100000000000000000000000"
+        payments:
+          - date: "2031-12-31T23:59:59Z"
+            unlock_sender: "2031-12-31T23:59:59Z"
+            unlock_receiver: "2031-12-31T23:59:59Z"
+  
+  composed_contract:
+    name: "5-Year Corporate Bond"
+    description: "Quarterly coupon bond with principal redemption at maturity"
+
+
+
+
+
+
+
+
+
+
+

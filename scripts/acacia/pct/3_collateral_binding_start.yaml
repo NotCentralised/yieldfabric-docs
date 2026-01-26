@@ -1,0 +1,33 @@
+commands:
+
+  ##### DEPENDENT INDEPENDENT FLOW #####
+
+  # ACCEPT INVESTMENT SWAP - issuer (Perpetual)
+  - name: issuer_accept_1
+    type: accept_all
+    user: 
+      id: acacia@perpetual.com.au
+      group: Issuer Group
+    parameters:
+      idempotency_key: accept-$(date +%s)
+      denomination: aud-token-asset
+  
+
+  # COLLATERAL BINDING - issuer (Perpetual)
+  - name: create_credit_swap_1
+    type: create_swap
+    user: 
+      id: acacia@perpetual.com.au
+      group: Issuer Group
+    parameters:
+      swap_id: "1234567891"
+      idempotency_key: create-credit-swap-ergonomic-$(date +%s)
+      initiator:
+        obligation_ids:
+          - credit_token_1
+
+      counterparty:
+        id: Collateral Group
+        obligation_ids:
+          - collateral_token_1
+      deadline: 2025-12-20T00:00:00Z
