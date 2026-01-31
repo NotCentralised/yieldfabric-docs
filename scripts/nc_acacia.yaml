@@ -99,7 +99,7 @@ commands:
     parameters:
       idempotency_key: create_investment_token-ergonomic-$(date +%s)
       counterpart: Issuer Group
-      expiry: 2026-01-30T00:00:00Z
+      expiry: 2027-01-30T00:00:00Z
       contract_id: investment_token_1
       data: 
         name: "Structured Product"
@@ -115,7 +115,7 @@ commands:
     parameters:
       idempotency_key: create_credit_token-ergonomic-$(date +%s)
       counterpart: Issuer Group
-      expiry: 2026-01-30T00:00:00Z
+      expiry: 2027-01-30T00:00:00Z
       contract_id: credit_token_1
       data: 
         name: "Credit Facility"
@@ -166,7 +166,7 @@ commands:
           amount: 10000000000000000000000
           payments:
             - id: swap-payment-1
-      deadline: 2026-01-30T00:00:00Z
+      deadline: 2027-01-30T00:00:00Z
   
   
   ##### IQEQ INDEPENDENT FLOW #####
@@ -180,7 +180,7 @@ commands:
     parameters:
       idempotency_key: create_collateral_token-ergonomic-$(date +%s)
       counterpart: Collateral Group
-      expiry: 2026-01-30T00:00:00Z
+      expiry: 2027-01-30T00:00:00Z
       contract_id: collateral_token_1
       data: 
         name: "Collateral Token"
@@ -223,7 +223,7 @@ commands:
       counterpart: payer@yieldfabric.com
       denomination: aud-token-asset
       obligor: payer@yieldfabric.com
-      expiry: 2026-01-30T00:00:00Z
+      expiry: 2027-01-30T00:00:00Z
       contract_id: loan_token_1
       data: 
         name: "Loan 1"
@@ -233,14 +233,14 @@ commands:
         payments:
           - id: payment-1
             payee:
-              unlock: 2026-01-30T00:00:00Z
+              unlock: 2027-01-30T00:00:00Z
             payer:
-              unlock: 2026-01-30T00:00:00Z
+              unlock: 2027-01-30T00:00:00Z
           - id: payment-2
             payee:
-              unlock: 2026-01-31T00:00:00Z
+              unlock: 2027-01-31T00:00:00Z
             payer:
-              unlock: 2025-01-31T00:00:00Z
+              unlock: 2027-01-31T00:00:00Z
 
           
   
@@ -280,7 +280,7 @@ commands:
           amount: 5000000000000000000000
           payments:
             - id: swap-payment-1
-      deadline: 2026-01-30T00:00:00Z
+      deadline: 2027-01-30T00:00:00Z
 
 
   
@@ -329,7 +329,7 @@ commands:
         obligation_ids:
           # - $collateral_token.contract_id
           - collateral_token_1
-      deadline: 2026-01-30T00:00:00Z
+      deadline: 2027-01-30T00:00:00Z
 
   # COMPLETE COLLATERAL BINDING - collateral (IQEQ)
   - name: complete_credit_swap_1
@@ -525,7 +525,7 @@ commands:
           - loan_token_1
 
       
-      deadline: 2026-01-30T00:00:00Z
+      deadline: 2027-01-30T00:00:00Z
 
   # COMPLETE COLLATERAL BINDING - collateral (IQEQ)
   - name: complete_redemption_swap_1
