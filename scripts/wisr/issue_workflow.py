@@ -646,6 +646,84 @@ def complete_swap(
     return {"error": "Swap not found after retries", "success": False}
 
 
+def query_swap_status(
+    pay_service_url: str,
+    jwt_token: str,
+    swap_id: str,
+) -> Optional[dict]:
+    """Query swap status via GraphQL. Returns swap dict if found, else None.
+    Uses byId(id) for direct lookup by swap_id (avoids listing all swaps)."""
+    query = (
+        "query($id: String!) { swapFlow { coreSwaps { byId(id: $id) "
+        "{ id swapId status deadline createdAt } } } }"
+    )
+    variables = {"id": swap_id}
+    url = f"{pay_service_url.rstrip('/')}/graphql"
+    try:
+        response = requests.post(
+            url,
+            json={"query": query, "variables": variables},
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {jwt_token}",
+            },
+            timeout=15,
+        )
+        if not response.text:
+            return None
+        data = response.json()
+        # GraphQL errors surface in data.errors
+        if data.get("errors"):
+            return None
+        data_obj = data.get("data") if isinstance(data, dict) else None
+        swap = (
+            data_obj.get("swapFlow", {}).get("coreSwaps", {}).get("byId")
+            if isinstance(data_obj, dict)
+            else None
+        )
+        return swap if isinstance(swap, dict) and swap.get("swapId") else None
+    except Exception:
+        return None
+
+
+def poll_swap_completion(
+    pay_service_url: str,
+    auth_service_url: str,
+    acceptor_email: str,
+    acceptor_password: str,
+    swap_id: str,
+    max_attempts: int = 60,
+    delay_seconds: float = 2.0,
+) -> dict:
+    """Poll until swap status is COMPLETED (or terminal failure). Returns {success, swap_data?, error?}."""
+    echo_with_color(CYAN, f"  🔄 Polling swap completion for: {swap_id}", file=sys.stderr)
+    jwt_token = login_user(auth_service_url, acceptor_email, acceptor_password)
+    if not jwt_token:
+        return {"success": False, "error": f"Failed to login as {acceptor_email}"}
+    debug_shown = False
+    for attempt in range(1, max_attempts + 1):
+        echo_with_color(BLUE, f"    📡 Attempt {attempt}/{max_attempts}: Checking swap status...", file=sys.stderr)
+        swap_data = query_swap_status(pay_service_url, jwt_token, swap_id)
+        if swap_data is None:
+            if not debug_shown:
+                debug_shown = True
+                echo_with_color(YELLOW, "    ⚠️  Swap not found yet (may still be propagating)...", file=sys.stderr)
+            echo_with_color(YELLOW, "    ⏳ Waiting for swap to become visible...", file=sys.stderr)
+        else:
+            status = (swap_data.get("status") or "").strip()
+            echo_with_color(BLUE, f"    🔎 Current swap status: {status or 'unknown'}", file=sys.stderr)
+            if status == "COMPLETED":
+                echo_with_color(GREEN, "    ✅ Swap completed successfully!", file=sys.stderr)
+                return {"success": True, "swap_data": swap_data}
+            if status in ("CANCELLED", "EXPIRED", "FORFEITED"):
+                echo_with_color(RED, f"    ❌ Swap ended in status: {status}", file=sys.stderr)
+                return {"success": False, "error": f"Swap status: {status}", "swap_data": swap_data}
+        if attempt < max_attempts:
+            time.sleep(delay_seconds)
+    echo_with_color(RED, f"    ❌ Swap did not complete within {max_attempts} attempts", file=sys.stderr)
+    return {"success": False, "error": f"Timeout after {max_attempts} attempts"}
+
+
 def mint_tokens(
     pay_service_url: str,
     auth_service_url: str,
@@ -769,6 +847,69 @@ def deposit_tokens(
         return {"success": False, "error": msg or response.text or "Unknown deposit failure"}
     except Exception as e:
         echo_with_color(RED, f"    ❌ Deposit failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+def accept_all_tokens(
+    pay_service_url: str,
+    auth_service_url: str,
+    user_email: str,
+    user_password: str,
+    denomination: str,
+    idempotency_key: str,
+    obligor: Optional[str] = None,
+    wallet_id: Optional[str] = None,
+    account_address: Optional[str] = None,
+) -> dict:
+    """Accept all pending payables via GraphQL (mirrors nc_acacia.yaml payer_accept_1 pattern).
+    Call as the loan account to accept payments from the investor after complete_swap.
+    wallet_id: when set, ONLY accept payables for this specific account (e.g. loan wallet).
+    account_address: when set with wallet_id, send as header for signing.
+    """
+    echo_with_color(CYAN, f"  ✅ Accepting all payables for {denomination}" + (f" (wallet {wallet_id})" if wallet_id else "") + "...")
+    jwt_token = login_user(auth_service_url, user_email, user_password)
+    if not jwt_token:
+        return {"success": False, "error": f"Failed to login as {user_email}"}
+    query = (
+        "mutation AcceptAll($input: AcceptAllInput!) {"
+        " acceptAll(input: $input) { success message totalPayments acceptedCount failedCount timestamp } }"
+    )
+    inp: dict = {"denomination": denomination, "idempotencyKey": idempotency_key}
+    if obligor:
+        inp["obligor"] = obligor
+    if wallet_id:
+        inp["walletId"] = wallet_id
+    variables = {"input": inp}
+    url = f"{pay_service_url.rstrip('/')}/graphql"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {jwt_token}",
+    }
+    if account_address and account_address.strip().startswith("0x"):
+        headers["X-Account-Address"] = account_address.strip()
+    if wallet_id and wallet_id.strip():
+        headers["X-Wallet-Id"] = wallet_id.strip()
+    try:
+        response = requests.post(
+            url,
+            json={"query": query, "variables": variables},
+            headers=headers,
+            timeout=90,
+        )
+        data = response.json() if response.text else {}
+        data_obj = data.get("data") if isinstance(data, dict) else None
+        if isinstance(data_obj, dict) and "acceptAll" in data_obj:
+            aa = data_obj["acceptAll"]
+            if aa.get("success"):
+                acc = aa.get("acceptedCount", 0)
+                fail = aa.get("failedCount", 0)
+                echo_with_color(GREEN, f"    ✅ Accept all successful (accepted: {acc}, failed: {fail})")
+                return {"success": True, "data": aa}
+            return {"success": False, "error": aa.get("message", "Accept all failed")}
+        msg = _graphql_errors_message(data)
+        return {"success": False, "error": msg or response.text or "Unknown accept all failure"}
+    except Exception as e:
+        echo_with_color(RED, f"    ❌ Accept all failed: {e}")
         return {"success": False, "error": str(e)}
 
 
@@ -1690,6 +1831,33 @@ def main():
                                         echo_with_color(GREEN, f"    ✅ Swap accepted by {acceptor_email}")
                                         if accept_result.get("messageId"):
                                             echo_with_color(BLUE, f"       Message ID: {accept_result.get('messageId')}")
+                                        # Poll until swap status is COMPLETED before accept_all (avoids race)
+                                        poll_result = poll_swap_completion(
+                                            pay_service_url,
+                                            auth_service_url,
+                                            acceptor_email,
+                                            acceptor_password,
+                                            str(swap_id_val),
+                                        )
+                                        if not poll_result.get("success"):
+                                            echo_with_color(YELLOW, f"    ⚠️  Swap polling failed: {poll_result.get('error', 'Unknown')}")
+                                        # Loan account accepts all resulting payments (per nc_acacia.yaml payer_accept_1)
+                                        # wallet_id scopes to ONLY this loan's wallet - no other entity wallets
+                                        if poll_result.get("success") and obligor_wallet_id_for_loan and obligor_address_for_loan:
+                                            acc_idem = f"accept-loan-{loan_id}-{int(time.time() * 1000)}"
+                                            acc_res = accept_all_tokens(
+                                                pay_service_url,
+                                                auth_service_url,
+                                                user_email,
+                                                password,
+                                                payment_denomination,
+                                                acc_idem,
+                                                obligor=None,
+                                                wallet_id=obligor_wallet_id_for_loan,
+                                                account_address=obligor_address_for_loan,
+                                            )
+                                            if not acc_res.get("success"):
+                                                echo_with_color(YELLOW, f"    ⚠️  Accept all (loan account): {acc_res.get('error', 'Unknown')}")
                                     else:
                                         echo_with_color(RED, f"    ❌ Swap acceptance failed: {accept_result.get('error', 'Unknown error')}")
                             elif acceptor_email and swap_id_val and not acceptor_password:
