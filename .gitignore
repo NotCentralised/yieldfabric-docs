@@ -2,3 +2,8 @@ tokens/
 scripts/.DS_Store
 Wisr Freedom Trust 2025-1 - Information Memorandum - 2 October 2025 (1).pdf
 scripts/wisr/wisr_loans_20250831.csv
+# Private key files (do not commit)
+**/issuer_external_key.txt
+**/*_external_key.txt
+# Local Python venv (wisr)
+scripts/wisr/.venv/
