@@ -435,7 +435,7 @@ main() {
     # Test parameters
     DENOMINATION="${DENOMINATION:-aud-token-asset}"
     COUNTERPART="${COUNTERPART:-investor@yieldfabric.com}"
-    END_DATE="${END_DATE:-2026-01-31}"
+    END_DATE="${END_DATE:-2027-01-31}"
 
     # Obligation amounts
     COUPON_AMOUNT="${COUPON_AMOUNT:-10000000000000000000000}"
@@ -496,11 +496,11 @@ main() {
 
     # Coupon dates for obligation 1
     COUPON_DATES=(
-        "2026-12-01T00:00:00Z"
-        "2026-12-05T00:00:00Z"
-        "2026-12-10T00:00:00Z"
-        "2026-12-15T00:00:00Z"
-        "2026-12-20T00:00:00Z"
+        "2027-12-01T00:00:00Z"
+        "2027-12-05T00:00:00Z"
+        "2027-12-10T00:00:00Z"
+        "2027-12-15T00:00:00Z"
+        "2027-12-20T00:00:00Z"
     )
 
     # Build coupon payments array JSON using jq

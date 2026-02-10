@@ -1,9 +1,19 @@
 #!/usr/bin/env python3
 
 """
-Test script for the workflow-based Issue Composed Contract API endpoint
-This script processes loans from a CSV file and creates composed contracts
-Adapted to process top 10 loans from wisr_loans_20250831.csv
+Test script for the workflow-based Issue Composed Contract API endpoint.
+Processes loans from a CSV file and creates composed contracts.
+Number of loans is controlled by LOAN_COUNT env var (default: 10).
+
+Each loan uses a dedicated sub-account wallet (WLT-LOAN-{entity_id}-{loan_id}):
+- The obligation is created with obligorWalletId and counterpartWalletId set to that
+  sub-account so the obligor and counterpart in the contract are the sub-account.
+- We pass X-Account-Address and X-Wallet-Id when calling the workflow for issue.
+- Accept is requested from the sub-account (not the main issuer) by calling the
+  acceptObligation GraphQL mutation with X-Account-Address and X-Wallet-Id set to
+  the obligor's address and wallet_id. For the obligation to be accepted as the
+  sub-account, the backend must use these headers when processing the accept
+  mutation (Python-only; no backend code changes in this script).
 """
 
 import csv
@@ -13,7 +23,7 @@ import re
 import sys
 import time
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
 try:
     import requests
@@ -32,8 +42,63 @@ NC = '\033[0m'  # No Color
 
 
 def echo_with_color(color: str, message: str, file=sys.stdout):
-    """Print a colored message"""
+    """Print a colored message."""
     print(f"{color}{message}{NC}", file=file)
+
+
+def _graphql_errors_message(data: dict) -> Optional[str]:
+    """Return the first GraphQL error message from data['errors'], or None."""
+    errors = data.get("errors") if isinstance(data, dict) else None
+    if not errors or not isinstance(errors, list) or len(errors) == 0:
+        return None
+    first = errors[0]
+    return first.get("message", str(first)) if isinstance(first, dict) else str(errors[0])
+
+
+def _post_workflow_json(
+    base_url: str,
+    path: str,
+    json_body: dict,
+    jwt_token: str,
+    account_address: Optional[str] = None,
+    wallet_id: Optional[str] = None,
+) -> dict:
+    """POST JSON to base_url + path with Bearer token; log 422; return parsed JSON or error dict.
+    When account_address/wallet_id are provided, send as X-Account-Address and X-Wallet-Id
+    so the backend can use the sub-account as signer when supported.
+    """
+    url = f"{base_url.rstrip('/')}{path}"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {jwt_token}",
+    }
+    if account_address and account_address.strip().startswith("0x"):
+        headers["X-Account-Address"] = account_address.strip()
+    if wallet_id and wallet_id.strip():
+        headers["X-Wallet-Id"] = wallet_id.strip()
+    try:
+        response = requests.post(
+            url,
+            json=json_body,
+            headers=headers,
+            timeout=30,
+        )
+        echo_with_color(BLUE, f"  📡 Response received (HTTP {response.status_code})", file=sys.stderr)
+        if not response.text:
+            echo_with_color(YELLOW, "  ⚠️  Warning: Empty response body", file=sys.stderr)
+        if response.status_code == 422:
+            echo_with_color(YELLOW, "  ⚠️  Validation error - full response:", file=sys.stderr)
+            try:
+                print(json.dumps(response.json(), indent=2), file=sys.stderr)
+            except Exception:
+                print(response.text, file=sys.stderr)
+        try:
+            return response.json()
+        except Exception:
+            return {"error": response.text, "status_code": response.status_code}
+    except Exception as e:
+        echo_with_color(RED, f"  ❌ Error making request: {e}", file=sys.stderr)
+        return {"error": str(e)}
 
 
 def load_env_files(script_dir: Path, repo_root: Path):
@@ -66,21 +131,14 @@ def check_service_running(service_name: str, service_url: str) -> bool:
     try:
         if service_url.startswith(('http://', 'https://')):
             # Try health endpoint first, then base URL
-            try:
-                response = requests.get(f"{service_url}/health", timeout=5)
-                if response.status_code < 500:
-                    echo_with_color(GREEN, f"    ✅ {service_name} is reachable")
-                    return True
-            except:
-                pass
-            
-            try:
-                response = requests.get(service_url, timeout=5)
-                if response.status_code < 500:
-                    echo_with_color(GREEN, f"    ✅ {service_name} is reachable")
-                    return True
-            except:
-                pass
+            for url in (f"{service_url.rstrip('/')}/health", service_url.rstrip("/")):
+                try:
+                    response = requests.get(url, timeout=5)
+                    if response.status_code < 500:
+                        echo_with_color(GREEN, f"    ✅ {service_name} is reachable")
+                        return True
+                except Exception:
+                    continue
             
             echo_with_color(RED, f"    ❌ {service_name} is not reachable at {service_url}")
             return False
@@ -101,6 +159,207 @@ def check_service_running(service_name: str, service_url: str) -> bool:
     except Exception as e:
         echo_with_color(RED, f"    ❌ Error checking {service_name}: {e}")
         return False
+
+
+def get_user_id_from_profile(auth_service_url: str, jwt_token: str) -> Optional[str]:
+    """Get the current user's ID (UUID) from GET /auth/users/me. Required for deploy-account."""
+    try:
+        response = requests.get(
+            f"{auth_service_url}/auth/users/me",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {jwt_token}",
+            },
+            timeout=15,
+        )
+        if response.status_code != 200:
+            return None
+        data = response.json()
+        user = data.get("user") if isinstance(data, dict) else None
+        if not user or not isinstance(user, dict):
+            return None
+        user_id = user.get("id")
+        return str(user_id).strip() if user_id else None
+    except Exception:
+        return None
+
+
+def deploy_user_account(
+    auth_service_url: str,
+    jwt_token: str,
+    user_id: str,
+) -> dict:
+    """
+    Deploy an on-chain wallet account for a user (auth service).
+    Mirrors POST /auth/users/:user_id/deploy-account from user_deployment.rs.
+    Caller must be the user (same as user_id) or have Admin permission.
+    Returns dict with success, new_account_address, message, or error.
+    """
+    echo_with_color(CYAN, f"  📤 Deploying wallet account for user {user_id}...", file=sys.stderr)
+    try:
+        response = requests.post(
+            f"{auth_service_url}/auth/users/{user_id}/deploy-account",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {jwt_token}",
+            },
+            timeout=60,
+        )
+        if not response.text:
+            return {"success": False, "error": "Empty response"}
+        try:
+            data = response.json()
+        except Exception:
+            return {"success": False, "error": response.text}
+        if response.status_code == 200:
+            return {
+                "success": True,
+                "message": data.get("message"),
+                "user_id": data.get("user_id"),
+                "new_account_address": data.get("new_account_address"),
+                "status": data.get("status"),
+            }
+        return {
+            "success": False,
+            "error": data.get("error", data.get("message", response.text)),
+            "status_code": response.status_code,
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def create_wallet_in_payments(
+    pay_service_url: str,
+    jwt_token: str,
+    entity_id: str,
+    address: str,
+    wallet_id: str,
+    name: str = "Sub-Account",
+    description: str = "Additional blockchain account",
+) -> dict:
+    """
+    Create a wallet record in the payments graph store so the wallet appears as a
+    sub-account under the entity (e.g. under issuer in the UI).
+    Calls the same GraphQL mutation the app uses: wallets { createWallet(input: $input) }.
+    Returns dict with success, wallet (id, address, entityId), or error.
+    """
+    # Normalize: backend expects raw UUID for entityId, no ENTITY- prefix
+    entity_id = (entity_id or "").strip().replace("ENTITY-USER-", "").replace("ENTITY-GROUP-", "")
+    address = (address or "").strip()
+    wallet_id = (wallet_id or "").strip()
+    if not entity_id or not address or not wallet_id:
+        return {"success": False, "error": "entity_id, address and wallet_id are required"}
+
+    # Match app/backend: CreateWalletInput uses camelCase in GraphQL
+    query = (
+        "mutation CreateWallet($input: CreateWalletInput!) {"
+        "  wallets { createWallet(input: $input) { id name address entityId createdAt deleted transactionId } }"
+        "}"
+    )
+    variables = {
+        "input": {
+            "walletId": wallet_id,
+            "entityId": entity_id,
+            "name": (name or "Sub-Account").strip(),
+            "description": (description or "Additional blockchain account").strip(),
+            "walletType": "SMART_CONTRACT",
+            "address": address,
+        }
+    }
+    try:
+        url = f"{pay_service_url.rstrip('/')}/graphql"
+        response = requests.post(
+            url,
+            json={"query": query, "variables": variables},
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {jwt_token}",
+            },
+            timeout=30,
+        )
+        if not response.text:
+            return {"success": False, "error": "Empty response from createWallet"}
+        try:
+            data = response.json()
+        except Exception as parse_err:
+            return {"success": False, "error": f"Invalid JSON: {response.text[:200]} ({parse_err})"}
+        data_obj = data.get("data") if isinstance(data, dict) else None
+        # Response shape: data.wallets.createWallet (payments schema)
+        if isinstance(data_obj, dict):
+            wallets_obj = data_obj.get("wallets")
+            if isinstance(wallets_obj, dict):
+                w = wallets_obj.get("createWallet")
+                if w is not None:
+                    return {"success": True, "wallet": w if isinstance(w, dict) else {"id": wallet_id}}
+        msg = _graphql_errors_message(data)
+        if msg:
+            return {"success": False, "error": msg}
+        return {"success": False, "error": data.get("error", response.text[:500] or "Unknown createWallet failure")}
+    except requests.exceptions.RequestException as e:
+        return {"success": False, "error": str(e)}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def get_wallet_by_id(
+    pay_service_url: str,
+    jwt_token: str,
+    wallet_id: str,
+) -> Optional[dict]:
+    """
+    Fetch a wallet by ID from the payments GraphQL API.
+    Returns dict with id, address, entityId, name if found, else None.
+    """
+    wallet_id = (wallet_id or "").strip()
+    if not wallet_id:
+        return None
+    query = (
+        "query GetWalletById($id: ID!) { wallet(id: $id) { id entityId name address } }"
+    )
+    url = f"{pay_service_url.rstrip('/')}/graphql"
+    try:
+        response = requests.post(
+            url,
+            json={"query": query, "variables": {"id": wallet_id}},
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {jwt_token}",
+            },
+            timeout=30,
+        )
+        if not response.ok or not response.text:
+            return None
+        data = response.json()
+        if not isinstance(data, dict):
+            return None
+        data_obj = data.get("data")
+        if not isinstance(data_obj, dict):
+            return None
+        wallet = data_obj.get("wallet")
+        if isinstance(wallet, dict) and wallet.get("id") and wallet.get("address"):
+            return wallet
+        return None
+    except Exception:
+        return None
+
+
+def deploy_issuer_account(
+    auth_service_url: str,
+    issuer_email: str,
+    issuer_password: str,
+) -> dict:
+    """
+    Deploy the on-chain wallet account for the ISSUER_EMAIL entity.
+    Logs in as issuer, resolves user_id from /auth/users/me, then calls deploy-account.
+    """
+    echo_with_color(CYAN, "🔐 Deploying issuer account (wallet)...", file=sys.stderr)
+    token = login_user(auth_service_url, issuer_email, issuer_password)
+    if not token:
+        return {"success": False, "error": "Failed to login as issuer"}
+    user_id = get_user_id_from_profile(auth_service_url, token)
+    if not user_id:
+        return {"success": False, "error": "Could not get issuer user_id from /auth/users/me"}
+    return deploy_user_account(auth_service_url, token, user_id)
 
 
 def login_user(auth_service_url: str, email: str, password: str) -> Optional[str]:
@@ -148,9 +407,14 @@ def issue_composed_contract_workflow(
     jwt_token: str,
     name: str,
     description: str,
-    obligations_json: list
+    obligations_json: list,
+    account_address: Optional[str] = None,
+    wallet_id: Optional[str] = None,
 ) -> dict:
-    """Issue a composed contract workflow"""
+    """Issue a composed contract workflow (obligations only, no swap).
+    Pass account_address and wallet_id (obligor sub-account) so when the backend
+    supports it, the sub-account is used as the signer for issue/accept.
+    """
     echo_with_color(CYAN, "🏦 Starting composed contract issuance workflow...", file=sys.stderr)
     
     request_body = {
@@ -162,38 +426,436 @@ def issue_composed_contract_workflow(
     echo_with_color(BLUE, "  📋 Request body:", file=sys.stderr)
     print(json.dumps(request_body, indent=2), file=sys.stderr)
     
-    echo_with_color(BLUE, f"  🌐 Making REST API request to: {pay_service_url}/api/composed_contract/issue_workflow", file=sys.stderr)
+    echo_with_color(BLUE, f"  🌐 Making REST API request to: {pay_service_url.rstrip('/')}/api/composed_contract/issue_workflow", file=sys.stderr)
+    return _post_workflow_json(
+        pay_service_url, "/api/composed_contract/issue_workflow", request_body, jwt_token,
+        account_address=account_address, wallet_id=wallet_id,
+    )
+
+
+def issue_composed_contract_issue_swap_workflow(
+    pay_service_url: str,
+    jwt_token: str,
+    name: str,
+    description: str,
+    obligations_json: list,
+    counterparty: str,
+    payment_amount: str,
+    payment_denomination: str,
+    deadline: Optional[str] = None,
+    account_address: Optional[str] = None,
+    wallet_id: Optional[str] = None,
+) -> dict:
+    """Issue a composed contract and create a swap with the given counterparty.
+    Pass account_address and wallet_id (obligor sub-account) so when the backend
+    supports it, the sub-account is used as the signer for issue/accept.
+    """
+    echo_with_color(CYAN, "🏦 Starting composed contract issue + swap workflow...", file=sys.stderr)
     
+    request_body = {
+        "name": name,
+        "description": description,
+        "obligations": obligations_json,
+        "counterparty": counterparty,
+        "payment_amount": payment_amount,
+        "payment_denomination": payment_denomination,
+    }
+    if deadline is not None:
+        request_body["deadline"] = deadline
+    
+    echo_with_color(BLUE, "  📋 Request body:", file=sys.stderr)
+    print(json.dumps(request_body, indent=2), file=sys.stderr)
+    
+    echo_with_color(BLUE, f"  🌐 Making REST API request to: {pay_service_url.rstrip('/')}/api/composed_contract/issue_swap_workflow", file=sys.stderr)
+    return _post_workflow_json(
+        pay_service_url, "/api/composed_contract/issue_swap_workflow", request_body, jwt_token,
+        account_address=account_address, wallet_id=wallet_id,
+    )
+
+
+def accept_obligation_graphql(
+    pay_service_url: str,
+    jwt_token: str,
+    contract_id: str,
+    account_address: Optional[str] = None,
+    wallet_id: Optional[str] = None,
+    max_retries: int = 12,
+    retry_delay_seconds: float = 2.0,
+) -> dict:
+    """Call acceptObligation GraphQL mutation. Uses the same sub-account that issued the loan:
+    sends X-Account-Address and X-Wallet-Id headers and walletId in input so the backend accepts as that wallet.
+    Call only when wallet_id is the obligor (issuing) sub-account so issue and accept use the same wallet.
+    Retries on 'Contract not found' to handle MQ consumer race: contract records are updated asynchronously
+    after the workflow returns."""
+    query = (
+        "mutation AcceptObligation($input: AcceptObligationInput!) {"
+        " acceptObligation(input: $input) { success message messageId } }"
+    )
+    # Use composedContractId for composed contracts; contractId for single obligation contracts
+    if contract_id and contract_id.startswith("COMPOSED-CONTRACT-"):
+        input_payload = {"contractReference": {"composedContractId": contract_id}}
+    else:
+        input_payload = {"contractId": contract_id}
+    if wallet_id and wallet_id.strip():
+        input_payload["walletId"] = wallet_id.strip()
+    variables = {"input": input_payload}
+    url = f"{pay_service_url.rstrip('/')}/graphql"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {jwt_token}",
+    }
+    if account_address and account_address.strip().startswith("0x"):
+        headers["X-Account-Address"] = account_address.strip()
+    if wallet_id and wallet_id.strip():
+        headers["X-Wallet-Id"] = wallet_id.strip()
+    last_error = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            if attempt > 1:
+                echo_with_color(BLUE, f"    ⏳ Retry {attempt}/{max_retries} for acceptObligation (contract record may not be ready yet)...", file=sys.stderr)
+            response = requests.post(
+                url,
+                json={"query": query, "variables": variables},
+                headers=headers,
+                timeout=30,
+            )
+            if not response.text:
+                return {"success": False, "error": "Empty response from acceptObligation"}
+            data = response.json()
+            data_obj = data.get("data") if isinstance(data, dict) else None
+            if isinstance(data_obj, dict) and "acceptObligation" in data_obj:
+                ao = data_obj["acceptObligation"]
+                result = {
+                    "success": ao.get("success", False),
+                    "message": ao.get("message"),
+                    "messageId": ao.get("messageId"),
+                    "raw": ao,
+                }
+                if result.get("success"):
+                    return result
+                err = (result.get("message") or "").lower()
+                if "contract not found" in err or "not found" in err:
+                    last_error = result.get("message", "Contract not found")
+                    if attempt < max_retries:
+                        if attempt == 1:
+                            echo_with_color(BLUE, "    ⏳ Contract record not ready yet (MQ consumer race), retrying...", file=sys.stderr)
+                        time.sleep(retry_delay_seconds)
+                        continue
+                    return {"success": False, "error": last_error}
+                return result
+            msg = _graphql_errors_message(data)
+            if msg:
+                err_lower = (msg or "").lower()
+                if ("contract not found" in err_lower or "not found" in err_lower) and attempt < max_retries:
+                    last_error = msg
+                    if attempt == 1:
+                        echo_with_color(BLUE, "    ⏳ Contract record not ready yet (MQ consumer race), retrying...", file=sys.stderr)
+                    time.sleep(retry_delay_seconds)
+                    continue
+                return {"success": False, "error": msg}
+            return {"success": False, "error": data.get("error", response.text or "Unknown acceptObligation failure")}
+        except Exception as e:
+            last_error = str(e)
+            if attempt < max_retries:
+                time.sleep(retry_delay_seconds)
+                continue
+            return {"success": False, "error": last_error}
+    return {"success": False, "error": last_error or "Contract not found after retries"}
+
+
+def complete_swap(
+    pay_service_url: str,
+    auth_service_url: str,
+    acceptor_email: str,
+    acceptor_password: str,
+    swap_id: str,
+    max_retries: int = 12,
+    retry_delay_seconds: float = 2.0,
+) -> dict:
+    """Login as acceptor and call completeSwap GraphQL mutation (counterparty accepts the swap).
+    Retries on 'Swap not found' to handle MQ consumer race: the swap record is created asynchronously
+    after the workflow returns, so the first loan may succeed by timing luck while later loans fail."""
+    echo_with_color(CYAN, f"  🤝 Accepting swap as counterparty ({acceptor_email})...", file=sys.stderr)
+    acceptor_token = login_user(auth_service_url, acceptor_email, acceptor_password)
+    if not acceptor_token:
+        return {"error": f"Failed to login as acceptor {acceptor_email}", "success": False}
+    for attempt in range(1, max_retries + 1):
+        idempotency_key = f"complete-swap-{swap_id}-{int(time.time())}-{attempt}"
+        query = (
+            "mutation($input: CompleteSwapInput!) { completeSwap(input: $input) { success message "
+            "accountAddress swapId completeResult messageId transactionId signature timestamp } }"
+        )
+        variables = {
+            "input": {
+                "swapId": swap_id,
+                "idempotencyKey": idempotency_key,
+            }
+        }
+        url = f"{pay_service_url.rstrip('/')}/graphql"
+        try:
+            if attempt > 1:
+                echo_with_color(BLUE, f"    ⏳ Retry {attempt}/{max_retries} for completeSwap (swap record may not be ready yet)...", file=sys.stderr)
+            response = requests.post(
+                url,
+                json={"query": query, "variables": variables},
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {acceptor_token}",
+                },
+                timeout=30,
+            )
+            if not response.text:
+                return {"error": "Empty response from completeSwap", "success": False}
+            data = response.json()
+            # GraphQL may return {"data": null, "errors": [...]} on failure; avoid "x in None"
+            data_obj = data.get("data") if isinstance(data, dict) else None
+            if isinstance(data_obj, dict) and "completeSwap" in data_obj:
+                cs = data_obj["completeSwap"]
+                result = {
+                    "success": cs.get("success", False),
+                    "message": cs.get("message"),
+                    "messageId": cs.get("messageId"),
+                    "transactionId": cs.get("transactionId"),
+                    "raw": cs,
+                }
+                if result.get("success"):
+                    return result
+                # Non-success: check if retryable (swap record not yet in store)
+                err = (result.get("message") or result.get("error") or "").lower()
+                if "swap not found" in err or "not found" in err:
+                    if attempt < max_retries:
+                        time.sleep(retry_delay_seconds)
+                        continue
+                    return {"error": result.get("message", "Swap not found"), "success": False}
+                return result
+            msg = _graphql_errors_message(data)
+            if msg:
+                err_lower = (msg or "").lower()
+                if ("swap not found" in err_lower or "not found" in err_lower) and attempt < max_retries:
+                    if attempt == 1:
+                        echo_with_color(BLUE, "    ⏳ Swap record not ready yet (MQ consumer race), retrying...", file=sys.stderr)
+                    time.sleep(retry_delay_seconds)
+                    continue
+                return {"error": msg, "success": False}
+            return {"error": response.text or "Unknown completeSwap failure", "success": False}
+        except Exception as e:
+            if attempt < max_retries:
+                time.sleep(retry_delay_seconds)
+                continue
+            return {"error": str(e), "success": False}
+    return {"error": "Swap not found after retries", "success": False}
+
+
+def mint_tokens(
+    pay_service_url: str,
+    auth_service_url: str,
+    user_email: str,
+    user_password: str,
+    denomination: str,
+    amount: str,
+    policy_secret: str,
+) -> dict:
+    """Mint tokens via REST API (mirrors executors.sh execute_mint).
+    POST /mint?asset_id=...&amount=...&policy_secret=...
+    """
+    echo_with_color(CYAN, f"  🪙 Minting {amount} {denomination}...", file=sys.stderr)
+    jwt_token = login_user(auth_service_url, user_email, user_password)
+    if not jwt_token:
+        return {"success": False, "error": f"Failed to login as {user_email}"}
+    url = f"{pay_service_url.rstrip('/')}/mint"
+    params = {"asset_id": denomination, "amount": amount, "policy_secret": policy_secret}
     try:
         response = requests.post(
-            f"{pay_service_url}/api/composed_contract/issue_workflow",
-            json=request_body,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {jwt_token}"
-            },
-            timeout=30
+            url,
+            params=params,
+            headers={"Authorization": f"Bearer {jwt_token}"},
+            timeout=60,
         )
-        
-        echo_with_color(BLUE, f"  📡 Response received (HTTP {response.status_code})", file=sys.stderr)
-        
-        if not response.text:
-            echo_with_color(YELLOW, "  ⚠️  Warning: Empty response body", file=sys.stderr)
-        
-        if response.status_code == 422:
-            echo_with_color(YELLOW, "  ⚠️  Validation error - full response:", file=sys.stderr)
-            try:
-                print(json.dumps(response.json(), indent=2), file=sys.stderr)
-            except:
-                print(response.text, file=sys.stderr)
-        
-        try:
-            return response.json()
-        except:
-            return {"error": response.text, "status_code": response.status_code}
+        data = response.json() if response.text else {}
+        if data.get("status") == "success":
+            mint_result = data.get("mint_result", {})
+            echo_with_color(GREEN, f"    ✅ Mint successful (message_id: {mint_result.get('message_id', 'N/A')})", file=sys.stderr)
+            return {"success": True, "data": data}
+        err = data.get("error", response.text or "Unknown error")
+        echo_with_color(RED, f"    ❌ Mint failed: {err}", file=sys.stderr)
+        return {"success": False, "error": err}
     except Exception as e:
-        echo_with_color(RED, f"  ❌ Error making request: {e}", file=sys.stderr)
-        return {"error": str(e)}
+        echo_with_color(RED, f"    ❌ Mint failed: {e}", file=sys.stderr)
+        return {"success": False, "error": str(e)}
+
+
+def burn_tokens(
+    pay_service_url: str,
+    auth_service_url: str,
+    user_email: str,
+    user_password: str,
+    denomination: str,
+    amount: str,
+    policy_secret: str,
+) -> dict:
+    """Burn tokens via REST API (mirrors executors.sh execute_burn).
+    POST /burn?asset_id=...&amount=...&policy_secret=...
+    """
+    echo_with_color(CYAN, f"  🔥 Burning {amount} {denomination}...", file=sys.stderr)
+    jwt_token = login_user(auth_service_url, user_email, user_password)
+    if not jwt_token:
+        return {"success": False, "error": f"Failed to login as {user_email}"}
+    url = f"{pay_service_url.rstrip('/')}/burn"
+    params = {"asset_id": denomination, "amount": amount, "policy_secret": policy_secret}
+    try:
+        response = requests.post(
+            url,
+            params=params,
+            headers={"Authorization": f"Bearer {jwt_token}"},
+            timeout=60,
+        )
+        data = response.json() if response.text else {}
+        if data.get("status") == "success":
+            burn_result = data.get("burn_result", {})
+            echo_with_color(GREEN, f"    ✅ Burn successful (message_id: {burn_result.get('message_id', 'N/A')})", file=sys.stderr)
+            return {"success": True, "data": data}
+        err = data.get("error", response.text or "Unknown error")
+        echo_with_color(RED, f"    ❌ Burn failed: {err}", file=sys.stderr)
+        return {"success": False, "error": err}
+    except Exception as e:
+        echo_with_color(RED, f"    ❌ Burn failed: {e}", file=sys.stderr)
+        return {"success": False, "error": str(e)}
+
+
+def deposit_tokens(
+    pay_service_url: str,
+    auth_service_url: str,
+    user_email: str,
+    user_password: str,
+    denomination: str,
+    amount: str,
+    idempotency_key: str,
+) -> dict:
+    """Deposit tokens via GraphQL (mirrors nc_acacia.yaml / executors.sh execute_deposit).
+    User credits their account with the given amount of the asset.
+    """
+    echo_with_color(CYAN, f"  🏦 Depositing {amount} {denomination}...")
+    jwt_token = login_user(auth_service_url, user_email, user_password)
+    if not jwt_token:
+        return {"success": False, "error": f"Failed to login as {user_email}"}
+    query = (
+        "mutation Deposit($input: DepositInput!) {"
+        " deposit(input: $input) { success message accountAddress depositResult messageId timestamp } }"
+    )
+    variables = {
+        "input": {
+            "assetId": denomination,
+            "amount": amount,
+            "idempotencyKey": idempotency_key,
+        }
+    }
+    url = f"{pay_service_url.rstrip('/')}/graphql"
+    try:
+        response = requests.post(
+            url,
+            json={"query": query, "variables": variables},
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {jwt_token}"},
+            timeout=60,
+        )
+        data = response.json() if response.text else {}
+        data_obj = data.get("data") if isinstance(data, dict) else None
+        if isinstance(data_obj, dict) and "deposit" in data_obj:
+            dep = data_obj["deposit"]
+            if dep.get("success"):
+                echo_with_color(GREEN, f"    ✅ Deposit successful (message_id: {dep.get('messageId', 'N/A')})")
+                return {"success": True, "data": dep}
+            return {"success": False, "error": dep.get("message", "Deposit failed")}
+        msg = _graphql_errors_message(data)
+        return {"success": False, "error": msg or response.text or "Unknown deposit failure"}
+    except Exception as e:
+        echo_with_color(RED, f"    ❌ Deposit failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+def instant_send(
+    pay_service_url: str,
+    auth_service_url: str,
+    sender_email: str,
+    sender_password: str,
+    denomination: str,
+    amount: str,
+    destination_id: str,
+) -> dict:
+    """Send tokens to a destination via GraphQL instant mutation (mirrors executors.sh execute_instant).
+    destination_id: entity email (e.g. investor@yieldfabric.com).
+    """
+    echo_with_color(CYAN, f"  ⚡ Sending {amount} {denomination} to {destination_id}...", file=sys.stderr)
+    jwt_token = login_user(auth_service_url, sender_email, sender_password)
+    if not jwt_token:
+        return {"success": False, "error": f"Failed to login as {sender_email}"}
+    query = (
+        "mutation Instant($input: InstantSendInput!) {"
+        " instant(input: $input) { success message accountAddress destinationId idHash messageId paymentId sendResult timestamp } }"
+    )
+    variables = {
+        "input": {
+            "assetId": denomination,
+            "amount": amount,
+            "destinationId": destination_id,
+        }
+    }
+    url = f"{pay_service_url.rstrip('/')}/graphql"
+    try:
+        response = requests.post(
+            url,
+            json={"query": query, "variables": variables},
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {jwt_token}"},
+            timeout=60,
+        )
+        data = response.json() if response.text else {}
+        data_obj = data.get("data") if isinstance(data, dict) else None
+        if isinstance(data_obj, dict) and "instant" in data_obj:
+            inst = data_obj["instant"]
+            if inst.get("success"):
+                echo_with_color(GREEN, f"    ✅ Instant send successful (message_id: {inst.get('messageId', 'N/A')})", file=sys.stderr)
+                return {"success": True, "data": inst}
+            return {"success": False, "error": inst.get("message", "Instant send failed")}
+        msg = _graphql_errors_message(data)
+        return {"success": False, "error": msg or response.text or "Unknown instant send failure"}
+    except Exception as e:
+        echo_with_color(RED, f"    ❌ Instant send failed: {e}", file=sys.stderr)
+        return {"success": False, "error": str(e)}
+
+
+def get_total_supply(
+    pay_service_url: str,
+    auth_service_url: str,
+    user_email: str,
+    user_password: str,
+    denomination: str,
+) -> dict:
+    """Get total supply via REST API (mirrors executors.sh execute_total_supply).
+    GET /total_supply?asset_id=...
+    """
+    echo_with_color(CYAN, f"  💰 Fetching total supply for {denomination}...", file=sys.stderr)
+    jwt_token = login_user(auth_service_url, user_email, user_password)
+    if not jwt_token:
+        return {"success": False, "error": f"Failed to login as {user_email}"}
+    url = f"{pay_service_url.rstrip('/')}/total_supply"
+    params = {"asset_id": denomination}
+    try:
+        response = requests.get(
+            url,
+            params=params,
+            headers={"Authorization": f"Bearer {jwt_token}"},
+            timeout=30,
+        )
+        data = response.json() if response.text else {}
+        if data.get("status") == "success":
+            total = data.get("total_supply", "N/A")
+            echo_with_color(GREEN, f"    ✅ Total supply: {total}", file=sys.stderr)
+            return {"success": True, "total_supply": total, "data": data}
+        err = data.get("error", response.text or "Unknown error")
+        echo_with_color(RED, f"    ❌ Total supply failed: {err}", file=sys.stderr)
+        return {"success": False, "error": err}
+    except Exception as e:
+        echo_with_color(RED, f"    ❌ Total supply failed: {e}", file=sys.stderr)
+        return {"success": False, "error": str(e)}
 
 
 def poll_workflow_status(
@@ -205,7 +867,7 @@ def poll_workflow_status(
     """Poll workflow status until completion"""
     echo_with_color(CYAN, f"🔄 Polling workflow status for ID: {workflow_id}", file=sys.stderr)
     
-    url = f"{pay_service_url}/api/workflows/{workflow_id}"
+    url = f"{pay_service_url.rstrip('/')}/api/workflows/{workflow_id}"
     
     for attempt in range(1, max_attempts + 1):
         echo_with_color(BLUE, f"  📡 Attempt {attempt}/{max_attempts}: GET {url}", file=sys.stderr)
@@ -232,7 +894,7 @@ def poll_workflow_status(
                     
                     if workflow_status in ("completed", "failed", "cancelled"):
                         return data
-                except:
+                except Exception:
                     echo_with_color(YELLOW, f"  ⚠️  Could not parse response: {response.text}", file=sys.stderr)
             
             if attempt < max_attempts:
@@ -399,56 +1061,98 @@ def main():
     
     # Show usage if help is requested
     if len(sys.argv) > 1 and sys.argv[1] in ('-h', '--help'):
-        print("Usage: issue_workflow.py [username] [password] [csv_file]")
+        print("Usage: issue_workflow.py [username] [password] [csv_file] [action_mode]")
         print("   or: issue_workflow.py [csv_file]")
         print()
         print("Arguments:")
-        print("  username    User email for authentication (default: issuer@yieldfabric.com)")
-        print("  password    User password for authentication (default: issuer_password)")
-        print("  csv_file    Path to CSV file with loan data (default: wisr_loans_20250831.csv)")
+        print("  username     User email for authentication (default: issuer@yieldfabric.com)")
+        print("  password     User password for authentication (default: issuer_password)")
+        print("  csv_file     Path to CSV file with loan data (default: wisr_loans_20250831.csv)")
+        print("  action_mode  One of: issue_only | issue_swap | issue_swap_complete (default: issue_only)")
+        print("                issue_only           - Create composed contract with obligations only")
+        print("                issue_swap           - Create contract then create swap with SWAP_COUNTERPARTY")
+        print("                issue_swap_complete  - Same as issue_swap then acceptor completes each swap (requires ACCEPTOR_EMAIL/PASSWORD)")
         print()
         print("Note: If the first argument is a CSV file (ends with .csv or exists as a file),")
         print("      it will be treated as the CSV file path, and username/password will use")
         print("      environment variables or defaults.")
         print()
         print("Environment variables (used as fallback if arguments not provided):")
-        print("  USER_EMAIL         User email for authentication")
-        print("  PASSWORD           User password for authentication")
-        print("  PAY_SERVICE_URL    Payments service URL (default: https://pay.yieldfabric.com)")
-        print("  AUTH_SERVICE_URL   Auth service URL (default: https://auth.yieldfabric.com)")
-        print("  DENOMINATION      Token denomination (default: aud-token-asset)")
-        print("  COUNTERPART       Counterparty email (default: issuer@yieldfabric.com)")
+        print("  ISSUER_EMAIL        Issuer email for authentication (alias: USER_EMAIL)")
+        print("  ISSUER_PASSWORD     Issuer password for authentication (alias: PASSWORD)")
+        print("  PAY_SERVICE_URL     Payments service URL (default: https://pay.yieldfabric.com)")
+        print("  AUTH_SERVICE_URL    Auth service URL (default: https://auth.yieldfabric.com)")
+        print("  DENOMINATION        Token denomination (default: aud-token-asset)")
+        print("  COUNTERPART         Obligation counterparty email (default: issuer@yieldfabric.com)")
+        print("  LOAN_COUNT          Max number of loans to process from CSV (default: 10)")
+        print("  ACTION_MODE         issue_only | issue_swap | issue_swap_complete (default: issue_only)")
+        print("  SWAP_COUNTERPARTY   Swap counterparty when action_mode=issue_swap (default: originator@yieldfabric.com)")
+        print("  PAYMENT_AMOUNT      Expected payment from swap counterparty (default: obligation notional)")
+        print("  PAYMENT_DENOMINATION Payment denomination for swap (default: DENOMINATION)")
+        print("  DEADLINE            Swap deadline ISO date (default: obligation maturity)")
+        print("  ACCEPTOR_EMAIL      If set with issue_swap: user that accepts/completes the swap (counterparty)")
+        print("  ACCEPTOR_PASSWORD   Password for ACCEPTOR_EMAIL")
+        print("  DEPLOY_ISSUER_ACCOUNT   If set (true/1/yes): deploy issuer's on-chain wallet. With issue_swap_complete, defaults to true unless set to false.")
+        print("  DEPLOY_ACCEPTOR_ACCOUNT If set (true/1/yes): deploy acceptor's on-chain wallet. With issue_swap_complete, defaults to true unless set to false.")
+        print("  DEPLOY_ACCOUNT_PER_LOAN If set (true/1/yes): deploy one new wallet per loan under the issuer entity (same issuer, additional wallets). Defaults to true for issue_swap / issue_swap_complete.")
+        print("  MINT_BEFORE_LOANS      If set (true/1/yes): mint loan amount as ACCEPTOR_EMAIL (investor) per loan. Requires ACCEPTOR_EMAIL, ACCEPTOR_PASSWORD, POLICY_SECRET (issue_swap flows only).")
+        print("  BURN_AFTER_LOANS       If set (true/1/yes) with POLICY_SECRET and BURN_AMOUNT: burn tokens after processing loans.")
+        print("  BURN_AMOUNT            Amount to burn when BURN_AFTER_LOANS=true (e.g. 5).")
+        print("  POLICY_SECRET          Policy secret for mint/burn (required for MINT_BEFORE_LOANS or BURN_AFTER_LOANS).")
         print()
         print("Description:")
-        print("  Processes the top 10 loans from the CSV file and creates a composed contract")
+        print("  Processes up to LOAN_COUNT loans from the CSV file (default 10) and creates a composed contract")
         print("  for each loan with a single obligation containing:")
         print("    - Loan ID as contract identifier")
         print("    - Principal Outstanding as payment amount")
         print("    - Maturity date as payment due date")
         print("    - Issuer as obligor")
+        print("  With action_mode=issue_swap, also creates a swap with SWAP_COUNTERPARTY (e.g. originator).")
+        print("  If ACCEPTOR_EMAIL is set with issue_swap, that user will accept/complete each swap.")
+        print("  With action_mode=issue_swap_complete, each swap is created and then accepted (ACCEPTOR_EMAIL/PASSWORD required).")
+        print("  With DEPLOY_ISSUER_ACCOUNT=true, the issuer's on-chain wallet is deployed via auth service before running workflows.")
+        print("  With DEPLOY_ACCEPTOR_ACCOUNT=true, the acceptor's (counterparty) wallet is deployed so completeSwap can succeed.")
+        print("  With DEPLOY_ACCOUNT_PER_LOAN=true, one new wallet is deployed under the issuer entity before each loan (issuer gets multiple wallets, one per loan).")
         print()
         print("Examples:")
         print("  python3 issue_workflow.py")
         print("  python3 issue_workflow.py wisr_loans_20250831.csv")
         print("  python3 issue_workflow.py user@example.com mypassword")
-        print("  python3 issue_workflow.py user@example.com mypassword /path/to/loans.csv")
-        print("  USER_EMAIL=user@example.com PASSWORD=mypassword python3 issue_workflow.py")
+        print("  python3 issue_workflow.py user@example.com mypassword /path/to/loans.csv issue_swap")
+        print("  ACTION_MODE=issue_swap SWAP_COUNTERPARTY=originator@yieldfabric.com python3 issue_workflow.py")
+        print("  ACTION_MODE=issue_swap ACCEPTOR_EMAIL=originator@yieldfabric.com ACCEPTOR_PASSWORD=secret python3 issue_workflow.py")
+        print("  ACTION_MODE=issue_swap_complete ACCEPTOR_EMAIL=originator@yieldfabric.com ACCEPTOR_PASSWORD=secret python3 issue_workflow.py")
+        print("  ISSUER_EMAIL=issuer@yieldfabric.com ISSUER_PASSWORD=secret python3 issue_workflow.py")
+        print("  DEPLOY_ISSUER_ACCOUNT=true python3 issue_workflow.py   # deploy issuer wallet first")
+        print("  DEPLOY_ACCEPTOR_ACCOUNT=true python3 issue_workflow.py   # deploy acceptor (investor) wallet for completeSwap")
+        print("  DEPLOY_ACCOUNT_PER_LOAN=false python3 issue_workflow.py   # disable one wallet per loan under issuer (default: on for issue_swap)")
+        print("  MINT_BEFORE_LOANS=true ACCEPTOR_EMAIL=... ACCEPTOR_PASSWORD=... POLICY_SECRET=xxx python3 issue_workflow.py   # mint as investor per loan")
+        print("  BURN_AFTER_LOANS=true BURN_AMOUNT=5 POLICY_SECRET=xxx python3 issue_workflow.py   # burn after processing")
         return 0
     
     # Parse command-line arguments - match bash script behavior
-    # Usage: ./issue_workflow.py [username] [password] [csv_file]
+    # Usage: ./issue_workflow.py [username] [password] [csv_file] [action_mode]
     # Or: ./issue_workflow.py [csv_file]
     
     args = sys.argv[1:]
     
     # Store environment variables before we potentially overwrite them
-    env_user_email = os.environ.get('USER_EMAIL', '')
-    env_password = os.environ.get('PASSWORD', '')
+    # Issuer credentials: ISSUER_EMAIL/ISSUER_PASSWORD take precedence over USER_EMAIL/PASSWORD
+    env_user_email = (
+        os.environ.get('ISSUER_EMAIL', '').strip()
+        or os.environ.get('USER_EMAIL', '').strip()
+    )
+    env_password = (
+        os.environ.get('ISSUER_PASSWORD', '').strip()
+        or os.environ.get('PASSWORD', '').strip()
+    )
+    env_action_mode = os.environ.get('ACTION_MODE', '').strip().lower() or 'issue_only'
     
     # Smart argument detection: if first arg looks like a CSV file, treat it as such
     csv_file = None
     user_email = None
     password = None
+    action_mode = None
     
     if len(args) >= 1:
         first_arg = args[0]
@@ -457,33 +1161,44 @@ def main():
         # Check if first argument is a CSV file (ends with .csv or exists as file)
         if first_arg.endswith('.csv') or csv_path.exists():
             csv_file = first_arg
+            if len(args) >= 2:
+                action_mode = args[1].strip().lower()
         elif '@' in first_arg:
             # Looks like an email address
             user_email = first_arg
             if len(args) >= 2:
                 password = args[1]
-                if len(args) >= 3:
-                    csv_file = args[2]
+            if len(args) >= 3:
+                csv_file = args[2]
+            if len(args) >= 4:
+                action_mode = args[3].strip().lower()
         else:
             # Assume it's a username even if it doesn't look like an email
             user_email = first_arg
             if len(args) >= 2:
                 password = args[1]
-                if len(args) >= 3:
-                    csv_file = args[2]
+            if len(args) >= 3:
+                csv_file = args[2]
+            if len(args) >= 4:
+                action_mode = args[3].strip().lower()
     
     # Set defaults if not provided (use environment variables, then hardcoded defaults)
     if not user_email:
         if env_user_email:
             user_email = env_user_email
         else:
-            user_email = 'issuer@yieldfabric.com'
+            user_email = 'none'
     
     if not password:
         if env_password:
             password = env_password
         else:
-            password = 'issuer_password'
+            password = 'none'
+    
+    # Action mode: issue_only | issue_swap | issue_swap_complete
+    _valid_modes = ('issue_only', 'issue_swap', 'issue_swap_complete')
+    if not action_mode or action_mode not in _valid_modes:
+        action_mode = env_action_mode if env_action_mode in _valid_modes else 'issue_only'
     
     # CSV file path - default to script directory if not provided
     if not csv_file:
@@ -507,6 +1222,20 @@ def main():
     auth_service_url = os.environ.get('AUTH_SERVICE_URL', 'https://auth.yieldfabric.com')
     denomination = os.environ.get('DENOMINATION', 'aud-token-asset')
     counterpart = os.environ.get('COUNTERPART', 'issuer@yieldfabric.com')
+    swap_counterparty = os.environ.get('SWAP_COUNTERPARTY', 'originator@yieldfabric.com')
+    payment_denomination = os.environ.get('PAYMENT_DENOMINATION', denomination)
+    # PAYMENT_AMOUNT and DEADLINE can be set per-request from obligation; env overrides if set
+    env_payment_amount = os.environ.get('PAYMENT_AMOUNT', '')
+    env_deadline = os.environ.get('DEADLINE', '')
+    # Optional: user that accepts/completes the swap (counterparty); when set, we call completeSwap after each issue_swap
+    acceptor_email = os.environ.get('ACCEPTOR_EMAIL', '').strip()
+    acceptor_password = os.environ.get('ACCEPTOR_PASSWORD', '').strip()
+    try:
+        max_loans = int(os.environ.get('LOAN_COUNT', '10').strip())
+        if max_loans < 1:
+            max_loans = 10
+    except ValueError:
+        max_loans = 10
     
     echo_with_color(CYAN, "🚀 Starting Issue Composed Contract WorkFlow API Test - Processing Loans from CSV")
     print()
@@ -515,9 +1244,64 @@ def main():
     echo_with_color(BLUE, f"  API Base URL: {pay_service_url}")
     echo_with_color(BLUE, f"  Auth Service: {auth_service_url}")
     echo_with_color(BLUE, f"  User (Initiator): {user_email}")
-    echo_with_color(BLUE, f"  Counterparty: {counterpart}")
+    echo_with_color(BLUE, f"  Obligation counterpart: {counterpart}")
     echo_with_color(BLUE, f"  Denomination: {denomination}")
     echo_with_color(BLUE, f"  CSV File: {csv_file}")
+    echo_with_color(BLUE, f"  Max loans to process: {max_loans}")
+    echo_with_color(PURPLE, f"  Action mode: {action_mode}")
+    # Deploy flags (parsed once; used for config display and later deploy steps)
+    deploy_issuer_env = os.environ.get("DEPLOY_ISSUER_ACCOUNT", "").strip().lower()
+    deploy_issuer = deploy_issuer_env in ("true", "1", "yes") or (
+        action_mode == "issue_swap_complete" and deploy_issuer_env not in ("false", "0", "no")
+    )
+    deploy_acceptor_env = os.environ.get("DEPLOY_ACCEPTOR_ACCOUNT", "").strip().lower()
+    deploy_acceptor = (deploy_acceptor_env in ("true", "1", "yes") or (
+        action_mode == "issue_swap_complete" and deploy_acceptor_env not in ("false", "0", "no")
+    )) and bool(acceptor_email and acceptor_password)
+    deploy_per_loan_env = os.environ.get("DEPLOY_ACCOUNT_PER_LOAN", "").strip().lower()
+    deploy_per_loan = deploy_per_loan_env in ("true", "1", "yes") or (
+        action_mode in ("issue_swap", "issue_swap_complete") and deploy_per_loan_env not in ("false", "0", "no")
+    )
+    if deploy_issuer:
+        echo_with_color(CYAN, "  Deploy issuer account: yes (before workflows)" + (" [default for issue_swap_complete]" if not deploy_issuer_env else ""))
+    if deploy_acceptor:
+        echo_with_color(CYAN, "  Deploy acceptor account: yes (before workflows)" + (" [default for issue_swap_complete]" if not deploy_acceptor_env else ""))
+    if deploy_per_loan:
+        echo_with_color(CYAN, "  Deploy one wallet per loan under issuer entity: yes" + (" [default for issue_swap/issue_swap_complete]" if not deploy_per_loan_env else ""))
+    if action_mode in ('issue_swap', 'issue_swap_complete'):
+        if action_mode == 'issue_swap_complete' and (not acceptor_email or not acceptor_password):
+            echo_with_color(RED, "❌ ACTION_MODE=issue_swap_complete requires ACCEPTOR_EMAIL and ACCEPTOR_PASSWORD")
+            return 1
+        echo_with_color(BLUE, f"  Swap counterparty: {swap_counterparty}")
+        echo_with_color(BLUE, f"  Payment denomination (swap): {payment_denomination}")
+        if env_payment_amount:
+            echo_with_color(BLUE, f"  Payment amount (swap, from env): {env_payment_amount}")
+        else:
+            echo_with_color(BLUE, "  Payment amount (swap): obligation notional (per loan)")
+        if env_deadline:
+            echo_with_color(BLUE, f"  Deadline (swap, from env): {env_deadline}")
+        else:
+            echo_with_color(BLUE, "  Deadline (swap): obligation maturity (per loan)")
+        if acceptor_email:
+            echo_with_color(BLUE, f"  Acceptor (will complete swap): {acceptor_email}")
+        else:
+            echo_with_color(BLUE, "  Acceptor: (none - swap will remain pending)")
+    mint_before_env = os.environ.get("MINT_BEFORE_LOANS", "").strip().lower() in ("true", "1", "yes")
+    burn_after_env = os.environ.get("BURN_AFTER_LOANS", "").strip().lower() in ("true", "1", "yes")
+    policy_secret = os.environ.get("POLICY_SECRET", "").strip()
+    burn_amount = os.environ.get("BURN_AMOUNT", "").strip()
+    if mint_before_env:
+        if action_mode in ('issue_swap', 'issue_swap_complete') and policy_secret and acceptor_email and acceptor_password:
+            echo_with_color(CYAN, f"  Mint before loans: yes (as investor {acceptor_email}, per loan)")
+        elif action_mode in ('issue_swap', 'issue_swap_complete') and (not acceptor_email or not acceptor_password):
+            echo_with_color(RED, "  MINT_BEFORE_LOANS requires ACCEPTOR_EMAIL and ACCEPTOR_PASSWORD (mint runs as investor)")
+            return 1
+        elif action_mode in ('issue_swap', 'issue_swap_complete'):
+            echo_with_color(YELLOW, "  Mint before loans: yes but POLICY_SECRET missing; will skip mint")
+        else:
+            echo_with_color(YELLOW, "  Mint before loans: yes but only applies to issue_swap/issue_swap_complete; will skip")
+    if burn_after_env:
+        echo_with_color(CYAN, f"  Burn after loans: yes (amount: {burn_amount or 'N/A'})")
     print()
     
     # Check services
@@ -535,7 +1319,7 @@ def main():
     # Check if the endpoint exists (basic check)
     try:
         response = requests.post(
-            f"{pay_service_url}/api/composed_contract/issue_workflow",
+            f"{pay_service_url.rstrip('/')}/api/composed_contract/issue_workflow",
             json={},
             timeout=5
         )
@@ -543,7 +1327,7 @@ def main():
             echo_with_color(YELLOW, "⚠️  Warning: Endpoint returned 404. The server may need to be restarted to pick up the new routes.")
             echo_with_color(YELLOW, "   Make sure the server was built with the latest code including composed_contract_issue workflow.")
             print()
-    except:
+    except Exception:
         pass  # Ignore errors in endpoint check
     
     print()
@@ -558,8 +1342,42 @@ def main():
     echo_with_color(GREEN, f"  ✅ JWT token obtained (first 50 chars): {jwt_token[:50]}...")
     print()
     
-    # Read CSV and process top 10 loans
-    echo_with_color(CYAN, "📖 Reading loans from CSV file...")
+    # Deploy issuer's on-chain wallet when requested (flags already parsed above)
+    if deploy_issuer:
+        deploy_result = deploy_issuer_account(auth_service_url, user_email, password)
+        if deploy_result.get("success"):
+            addr = deploy_result.get("new_account_address") or "N/A"
+            echo_with_color(GREEN, f"  ✅ Issuer account deployed: {addr}")
+        else:
+            echo_with_color(RED, f"  ❌ Issuer account deployment failed: {deploy_result.get('error', 'Unknown error')}")
+            return 1
+        print()
+    
+    # Deploy acceptor's on-chain wallet when requested (flags already parsed above)
+    if deploy_acceptor:
+        echo_with_color(CYAN, "🔐 Deploying acceptor account (wallet)...", file=sys.stderr)
+        deploy_result = deploy_issuer_account(auth_service_url, acceptor_email, acceptor_password)
+        if deploy_result.get("success"):
+            addr = deploy_result.get("new_account_address") or "N/A"
+            echo_with_color(GREEN, f"  ✅ Acceptor account deployed: {addr}")
+        else:
+            echo_with_color(RED, f"  ❌ Acceptor account deployment failed: {deploy_result.get('error', 'Unknown error')}")
+            return 1
+        print()
+    
+    # Resolve issuer entity for loan wallet ids (WLT-LOAN-{entity_id}-{loan_id}) and for per-loan deploy when enabled
+    issuer_user_id = get_user_id_from_profile(auth_service_url, jwt_token)
+    issuer_entity_id_raw = (issuer_user_id or "").replace("ENTITY-USER-", "").replace("ENTITY-GROUP-", "").strip()
+    if deploy_per_loan:
+        if not issuer_user_id:
+            echo_with_color(YELLOW, "  ⚠️  DEPLOY_ACCOUNT_PER_LOAN enabled but could not get issuer user_id; skipping per-loan deploy")
+            deploy_per_loan = False
+        else:
+            echo_with_color(CYAN, f"  📌 Deploy one new wallet per loan under issuer entity (issuer user_id: {issuer_user_id[:8]}...)")
+            print()
+    
+    # Read CSV and process up to max_loans
+    echo_with_color(CYAN, f"📖 Reading loans from CSV file (max {max_loans})...")
     loan_count = 0
     success_count = 0
     fail_count = 0
@@ -571,7 +1389,7 @@ def main():
             next(reader, None)
             
             for row in reader:
-                if loan_count >= 10:
+                if loan_count >= max_loans:
                     break
                 
                 loan_count += 1
@@ -597,7 +1415,7 @@ def main():
                 
                 print()
                 echo_with_color(PURPLE, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-                echo_with_color(CYAN, f"📦 Processing Loan {loan_count}/10: ID={loan_id}")
+                echo_with_color(CYAN, f"📦 Processing Loan {loan_count}/{max_loans}: ID={loan_id}")
                 echo_with_color(PURPLE, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
                 print()
                 
@@ -627,18 +1445,97 @@ def main():
                 echo_with_color(BLUE, f"    PMT Left: {loan_data.get('pmtLeft', 'N/A')}")
                 print()
                 
-                # Build comprehensive data object with all loan information
+                # Mint and deposit loan amount as acceptor (investor) for each loan when MINT_BEFORE_LOANS=true (issue_swap flows only)
+                # Mint runs as ACCEPTOR_EMAIL; then same user deposits the same amount (per nc_acacia.yaml investor_deposit pattern).
+                if mint_before_env and policy_secret and action_mode in ('issue_swap', 'issue_swap_complete'):
+                    if not acceptor_email or not acceptor_password:
+                        echo_with_color(RED, f"  ❌ MINT_BEFORE_LOANS requires ACCEPTOR_EMAIL and ACCEPTOR_PASSWORD (mint runs as investor)")
+                        fail_count += 1
+                        continue
+                    echo_with_color(CYAN, f"  🪙 Minting loan amount as investor ({acceptor_email}) for loan {loan_id}...")
+                    mint_res = mint_tokens(
+                        pay_service_url, auth_service_url, acceptor_email, acceptor_password,
+                        denomination, amount_wei, policy_secret,
+                    )
+                    if not mint_res.get("success"):
+                        echo_with_color(RED, f"  ❌ Mint failed for loan {loan_id}: {mint_res.get('error', 'Unknown error')}")
+                        fail_count += 1
+                        continue
+                    echo_with_color(GREEN, f"  ✅ Minted {prin_out} to {acceptor_email}")
+                    echo_with_color(CYAN, f"  🏦 Depositing {prin_out} as {acceptor_email}...")
+                    idemp_key = f"deposit-loan-{loan_id}-{int(time.time() * 1000)}"
+                    dep_res = deposit_tokens(
+                        pay_service_url, auth_service_url, acceptor_email, acceptor_password,
+                        denomination, amount_wei, idemp_key,
+                    )
+                    if not dep_res.get("success"):
+                        echo_with_color(RED, f"  ❌ Deposit failed for loan {loan_id}: {dep_res.get('error', 'Unknown error')}")
+                        fail_count += 1
+                        continue
+                    echo_with_color(GREEN, f"  ✅ Deposited {prin_out} as {acceptor_email}")
+                    print()
+                
+                # Use wallet WLT-LOAN-{entity_id}-{loan_id}: create only if it doesn't exist, then use it to issue the loan
+                obligor_wallet_id_for_loan = None
+                obligor_address_for_loan = None
+                if issuer_entity_id_raw:
+                    sanitized_loan_id = re.sub(r"[^a-zA-Z0-9-]", "-", str(loan_id)).strip("-") or "loan"
+                    loan_wallet_id = f"WLT-LOAN-{issuer_entity_id_raw}-{sanitized_loan_id}"
+                    existing_wallet = get_wallet_by_id(pay_service_url, jwt_token, loan_wallet_id)
+                    if existing_wallet:
+                        echo_with_color(GREEN, f"  ✅ Using existing wallet for loan {loan_id}: {loan_wallet_id}")
+                        obligor_wallet_id_for_loan = loan_wallet_id
+                        obligor_address_for_loan = (existing_wallet.get("address") or "").strip()
+                    elif deploy_per_loan and issuer_user_id:
+                        echo_with_color(CYAN, f"  🔐 Creating new wallet for loan {loan_id}: {loan_wallet_id}...", file=sys.stderr)
+                        per_loan_result = deploy_user_account(auth_service_url, jwt_token, issuer_user_id)
+                        if per_loan_result.get("success"):
+                            addr = (per_loan_result.get("new_account_address") or "").strip()
+                            if not addr or addr == "N/A" or not addr.startswith("0x"):
+                                echo_with_color(YELLOW, f"  ⚠️  Deploy succeeded but no valid address for loan {loan_id}; skipping wallet registration")
+                            else:
+                                echo_with_color(GREEN, f"  ✅ New wallet for loan {loan_id}: {addr}")
+                                create_result = create_wallet_in_payments(
+                                    pay_service_url,
+                                    jwt_token,
+                                    issuer_entity_id_raw,
+                                    addr,
+                                    loan_wallet_id,
+                                    name=f"Loan {loan_id}",
+                                    description=f"Wallet for loan ID {loan_id}",
+                                )
+                                if create_result.get("success"):
+                                    echo_with_color(GREEN, f"  ✅ Registered wallet in payments: {loan_wallet_id}")
+                                    obligor_wallet_id_for_loan = loan_wallet_id
+                                    obligor_address_for_loan = addr
+                                else:
+                                    err_msg = create_result.get("error", "Unknown")
+                                    echo_with_color(YELLOW, f"  ⚠️  Could not register wallet in payments: {err_msg}")
+                        else:
+                            echo_with_color(YELLOW, f"  ⚠️  Per-loan deploy failed for loan {loan_id}: {per_loan_result.get('error', 'Unknown error')} (continuing)")
+                    else:
+                        echo_with_color(YELLOW, f"  ⚠️  No existing wallet {loan_wallet_id}; deploy_per_loan disabled — obligor must be sub-account, skipping loan")
+                if not obligor_wallet_id_for_loan:
+                    fail_count += 1
+                    continue
+                if not obligor_address_for_loan:
+                    obligor_wallet = get_wallet_by_id(pay_service_url, jwt_token, obligor_wallet_id_for_loan)
+                    obligor_address_for_loan = (obligor_wallet.get("address") or "").strip() if obligor_wallet else ""
+                print()
+                
+                # Build comprehensive data object with all loan information (obligor = sub-account wallet only)
                 obligation_data = {
                     "name": f"Loan {loan_id}",
                     "description": f"Loan obligation for loan ID {loan_id}",
                     **loan_data  # Include all extracted loan data
                 }
                 
-                # Build single obligation JSON for this loan
+                # Build single obligation JSON for this loan; obligor and counterpart both use sub-account (loan wallet)
+                # Use counterpartWalletId = obligor wallet so message counterpart = obligor address (same as obligor)
                 obligation = {
-                    "counterpart": counterpart,
+                    "counterpartWalletId": obligor_wallet_id_for_loan,
                     "denomination": denomination,
-                    "obligor": user_email,
+                    "obligorWalletId": obligor_wallet_id_for_loan,
                     "notional": amount_wei,
                     "expiry": maturity_iso,
                     "data": obligation_data,
@@ -658,19 +1555,38 @@ def main():
                         }]
                     }
                 }
-                
                 obligations_array = [obligation]
                 contract_name = f"Loan Contract {loan_id}"
                 contract_description = f"Composed contract for loan ID {loan_id}"
                 
-                echo_with_color(CYAN, "📤 Calling issue composed contract workflow endpoint...")
-                start_response = issue_composed_contract_workflow(
-                    pay_service_url,
-                    jwt_token,
-                    contract_name,
-                    contract_description,
-                    obligations_array
-                )
+                if action_mode in ('issue_swap', 'issue_swap_complete'):
+                    payment_amount = env_payment_amount if env_payment_amount else amount_wei
+                    deadline = env_deadline if env_deadline else maturity_iso
+                    echo_with_color(CYAN, "📤 Calling issue + swap composed contract workflow endpoint...")
+                    start_response = issue_composed_contract_issue_swap_workflow(
+                        pay_service_url,
+                        jwt_token,
+                        contract_name,
+                        contract_description,
+                        obligations_array,
+                        counterparty=swap_counterparty,
+                        payment_amount=payment_amount,
+                        payment_denomination=payment_denomination,
+                        deadline=deadline if deadline else None,
+                        account_address=obligor_address_for_loan or None,
+                        wallet_id=obligor_wallet_id_for_loan,
+                    )
+                else:
+                    echo_with_color(CYAN, "📤 Calling issue composed contract workflow endpoint...")
+                    start_response = issue_composed_contract_workflow(
+                        pay_service_url,
+                        jwt_token,
+                        contract_name,
+                        contract_description,
+                        obligations_array,
+                        account_address=obligor_address_for_loan or None,
+                        wallet_id=obligor_wallet_id_for_loan,
+                    )
                 
                 workflow_id = start_response.get('workflow_id') if isinstance(start_response, dict) else None
                 
@@ -697,8 +1613,87 @@ def main():
                 
                 if workflow_status == "completed":
                     echo_with_color(GREEN, f"  ✅ Loan {loan_id} contract created successfully!")
-                    contract_id = final_response.get('result', {}).get('composed_contract_id', 'N/A')
+                    result = final_response.get('result') or {}
+                    # Backend may return result with swap_id "pending" or missing if status was read
+                    # before the create_swap context was persisted; re-fetch once after a short delay.
+                    if action_mode in ('issue_swap', 'issue_swap_complete'):
+                        swap_id_raw = result.get('swap_id') if isinstance(result, dict) else None
+                        if swap_id_raw is None or swap_id_raw in ('', 'pending'):
+                            echo_with_color(BLUE, "    ⏳ Re-fetching workflow result for swap_id...", file=sys.stderr)
+                            time.sleep(2)
+                            retry_response = requests.get(
+                                f"{pay_service_url}/api/workflows/{workflow_id}",
+                                timeout=30
+                            )
+                            if retry_response.ok:
+                                try:
+                                    retry_data = retry_response.json()
+                                    retry_result = retry_data.get('result')
+                                    if isinstance(retry_result, dict) and retry_result.get('swap_id') not in (None, '', 'pending'):
+                                        result = retry_result
+                                        echo_with_color(GREEN, "    ✅ Got swap_id from re-fetch", file=sys.stderr)
+                                except Exception:
+                                    pass
+                    if not isinstance(result, dict):
+                        result = {}
+                    contract_id = result.get('composed_contract_id', 'N/A')
                     echo_with_color(BLUE, f"    Composed Contract ID: {contract_id}")
+                    # Only accept when we have the same sub-account that issued (obligor_wallet_id_for_loan).
+                    # We require obligor_wallet_id_for_loan so accept is always as the issuing sub-account.
+                    if contract_id and contract_id != 'N/A' and obligor_wallet_id_for_loan:
+                        echo_with_color(CYAN, "    📤 Requesting accept obligation as same sub-account that issued...", file=sys.stderr)
+                        accept_res = accept_obligation_graphql(
+                            pay_service_url,
+                            jwt_token,
+                            contract_id,
+                            account_address=obligor_address_for_loan,
+                            wallet_id=obligor_wallet_id_for_loan,
+                        )
+                        if accept_res.get("success"):
+                            echo_with_color(GREEN, "    ✅ Accept (as sub-account) succeeded", file=sys.stderr)
+                            if accept_res.get("messageId"):
+                                echo_with_color(BLUE, f"       Message ID: {accept_res.get('messageId')}", file=sys.stderr)
+                        elif "already accepted" in (accept_res.get("error") or accept_res.get("message") or "").lower():
+                            echo_with_color(BLUE, "    ℹ️  Obligation already accepted (workflow may have accepted)", file=sys.stderr)
+                        else:
+                            echo_with_color(YELLOW, f"    ⚠️  Accept request: {accept_res.get('error', accept_res.get('message', 'Unknown'))}", file=sys.stderr)
+                    elif contract_id and contract_id != 'N/A' and not obligor_wallet_id_for_loan:
+                        echo_with_color(YELLOW, "    ⚠️  Skipping accept: no obligor wallet id (accept only when same sub-account that issued can accept)", file=sys.stderr)
+                    if action_mode in ('issue_swap', 'issue_swap_complete'):
+                        swap_id_val = result.get('swap_id')
+                        if swap_id_val is not None:
+                            swap_id_val = str(swap_id_val).strip() if swap_id_val else ""
+                        else:
+                            swap_id_val = ""
+                        # Backend may return "pending" when result was serialized before swap_id was set
+                        if swap_id_val == "pending":
+                            swap_id_val = ""
+                        swap_message_id = result.get('swap_message_id') or 'N/A'
+                        if swap_id_val:
+                            echo_with_color(BLUE, f"    Swap ID: {swap_id_val}")
+                            if swap_message_id != 'N/A':
+                                echo_with_color(BLUE, f"    Swap Message ID: {swap_message_id}")
+                            # Acceptor (counterparty) accepts/completes the swap when credentials set or mode is issue_swap_complete
+                            run_accept = (action_mode == 'issue_swap_complete') or (acceptor_email and acceptor_password)
+                            if run_accept and swap_id_val:
+                                if not acceptor_email or not acceptor_password:
+                                    echo_with_color(RED, "    ❌ issue_swap_complete requires ACCEPTOR_EMAIL and ACCEPTOR_PASSWORD")
+                                else:
+                                    accept_result = complete_swap(
+                                        pay_service_url,
+                                        auth_service_url,
+                                        acceptor_email,
+                                        acceptor_password,
+                                        str(swap_id_val),
+                                    )
+                                    if accept_result.get("success"):
+                                        echo_with_color(GREEN, f"    ✅ Swap accepted by {acceptor_email}")
+                                        if accept_result.get("messageId"):
+                                            echo_with_color(BLUE, f"       Message ID: {accept_result.get('messageId')}")
+                                    else:
+                                        echo_with_color(RED, f"    ❌ Swap acceptance failed: {accept_result.get('error', 'Unknown error')}")
+                            elif acceptor_email and swap_id_val and not acceptor_password:
+                                echo_with_color(YELLOW, "    ⚠️  ACCEPTOR_EMAIL set but ACCEPTOR_PASSWORD missing; skipping swap acceptance")
                     success_count += 1
                 else:
                     echo_with_color(RED, f"  ❌ Loan {loan_id} workflow ended in status: {workflow_status}")
@@ -721,6 +1716,24 @@ def main():
     
     if success_count > 0:
         echo_with_color(GREEN, f"🎉 Successfully created {success_count} composed contract(s)! ✨")
+    
+    # Burn tokens after loans when requested (mirrors treasury.yaml burn command)
+    if burn_after_env and policy_secret and burn_amount:
+        print()
+        echo_with_color(CYAN, "🔥 Burning tokens after loan processing...")
+        burn_res = burn_tokens(
+            pay_service_url, auth_service_url, user_email, password,
+            denomination, burn_amount, policy_secret,
+        )
+        if not burn_res.get("success"):
+            echo_with_color(RED, f"❌ Burn failed: {burn_res.get('error', 'Unknown error')}")
+            if success_count > 0:
+                echo_with_color(YELLOW, "  (Loans were created successfully; only burn failed)")
+        print()
+    elif burn_after_env and (not policy_secret or not burn_amount):
+        echo_with_color(YELLOW, "  ⚠️  BURN_AFTER_LOANS=true but POLICY_SECRET or BURN_AMOUNT missing; skipping burn")
+    
+    if success_count > 0:
         return 0
     else:
         echo_with_color(RED, "❌ No contracts were created successfully")
