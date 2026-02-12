@@ -6,8 +6,8 @@ Payment workflow: process rows from a payment CSV (e.g. wisr_payment_test.csv).
 For each row:
   1) Find the obligation initial payment for the loan (acceptor's contracts → contract for loan → payments).
   2) Accept that payment for the CSV amount only (DWH_PRINCIPAL in wei), not the payment's fill/full amount.
-  3) Create a payment swap: the same user (acceptor) swaps the partial credit amount (with obligor = loan
-     account) vs a cash payment of the same amount (obligor=null), where the counterparty is the
+  3) Create a payment swap: the same user (acceptor) swaps partial credit DWH_PRINCIPAL (with obligor =
+     loan account) vs cash MAMBU_TOTAL_AMOUNT (obligor=null), where the counterparty is the
      respective loan account (loan wallet).
   4) The loan account (issuer acting as that loan wallet) completes the swap. Requires ISSUER_EMAIL
      and ISSUER_PASSWORD; if not set, the swap is created but remains pending.
@@ -26,6 +26,7 @@ import sys
 import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from typing import Optional, Tuple
 
 try:
     import requests
@@ -57,6 +58,58 @@ def _trace(msg: str) -> None:
     echo_with_color(BLUE, f"  [TRACE] {msg}")
 
 
+def _poll_accept_all_until_ready(
+    pay_service_url: str,
+    auth_service_url: str,
+    user_email: str,
+    user_password: str,
+    denomination: str,
+    obligor: Optional[str],
+    wallet_id: str,
+    account_address: Optional[str],
+    idempotency_key: str,
+    label: str,
+    poll_interval_sec: float = 2.0,
+    timeout_sec: float = 90.0,
+) -> Tuple[dict, bool]:
+    """
+    Poll accept_all until acceptedCount > 0 or timeout. Event-based: no fixed delay.
+    Returns (last_result, ready) where ready is True iff we accepted at least one payment.
+    """
+    start = time.monotonic()
+    attempt = 0
+    last_result: dict = {}
+    while True:
+        attempt += 1
+        elapsed = time.monotonic() - start
+        if elapsed >= timeout_sec:
+            _trace(f"Accept all ({label}): timeout after {elapsed:.0f}s")
+            return (last_result, False)
+        if attempt > 1:
+            _trace(f"Accept all ({label}): poll attempt {attempt} (elapsed {elapsed:.0f}s)")
+        res = accept_all_tokens(
+            pay_service_url,
+            auth_service_url,
+            user_email,
+            user_password,
+            denomination=denomination,
+            idempotency_key=idempotency_key,
+            obligor=obligor,
+            wallet_id=wallet_id,
+            account_address=account_address,
+        )
+        last_result = res
+        if not res.get("success"):
+            return (res, False)
+        accepted = (res.get("data") or {}).get("acceptedCount", 0) or 0
+        if accepted > 0:
+            _trace(f"Accept all ({label}): accepted {accepted} (after {elapsed:.0f}s)")
+            return (res, True)
+        if elapsed + poll_interval_sec > timeout_sec:
+            return (res, False)
+        time.sleep(poll_interval_sec)
+
+
 def main() -> int:
     """Main entry: load env, parse args, run preflight, process payment rows."""
     script_dir = Path(__file__).parent.resolve()
@@ -80,7 +133,6 @@ def main() -> int:
     acceptor_password = os.environ.get("ACCEPTOR_PASSWORD", "").strip()
     issuer_email = os.environ.get("ISSUER_EMAIL", "").strip()
     issuer_password = os.environ.get("ISSUER_PASSWORD", "").strip()
-    swap_counterparty = os.environ.get("SWAP_COUNTERPARTY", "").strip()
     try:
         payment_count = int(os.environ.get("PAYMENT_COUNT", "100").strip())
         if payment_count < 1:
@@ -298,14 +350,14 @@ def main() -> int:
                     swap_deadline = swap_deadline_raw
                 else:
                     swap_deadline = (datetime.now(timezone.utc) + timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-                _trace(f"Creating payment swap: amount={accept_amount_wei} wei, obligor={loan_wallet_address[:18]}..., counterparty={loan_wallet_id!r}, deadline={swap_deadline!r}")
-                echo_with_color(CYAN, f"  Creating payment swap (credit with obligor ↔ cash, counterparty={loan_wallet_id})...")
+                _trace(f"Creating payment swap: credit={accept_amount_wei} wei (DWH_PRINCIPAL), cash={mambu_total_wei} wei (MAMBU_TOTAL), obligor={loan_wallet_address[:18]}..., counterparty={loan_wallet_id!r}, deadline={swap_deadline!r}")
+                echo_with_color(CYAN, f"  Creating payment swap (credit DWH_PRINCIPAL ↔ cash MAMBU_TOTAL_AMOUNT, counterparty={loan_wallet_id})...")
                 swap_res = create_payment_swap(
                     pay_service_url,
                     acceptor_token,
                     counterparty=loan_wallet_id,
                     initiator_amount_wei=accept_amount_wei,
-                    counterparty_amount_wei=accept_amount_wei,
+                    counterparty_amount_wei=mambu_total_wei,
                     denomination=denomination,
                     initiator_obligor_address=loan_wallet_address,
                     deadline=swap_deadline,
@@ -352,82 +404,89 @@ def main() -> int:
                 echo_with_color(GREEN, "  ✅ Swap completed by loan account.")
                 print()
 
-                # --- Wait for swap payment records to be created (async processor) ---
-                accept_all_delay = 8
+                # --- Accept all (pending payables) by both parties — event-based polling ---
+                # Poll accept_all until payables appear and are accepted; no fixed delay, no race.
+                # Acceptor: cash (obligor=null). Loan account: credit (obligor=address or wallet_id).
                 try:
-                    accept_all_delay = int(os.environ.get("ACCEPT_ALL_DELAY_SECONDS", "8").strip())
-                    if accept_all_delay < 0:
-                        accept_all_delay = 8
+                    poll_interval = float(os.environ.get("ACCEPT_ALL_POLL_INTERVAL_SEC", "2").strip())
+                    if poll_interval <= 0:
+                        poll_interval = 2.0
                 except ValueError:
-                    pass
-                if accept_all_delay > 0:
-                    _trace(f"Waiting {accept_all_delay}s for payment records to be created...")
-                    echo_with_color(CYAN, f"  Waiting {accept_all_delay}s for swap payment records...")
-                    time.sleep(accept_all_delay)
+                    poll_interval = 2.0
+                try:
+                    poll_timeout = float(os.environ.get("ACCEPT_ALL_TIMEOUT_SEC", "90").strip())
+                    if poll_timeout <= 0:
+                        poll_timeout = 90.0
+                except ValueError:
+                    poll_timeout = 90.0
 
-                # --- Accept all (pending payables) by both parties ---
-                # Acceptor received cash (obligor=null) from the swap → accept payables with no obligor filter.
-                # Loan account received credit with obligor=loan_wallet → accept payables matching that obligor (try address then wallet_id).
-                _trace("Accept all: acceptor (denomination, obligor=null) then loan account (denomination, obligor=loan_wallet).")
-                accept_all_max_retries = 3
                 key_acceptor = f"accept-all-acceptor-{sanitized_loan_id}-{int(time.time() * 1000)}"
-                accept_all_acceptor = None
-                for attempt in range(accept_all_max_retries):
-                    if attempt > 0:
-                        echo_with_color(CYAN, f"  Retry {attempt + 1}/{accept_all_max_retries} accept all (acceptor)...")
-                        time.sleep(5)
-                    echo_with_color(CYAN, f"  Accept all payables (acceptor, denomination={denomination!r}, obligor=null)...")
-                    accept_all_acceptor = accept_all_tokens(
-                        pay_service_url,
-                        auth_service_url,
-                        acceptor_email,
-                        acceptor_password,
-                        denomination=denomination,
-                        idempotency_key=key_acceptor,
-                        obligor=None,
-                        wallet_id=acceptor_default_wallet_id,
-                        account_address=None,
-                    )
-                    if not accept_all_acceptor.get("success"):
-                        break
-                    if (accept_all_acceptor.get("data") or {}).get("acceptedCount", 0) > 0:
-                        break
-                if not accept_all_acceptor or not accept_all_acceptor.get("success"):
-                    _trace(f"Accept all (acceptor) failed: {(accept_all_acceptor or {}).get('error', 'Unknown')!r}")
-                    echo_with_color(RED, f"  ❌ Accept all (acceptor) failed: {(accept_all_acceptor or {}).get('error', 'Unknown')}")
+                echo_with_color(CYAN, f"  Polling accept_all (acceptor) until payables ready (timeout {poll_timeout:.0f}s)...")
+                accept_all_acceptor, acceptor_ready = _poll_accept_all_until_ready(
+                    pay_service_url,
+                    auth_service_url,
+                    acceptor_email,
+                    acceptor_password,
+                    denomination=denomination,
+                    obligor=None,
+                    wallet_id=acceptor_default_wallet_id,
+                    account_address=None,
+                    idempotency_key=key_acceptor,
+                    label="acceptor",
+                    poll_interval_sec=poll_interval,
+                    timeout_sec=poll_timeout,
+                )
+                if not accept_all_acceptor.get("success"):
+                    _trace(f"Accept all (acceptor) failed: {accept_all_acceptor.get('error', 'Unknown')!r}")
+                    echo_with_color(RED, f"  ❌ Accept all (acceptor) failed: {accept_all_acceptor.get('error', 'Unknown')}")
+                    fail_count += 1
+                    continue
+                if not acceptor_ready:
+                    echo_with_color(RED, f"  ❌ Accept all (acceptor): no payables appeared within {poll_timeout:.0f}s")
                     fail_count += 1
                     continue
                 echo_with_color(GREEN, "  ✅ Accept all (acceptor) done.")
-                # Loan account: try obligor=address first, then obligor=wallet_id (backend may store either)
-                accept_all_loan = None
-                loan_obligors_to_try = [loan_wallet_address, loan_wallet_id]
-                for obligor_idx, obligor_val in enumerate(loan_obligors_to_try):
-                    key_loan = f"accept-all-loan-{sanitized_loan_id}-{obligor_idx}-{int(time.time() * 1000)}"
-                    for attempt in range(accept_all_max_retries):
-                        if attempt > 0:
-                            echo_with_color(CYAN, f"  Retry {attempt + 1}/{accept_all_max_retries} accept all (loan account)...")
-                            time.sleep(5)
-                        echo_with_color(CYAN, f"  Accept all payables (loan account, denomination={denomination!r}, obligor=loan wallet)...")
-                        accept_all_loan = accept_all_tokens(
-                            pay_service_url,
-                            auth_service_url,
-                            issuer_email,
-                            issuer_password,
-                            denomination=denomination,
-                            idempotency_key=key_loan,
-                            obligor=obligor_val,
-                            wallet_id=loan_wallet_id,
-                            account_address=loan_wallet_address,
-                        )
-                        if not accept_all_loan.get("success"):
-                            break
-                        if (accept_all_loan.get("data") or {}).get("acceptedCount", 0) > 0:
-                            break
-                    if accept_all_loan and accept_all_loan.get("success") and (accept_all_loan.get("data") or {}).get("acceptedCount", 0) > 0:
-                        break
-                if not accept_all_loan or not accept_all_loan.get("success"):
-                    _trace(f"Accept all (loan account) failed: {(accept_all_loan or {}).get('error', 'Unknown')!r}")
-                    echo_with_color(RED, f"  ❌ Accept all (loan account) failed: {(accept_all_loan or {}).get('error', 'Unknown')}")
+
+                key_loan = f"accept-all-loan-{sanitized_loan_id}-{int(time.time() * 1000)}"
+                echo_with_color(CYAN, f"  Polling accept_all (loan account) until payables ready (timeout {poll_timeout:.0f}s)...")
+                accept_all_loan, loan_ready = _poll_accept_all_until_ready(
+                    pay_service_url,
+                    auth_service_url,
+                    issuer_email,
+                    issuer_password,
+                    denomination=denomination,
+                    obligor=loan_wallet_address,
+                    wallet_id=loan_wallet_id,
+                    account_address=loan_wallet_address,
+                    idempotency_key=key_loan,
+                    label="loan",
+                    poll_interval_sec=poll_interval,
+                    timeout_sec=poll_timeout,
+                )
+                if not loan_ready and accept_all_loan.get("success"):
+                    _trace("Accept all (loan): no payables with obligor=address; trying obligor=wallet_id")
+                    key_loan2 = f"accept-all-loan-wlt-{sanitized_loan_id}-{int(time.time() * 1000)}"
+                    accept_all_loan, loan_ready = _poll_accept_all_until_ready(
+                        pay_service_url,
+                        auth_service_url,
+                        issuer_email,
+                        issuer_password,
+                        denomination=denomination,
+                        obligor=loan_wallet_id,
+                        wallet_id=loan_wallet_id,
+                        account_address=loan_wallet_address,
+                        idempotency_key=key_loan2,
+                        label="loan(wallet_id)",
+                        poll_interval_sec=poll_interval,
+                        timeout_sec=min(60.0, poll_timeout),
+                    )
+                if not accept_all_loan.get("success"):
+                    _trace(f"Accept all (loan account) failed: {accept_all_loan.get('error', 'Unknown')!r}")
+                    echo_with_color(RED, f"  ❌ Accept all (loan account) failed: {accept_all_loan.get('error', 'Unknown')}")
+                    fail_count += 1
+                    continue
+                if not loan_ready:
+                    echo_with_color(RED, f"  ❌ Accept all (loan account): no payables appeared within timeout")
                     fail_count += 1
                     continue
                 echo_with_color(GREEN, "  ✅ Accept all (loan account) done.")
@@ -471,7 +530,8 @@ def print_payment_usage() -> None:
     print("  ISSUER_PASSWORD      Password for ISSUER_EMAIL (required for step 4).")
     print("  DENOMINATION         Asset ID for the swap (default: aud-token-asset)")
     print("  SWAP_DEADLINE        Optional; ISO deadline for the swap (default: 30 days from now)")
-    print("  ACCEPT_ALL_DELAY_SECONDS  Wait before accept_all to allow payment records (default: 8)")
+    print("  ACCEPT_ALL_POLL_INTERVAL_SEC  Poll interval for accept_all (default: 2)")
+    print("  ACCEPT_ALL_TIMEOUT_SEC  Timeout for accept_all polling per party (default: 90)")
     print("  PAY_SERVICE_URL      Payments service URL")
     print("  AUTH_SERVICE_URL     Auth service URL")
     print("  PAYMENT_COUNT        Max rows to process (default: 100)")
@@ -479,7 +539,7 @@ def print_payment_usage() -> None:
     print("Flow per row:")
     print("  1) Find obligation initial payment for the loan (acceptor's contracts → contract → payments)")
     print("  2) Accept that payment for the CSV amount (DWH_PRINCIPAL) only, not the fill amount")
-    print("  3) Create payment swap: partial credit (with obligor=loan) vs cash (obligor=null), counterparty=loan account")
+    print("  3) Create payment swap: credit DWH_PRINCIPAL (obligor=loan) vs cash MAMBU_TOTAL_AMOUNT (obligor=null), counterparty=loan account")
     print("  4) Loan account completes the swap (requires ISSUER_EMAIL + ISSUER_PASSWORD)")
     print("  5) Accept all payables by acceptor and by loan account")
     print()
