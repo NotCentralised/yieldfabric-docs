@@ -104,6 +104,40 @@ def sign_ownership_message(address: str, private_key_hex: str) -> tuple[str, str
     return message_text, sig_hex
 
 
+def sign_message_hash_manual_flow(private_key_hex: str, message_hash_hex: str) -> str:
+    """
+    Sign a message hash for the manual signature flow (same format as MetaMask personal_sign).
+
+    The app sends the raw message_hash hex to MetaMask; we sign the same string with our
+    private key using Ethereum personal_sign (encode_defunct + sign). Backend verifies
+    with the same message hash and recovered address.
+
+    Args:
+        private_key_hex: Private key as hex (with or without 0x).
+        message_hash_hex: Message hash from GET unsigned-transaction (64 hex chars, with or without 0x).
+
+    Returns:
+        signature_hex: 130 hex chars (65 bytes r+s+v), no 0x prefix.
+    """
+    if not _HAS_ETH_ACCOUNT:
+        raise RuntimeError(
+            "eth_account is required for signing. Install with: pip install eth-account"
+        )
+    key = private_key_hex.removeprefix("0x").strip()
+    acct = Account.from_key(key)
+    msg_hex = (message_hash_hex or "").strip()
+    if not msg_hex:
+        raise ValueError("message_hash_hex is required")
+    if not msg_hex.startswith("0x"):
+        msg_hex = "0x" + msg_hex
+    message = encode_defunct(text=msg_hex)
+    signed = acct.sign_message(message)
+    sig_hex = signed.signature.hex()
+    if sig_hex.startswith("0x"):
+        sig_hex = sig_hex[2:]
+    return sig_hex
+
+
 def verify_external_key_ownership(
     auth_service_url: str,
     jwt_token: str,

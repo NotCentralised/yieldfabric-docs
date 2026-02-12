@@ -35,7 +35,6 @@ from modules import (
     ACTION_ISSUE_SWAP_COMPLETE,
     accept_all_tokens,
     safe_get,
-    accept_obligation_graphql,
     burn_tokens,
     check_service_running,
     complete_swap,
@@ -422,8 +421,8 @@ def main() -> int:
                             "oracleValueSenderSecret": None,
                             "oracleKeyRecipient": None,
                             "oracleValueRecipientSecret": None,
-                            "unlockSender": maturity_iso,
-                            "unlockReceiver": maturity_iso,
+                            "unlockSender": None, #maturity_iso,
+                            "unlockReceiver": None, #maturity_iso,
                             "linearVesting": None,
                         }],
                     },
@@ -499,25 +498,12 @@ def main() -> int:
                         result = {}
                     contract_id = result.get("composed_contract_id", "N/A")
                     echo_with_color(BLUE, f"    Composed Contract ID: {contract_id}")
-                    if contract_id and contract_id != "N/A" and obligor_wallet_id_for_loan:
-                        echo_with_color(CYAN, "    📤 Requesting accept obligation as same sub-account that issued...", file=sys.stderr)
-                        accept_res = accept_obligation_graphql(
-                            pay_service_url,
-                            jwt_token,
-                            contract_id,
-                            account_address=obligor_address_for_loan,
-                            wallet_id=obligor_wallet_id_for_loan,
-                        )
-                        if accept_res.get("success"):
-                            echo_with_color(GREEN, "    ✅ Accept (as sub-account) succeeded", file=sys.stderr)
-                            if accept_res.get("messageId"):
-                                echo_with_color(BLUE, f"       Message ID: {accept_res.get('messageId')}", file=sys.stderr)
-                        elif "already accepted" in (accept_res.get("error") or accept_res.get("message") or "").lower():
-                            echo_with_color(BLUE, "    ℹ️  Obligation already accepted (workflow may have accepted)", file=sys.stderr)
-                        else:
-                            echo_with_color(YELLOW, f"    ⚠️  Accept request: {accept_res.get('error', accept_res.get('message', 'Unknown'))}", file=sys.stderr)
-                    elif contract_id and contract_id != "N/A" and not obligor_wallet_id_for_loan:
-                        echo_with_color(YELLOW, "    ⚠️  Skipping accept: no obligor wallet id", file=sys.stderr)
+                    # Do not call accept_obligation_graphql here: issue_workflow and issue_swap_workflow
+                    # already run accept_obligation + wait_for_obligation_acceptance. A second accept
+                    # would fail on-chain with "idHash already exists" and the failed path never
+                    # creates the payment token, so payment_workflow would then get "token not found".
+                    if contract_id and contract_id != "N/A":
+                        echo_with_color(BLUE, "    ℹ️  Obligation accepted by workflow (accept_obligation + wait step); payment tokens ready for payment_workflow.", file=sys.stderr)
                     if action_mode in (ACTION_ISSUE_SWAP, ACTION_ISSUE_SWAP_COMPLETE):
                         swap_id_val = result.get("swap_id")
                         if swap_id_val is not None:

@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
 """
-Manual signature flow helpers: set wallet to Manual (so messages require app signing), poll for completion.
+Manual signature flow: set Manual, list awaiting, sign with Python key, submit, or poll for completion.
 
 Usage:
-  # Set a wallet to require manual signature for AcceptObligation (then trigger accept from Python; user signs in app)
+  # Set wallet to Manual (message then requires signing)
   ./run.sh manual_signature_flow.py set-manual --wallet-id WLT-LOAN-<entity>-<loan> --message-type AcceptObligation
 
-  # Poll until a message is completed (after user has signed in the app)
+  # Sign and submit using the issuer private key (Python signs; no app needed)
+  ./run.sh manual_signature_flow.py sign-and-submit --message-id <uuid> [--key-file issuer_external_key.txt]
+
+  # Poll until a message is completed
   ./run.sh manual_signature_flow.py wait --message-id <uuid> [--user-id <user_id>]
+
+  # List messages awaiting signature
+  ./run.sh manual_signature_flow.py list-awaiting
 
 Environment: AUTH_SERVICE_URL, PAY_SERVICE_URL, ISSUER_EMAIL, ISSUER_PASSWORD (or USER_EMAIL, USER_PASSWORD).
 """
@@ -22,7 +28,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from modules.auth import get_user_id_from_profile, login_user
 from modules.console import BLUE, CYAN, GREEN, RED, echo_with_color
 from modules.config import load_env_files
-from modules.messages import get_message, get_messages_awaiting_signature, wait_for_message_completion
+from modules.messages import (
+    get_messages_awaiting_signature,
+    sign_and_submit_manual_message,
+    wait_for_message_completion,
+)
 from modules.wallet_preferences import get_wallet_execution_mode_preferences, set_wallet_execution_mode_preference
 
 
@@ -74,6 +84,32 @@ def cmd_list_awaiting(
     return 0
 
 
+def cmd_sign_and_submit(
+    pay_service_url: str,
+    jwt_token: str,
+    user_id: str,
+    message_id: str,
+    key_file: Path,
+) -> int:
+    if not key_file.exists():
+        echo_with_color(RED, f"  ❌ Key file not found: {key_file}")
+        return 1
+    private_key_hex = key_file.read_text().strip().removeprefix("0x").strip()
+    if not private_key_hex:
+        echo_with_color(RED, "  ❌ Key file is empty")
+        return 1
+    echo_with_color(CYAN, f"  🔑 Signing message {message_id} with key from {key_file.name}...")
+    try:
+        result = sign_and_submit_manual_message(
+            pay_service_url, jwt_token, user_id, message_id, private_key_hex
+        )
+        echo_with_color(GREEN, f"  ✅ Signature submitted: {result.get('message', result)}")
+        return 0
+    except Exception as e:
+        echo_with_color(RED, f"  ❌ {e}")
+        return 1
+
+
 def main() -> int:
     script_dir = Path(__file__).resolve().parent
     repo_root = script_dir.parent.parent
@@ -99,6 +135,18 @@ def main() -> int:
     # list-awaiting
     p_list = sub.add_parser("list-awaiting", help="List messages awaiting signature")
     p_list.add_argument("--user-id", default="", help="User ID (default: from /auth/users/me)")
+    # sign-and-submit
+    p_sign = sub.add_parser(
+        "sign-and-submit",
+        help="Get unsigned tx, sign with private key from file, submit signature (Python signs)",
+    )
+    p_sign.add_argument("--message-id", required=True, help="Message UUID")
+    p_sign.add_argument(
+        "--key-file",
+        default="",
+        help="Path to file with private key hex (default: issuer_external_key.txt in script dir)",
+    )
+    p_sign.add_argument("--user-id", default="", help="User ID (default: from /auth/users/me)")
     args = parser.parse_args()
 
     if not email or not password:
@@ -111,7 +159,7 @@ def main() -> int:
         echo_with_color(RED, "  ❌ Login failed")
         return 1
     user_id = args.user_id if args.user_id else get_user_id_from_profile(auth_service_url, jwt_token)
-    if not user_id and args.command in ("wait", "list-awaiting"):
+    if not user_id and args.command in ("wait", "list-awaiting", "sign-and-submit"):
         echo_with_color(RED, "  ❌ Could not get user_id (set --user-id or ensure /auth/users/me returns id)")
         return 1
 
@@ -124,6 +172,13 @@ def main() -> int:
         )
     if args.command == "list-awaiting":
         return cmd_list_awaiting(pay_service_url, jwt_token, user_id)
+    if args.command == "sign-and-submit":
+        key_file = Path(args.key_file) if args.key_file else (script_dir / "issuer_external_key.txt")
+        if not key_file.is_absolute():
+            key_file = (script_dir / key_file).resolve()
+        return cmd_sign_and_submit(
+            pay_service_url, jwt_token, user_id, args.message_id, key_file
+        )
     return 0
 
 
