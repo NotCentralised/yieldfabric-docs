@@ -783,8 +783,10 @@ def create_payment_swap(
     wallet_id: Optional[str] = None,
     account_address: Optional[str] = None,
     idempotency_key: Optional[str] = None,
+    counterparty_wallet_id: Optional[str] = None,
 ) -> dict:
-    """Create a payment swap: initiator gives amount with obligor, counterparty gives amount with obligor=null."""
+    """Create a payment swap: initiator gives amount with obligor, counterparty gives amount with obligor=null.
+    counterparty_wallet_id: optional; when counterparty is an entity, use this to specify the counterparty wallet (e.g. loan wallet)."""
     echo_with_color(CYAN, f"  🔄 Creating payment swap (initiator: {initiator_amount_wei}, counterparty: {counterparty_amount_wei})...", file=sys.stderr)
     swap_id = str(int(time.time() * 1000))
     key = idempotency_key or f"create-payment-swap-{swap_id}"
@@ -825,6 +827,8 @@ def create_payment_swap(
             "idempotencyKey": key,
         }
     }
+    if counterparty_wallet_id is not None and counterparty_wallet_id.strip():
+        variables["input"]["counterpartyWalletId"] = counterparty_wallet_id.strip()
     try:
         data = post_graphql(
             pay_service_url, jwt_token, query, variables,

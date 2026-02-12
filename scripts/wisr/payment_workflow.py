@@ -3,9 +3,15 @@
 """
 Payment workflow: process rows from a payment CSV (e.g. wisr_payment_test.csv).
 
-For each row we only:
+For each row:
   1) Find the obligation initial payment for the loan (acceptor's contracts → contract for loan → payments).
   2) Accept that payment for the CSV amount only (DWH_PRINCIPAL in wei), not the payment's fill/full amount.
+  3) Create a payment swap: the same user (acceptor) swaps the partial credit amount (with obligor = loan
+     account) vs a cash payment of the same amount (obligor=null), where the counterparty is the
+     respective loan account (loan wallet).
+  4) The loan account (issuer acting as that loan wallet) completes the swap. Requires ISSUER_EMAIL
+     and ISSUER_PASSWORD; if not set, the swap is created but remains pending.
+  5) Accept all pending payables by both parties: acceptor (default wallet), then loan account (loan wallet).
 
 CSV columns (header row): MAMBU_LOANID, MAMBU_PAYMENTDATE, MAMBU_TRANSACTION, DWH_PRINCIPAL,
   DWH_INTEREST, DWH_FEE, MAMBU_TOTAL_AMOUNT, MAMBU_ISDISHONOURED.
@@ -18,6 +24,7 @@ import os
 import re
 import sys
 import time
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 try:
@@ -27,8 +34,11 @@ except ImportError:
     sys.exit(1)
 
 from modules import (
+    accept_all_tokens,
     accept_payment,
     check_service_running,
+    complete_swap_as_wallet,
+    create_payment_swap,
     convert_currency_to_wei,
     echo_with_color,
     find_obligation_initial_payment_from_loan,
@@ -78,7 +88,7 @@ def main() -> int:
     except ValueError:
         payment_count = 100
 
-    echo_with_color(CYAN, "🚀 Payment Workflow - Find payment and accept that amount")
+    echo_with_color(CYAN, "🚀 Payment Workflow - Find payment, accept amount, then create payment swap")
     print()
     echo_with_color(BLUE, "📋 Configuration:")
     echo_with_color(BLUE, f"  API Base URL: {pay_service_url}")
@@ -87,6 +97,7 @@ def main() -> int:
     if issuer_email:
         echo_with_color(BLUE, f"  Issuer (loan wallet lookup): {issuer_email}")
     echo_with_color(BLUE, f"  CSV File: {csv_file}")
+    echo_with_color(BLUE, f"  Denomination (swap): {denomination}")
     echo_with_color(BLUE, f"  Max payment rows: {payment_count}")
     print()
 
@@ -279,6 +290,147 @@ def main() -> int:
                     continue
                 _trace(f"Accept succeeded: messageId={accept_res.get('data', {}).get('messageId', 'N/A')} transactionId={accept_res.get('data', {}).get('transactionId', 'N/A')}")
                 echo_with_color(GREEN, "  ✅ Payment accepted for this amount.")
+                print()
+
+                # --- Create payment swap: partial credit (with obligor) vs cash (obligor=null), counterparty = loan account ---
+                swap_deadline_raw = os.environ.get("SWAP_DEADLINE", "").strip()
+                if swap_deadline_raw:
+                    swap_deadline = swap_deadline_raw
+                else:
+                    swap_deadline = (datetime.now(timezone.utc) + timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+                _trace(f"Creating payment swap: amount={accept_amount_wei} wei, obligor={loan_wallet_address[:18]}..., counterparty={loan_wallet_id!r}, deadline={swap_deadline!r}")
+                echo_with_color(CYAN, f"  Creating payment swap (credit with obligor ↔ cash, counterparty={loan_wallet_id})...")
+                swap_res = create_payment_swap(
+                    pay_service_url,
+                    acceptor_token,
+                    counterparty=loan_wallet_id,
+                    initiator_amount_wei=accept_amount_wei,
+                    counterparty_amount_wei=accept_amount_wei,
+                    denomination=denomination,
+                    initiator_obligor_address=loan_wallet_address,
+                    deadline=swap_deadline,
+                    wallet_id=acceptor_default_wallet_id,
+                    account_address=None,
+                    counterparty_wallet_id=loan_wallet_id,
+                )
+                if not swap_res.get("success"):
+                    _trace(f"Create payment swap failed: {swap_res.get('error', 'Unknown error')!r}")
+                    echo_with_color(RED, f"  ❌ Create payment swap failed: {swap_res.get('error', 'Unknown error')}")
+                    fail_count += 1
+                    continue
+                _trace(f"Create payment swap succeeded: swapId={swap_res.get('swap_id', 'N/A')}")
+                echo_with_color(GREEN, f"  ✅ Payment swap created (swapId: {swap_res.get('swap_id', 'N/A')}).")
+                print()
+
+                # --- Loan account (counterparty) completes the swap ---
+                swap_id_created = swap_res.get("swap_id") or ""
+                if not swap_id_created:
+                    _trace("No swap_id in create swap response; skipping complete.")
+                    echo_with_color(YELLOW, "  ⚠️  No swap_id in response; cannot complete swap.")
+                    fail_count += 1
+                    continue
+                if not issuer_token:
+                    _trace("Issuer credentials not set; swap created but not completed (set ISSUER_EMAIL/ISSUER_PASSWORD to complete as loan account).")
+                    echo_with_color(YELLOW, "  ⚠️  Swap created; set ISSUER_EMAIL and ISSUER_PASSWORD to complete swap as loan account.")
+                    success_count += 1
+                    continue
+                _trace(f"Completing swap {swap_id_created!r} as loan wallet {loan_wallet_id!r} (account_address={loan_wallet_address[:18]}...).")
+                echo_with_color(CYAN, f"  Completing swap as loan account ({loan_wallet_id})...")
+                complete_res = complete_swap_as_wallet(
+                    pay_service_url,
+                    issuer_token,
+                    swap_id=swap_id_created,
+                    account_address=loan_wallet_address,
+                    wallet_id=loan_wallet_id,
+                )
+                if not complete_res.get("success"):
+                    _trace(f"Complete swap failed: {complete_res.get('error', 'Unknown error')!r}")
+                    echo_with_color(RED, f"  ❌ Complete swap failed: {complete_res.get('error', 'Unknown error')}")
+                    fail_count += 1
+                    continue
+                _trace("Complete swap succeeded.")
+                echo_with_color(GREEN, "  ✅ Swap completed by loan account.")
+                print()
+
+                # --- Wait for swap payment records to be created (async processor) ---
+                accept_all_delay = 8
+                try:
+                    accept_all_delay = int(os.environ.get("ACCEPT_ALL_DELAY_SECONDS", "8").strip())
+                    if accept_all_delay < 0:
+                        accept_all_delay = 8
+                except ValueError:
+                    pass
+                if accept_all_delay > 0:
+                    _trace(f"Waiting {accept_all_delay}s for payment records to be created...")
+                    echo_with_color(CYAN, f"  Waiting {accept_all_delay}s for swap payment records...")
+                    time.sleep(accept_all_delay)
+
+                # --- Accept all (pending payables) by both parties ---
+                # Acceptor received cash (obligor=null) from the swap → accept payables with no obligor filter.
+                # Loan account received credit with obligor=loan_wallet → accept payables matching that obligor (try address then wallet_id).
+                _trace("Accept all: acceptor (denomination, obligor=null) then loan account (denomination, obligor=loan_wallet).")
+                accept_all_max_retries = 3
+                key_acceptor = f"accept-all-acceptor-{sanitized_loan_id}-{int(time.time() * 1000)}"
+                accept_all_acceptor = None
+                for attempt in range(accept_all_max_retries):
+                    if attempt > 0:
+                        echo_with_color(CYAN, f"  Retry {attempt + 1}/{accept_all_max_retries} accept all (acceptor)...")
+                        time.sleep(5)
+                    echo_with_color(CYAN, f"  Accept all payables (acceptor, denomination={denomination!r}, obligor=null)...")
+                    accept_all_acceptor = accept_all_tokens(
+                        pay_service_url,
+                        auth_service_url,
+                        acceptor_email,
+                        acceptor_password,
+                        denomination=denomination,
+                        idempotency_key=key_acceptor,
+                        obligor=None,
+                        wallet_id=acceptor_default_wallet_id,
+                        account_address=None,
+                    )
+                    if not accept_all_acceptor.get("success"):
+                        break
+                    if (accept_all_acceptor.get("data") or {}).get("acceptedCount", 0) > 0:
+                        break
+                if not accept_all_acceptor or not accept_all_acceptor.get("success"):
+                    _trace(f"Accept all (acceptor) failed: {(accept_all_acceptor or {}).get('error', 'Unknown')!r}")
+                    echo_with_color(RED, f"  ❌ Accept all (acceptor) failed: {(accept_all_acceptor or {}).get('error', 'Unknown')}")
+                    fail_count += 1
+                    continue
+                echo_with_color(GREEN, "  ✅ Accept all (acceptor) done.")
+                # Loan account: try obligor=address first, then obligor=wallet_id (backend may store either)
+                accept_all_loan = None
+                loan_obligors_to_try = [loan_wallet_address, loan_wallet_id]
+                for obligor_idx, obligor_val in enumerate(loan_obligors_to_try):
+                    key_loan = f"accept-all-loan-{sanitized_loan_id}-{obligor_idx}-{int(time.time() * 1000)}"
+                    for attempt in range(accept_all_max_retries):
+                        if attempt > 0:
+                            echo_with_color(CYAN, f"  Retry {attempt + 1}/{accept_all_max_retries} accept all (loan account)...")
+                            time.sleep(5)
+                        echo_with_color(CYAN, f"  Accept all payables (loan account, denomination={denomination!r}, obligor=loan wallet)...")
+                        accept_all_loan = accept_all_tokens(
+                            pay_service_url,
+                            auth_service_url,
+                            issuer_email,
+                            issuer_password,
+                            denomination=denomination,
+                            idempotency_key=key_loan,
+                            obligor=obligor_val,
+                            wallet_id=loan_wallet_id,
+                            account_address=loan_wallet_address,
+                        )
+                        if not accept_all_loan.get("success"):
+                            break
+                        if (accept_all_loan.get("data") or {}).get("acceptedCount", 0) > 0:
+                            break
+                    if accept_all_loan and accept_all_loan.get("success") and (accept_all_loan.get("data") or {}).get("acceptedCount", 0) > 0:
+                        break
+                if not accept_all_loan or not accept_all_loan.get("success"):
+                    _trace(f"Accept all (loan account) failed: {(accept_all_loan or {}).get('error', 'Unknown')!r}")
+                    echo_with_color(RED, f"  ❌ Accept all (loan account) failed: {(accept_all_loan or {}).get('error', 'Unknown')}")
+                    fail_count += 1
+                    continue
+                echo_with_color(GREEN, "  ✅ Accept all (loan account) done.")
                 success_count += 1
 
     except Exception as e:
@@ -295,7 +447,7 @@ def main() -> int:
     echo_with_color(RED, f"  Failed: {fail_count}")
     print()
     if success_count > 0:
-        echo_with_color(GREEN, f"🎉 Accepted {success_count} payment(s). ✨")
+        echo_with_color(GREEN, f"🎉 Processed {success_count} row(s): accept + swap + complete + accept_all. ✨")
     if success_count > 0:
         return 0
     echo_with_color(RED, "❌ No payments were accepted")
@@ -313,10 +465,13 @@ def print_payment_usage() -> None:
     print("  DWH_PRINCIPAL, DWH_INTEREST, DWH_FEE, MAMBU_TOTAL_AMOUNT, MAMBU_ISDISHONOURED")
     print()
     print("Environment variables:")
-    print("  ACCEPTOR_EMAIL       Entity that finds and accepts the payment")
+    print("  ACCEPTOR_EMAIL       Entity that finds, accepts the payment, and creates the swap")
     print("  ACCEPTOR_PASSWORD    Password for ACCEPTOR_EMAIL")
-    print("  ISSUER_EMAIL         Optional; entity that owns loan wallets (from issue_workflow).")
-    print("  ISSUER_PASSWORD      When set, used for loan wallet lookup.")
+    print("  ISSUER_EMAIL         Entity that owns loan wallets; required to complete swap as loan account.")
+    print("  ISSUER_PASSWORD      Password for ISSUER_EMAIL (required for step 4).")
+    print("  DENOMINATION         Asset ID for the swap (default: aud-token-asset)")
+    print("  SWAP_DEADLINE        Optional; ISO deadline for the swap (default: 30 days from now)")
+    print("  ACCEPT_ALL_DELAY_SECONDS  Wait before accept_all to allow payment records (default: 8)")
     print("  PAY_SERVICE_URL      Payments service URL")
     print("  AUTH_SERVICE_URL     Auth service URL")
     print("  PAYMENT_COUNT        Max rows to process (default: 100)")
@@ -324,6 +479,9 @@ def print_payment_usage() -> None:
     print("Flow per row:")
     print("  1) Find obligation initial payment for the loan (acceptor's contracts → contract → payments)")
     print("  2) Accept that payment for the CSV amount (DWH_PRINCIPAL) only, not the fill amount")
+    print("  3) Create payment swap: partial credit (with obligor=loan) vs cash (obligor=null), counterparty=loan account")
+    print("  4) Loan account completes the swap (requires ISSUER_EMAIL + ISSUER_PASSWORD)")
+    print("  5) Accept all payables by acceptor and by loan account")
     print()
     print("Example:")
     print("  python3 payment_workflow.py wisr_payment_test.csv")
