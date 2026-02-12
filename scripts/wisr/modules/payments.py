@@ -3,7 +3,7 @@
 import json
 import sys
 import time
-from typing import Optional
+from typing import Callable, Optional, Tuple
 
 import requests
 
@@ -1004,17 +1004,25 @@ def poll_swap_completion(
     acceptor_email: str,
     acceptor_password: str,
     swap_id: str,
-    max_attempts: int = 60,
-    delay_seconds: float = 2.0,
+    timeout_sec: float = 120.0,
+    poll_interval_sec: float = 2.0,
 ) -> dict:
-    """Poll until swap status is COMPLETED (or terminal failure)."""
-    echo_with_color(CYAN, f"  🔄 Polling swap completion for: {swap_id}", file=sys.stderr)
+    """Poll until swap status is COMPLETED (or terminal failure). Event-driven: stops as soon as terminal or timeout."""
+    echo_with_color(CYAN, f"  🔄 Polling swap completion for: {swap_id} (timeout {timeout_sec:.0f}s)", file=sys.stderr)
     jwt_token = login_user(auth_service_url, acceptor_email, acceptor_password)
     if not jwt_token:
         return {"success": False, "error": f"Failed to login as {acceptor_email}"}
     debug_shown = False
-    for attempt in range(1, max_attempts + 1):
-        echo_with_color(BLUE, f"    📡 Attempt {attempt}/{max_attempts}: Checking swap status...", file=sys.stderr)
+    start = time.monotonic()
+    attempt = 0
+    while True:
+        attempt += 1
+        elapsed = time.monotonic() - start
+        if elapsed >= timeout_sec:
+            echo_with_color(RED, f"    ❌ Swap did not complete within {timeout_sec:.0f}s", file=sys.stderr)
+            return {"success": False, "error": f"Timeout after {timeout_sec:.0f}s"}
+        if attempt > 1:
+            echo_with_color(BLUE, f"    📡 Poll attempt {attempt} (elapsed {elapsed:.0f}s)...", file=sys.stderr)
         swap_data = query_swap_status(pay_service_url, jwt_token, swap_id)
         if swap_data is None:
             if not debug_shown:
@@ -1030,10 +1038,11 @@ def poll_swap_completion(
             if status in ("CANCELLED", "EXPIRED", "FORFEITED"):
                 echo_with_color(RED, f"    ❌ Swap ended in status: {status}", file=sys.stderr)
                 return {"success": False, "error": f"Swap status: {status}", "swap_data": swap_data}
-        if attempt < max_attempts:
-            time.sleep(delay_seconds)
-    echo_with_color(RED, f"    ❌ Swap did not complete within {max_attempts} attempts", file=sys.stderr)
-    return {"success": False, "error": f"Timeout after {max_attempts} attempts"}
+        if elapsed + poll_interval_sec > timeout_sec:
+            break
+        time.sleep(poll_interval_sec)
+    echo_with_color(RED, f"    ❌ Swap did not complete within {timeout_sec:.0f}s", file=sys.stderr)
+    return {"success": False, "error": f"Timeout after {timeout_sec:.0f}s"}
 
 
 def mint_tokens(
@@ -1181,6 +1190,63 @@ def accept_all_tokens(
         return {"success": False, "error": str(e)}
 
 
+def poll_accept_all_until_ready(
+    pay_service_url: str,
+    auth_service_url: str,
+    user_email: str,
+    user_password: str,
+    denomination: str,
+    obligor: Optional[str],
+    wallet_id: str,
+    account_address: Optional[str],
+    idempotency_key: str,
+    label: str,
+    poll_interval_sec: float = 2.0,
+    timeout_sec: float = 90.0,
+    trace_cb: Optional[Callable[[str], None]] = None,
+) -> Tuple[dict, bool]:
+    """
+    Poll accept_all until acceptedCount > 0 or timeout. Event-based: no fixed delay.
+    Returns (last_result, ready) where ready is True iff we accepted at least one payment.
+    trace_cb: optional callback for trace log lines (e.g. payment_workflow's _trace).
+    """
+    start = time.monotonic()
+    attempt = 0
+    last_result: dict = {}
+    def _log(msg: str) -> None:
+        if trace_cb:
+            trace_cb(msg)
+    while True:
+        attempt += 1
+        elapsed = time.monotonic() - start
+        if elapsed >= timeout_sec:
+            _log(f"Accept all ({label}): timeout after {elapsed:.0f}s")
+            return (last_result, False)
+        if attempt > 1:
+            _log(f"Accept all ({label}): poll attempt {attempt} (elapsed {elapsed:.0f}s)")
+        res = accept_all_tokens(
+            pay_service_url,
+            auth_service_url,
+            user_email,
+            user_password,
+            denomination=denomination,
+            idempotency_key=idempotency_key,
+            obligor=obligor,
+            wallet_id=wallet_id,
+            account_address=account_address,
+        )
+        last_result = res
+        if not res.get("success"):
+            return (res, False)
+        accepted = (res.get("data") or {}).get("acceptedCount", 0) or 0
+        if accepted > 0:
+            _log(f"Accept all ({label}): accepted {accepted} (after {elapsed:.0f}s)")
+            return (res, True)
+        if elapsed + poll_interval_sec > timeout_sec:
+            return (res, False)
+        time.sleep(poll_interval_sec)
+
+
 def instant_send(
     pay_service_url: str,
     auth_service_url: str,
@@ -1248,14 +1314,22 @@ def get_total_supply(
 def poll_workflow_status(
     pay_service_url: str,
     workflow_id: str,
-    max_attempts: int = 120,
-    delay_seconds: int = 1,
+    timeout_sec: float = 120.0,
+    poll_interval_sec: float = 1.0,
 ) -> Optional[dict]:
-    """Poll workflow status until completion. Returns final workflow data or None."""
-    echo_with_color(CYAN, f"🔄 Polling workflow status for ID: {workflow_id}", file=sys.stderr)
+    """Poll workflow status until completion (or terminal/failure). Event-driven: stops as soon as terminal or timeout."""
+    echo_with_color(CYAN, f"🔄 Polling workflow status for ID: {workflow_id} (timeout {timeout_sec:.0f}s)", file=sys.stderr)
     url = f"{pay_service_url.rstrip('/')}/api/workflows/{workflow_id}"
-    for attempt in range(1, max_attempts + 1):
-        echo_with_color(BLUE, f"  📡 Attempt {attempt}/{max_attempts}: GET {url}", file=sys.stderr)
+    start = time.monotonic()
+    attempt = 0
+    while True:
+        attempt += 1
+        elapsed = time.monotonic() - start
+        if elapsed >= timeout_sec:
+            echo_with_color(RED, f"  ❌ Workflow did not complete within {timeout_sec:.0f}s", file=sys.stderr)
+            return None
+        if attempt > 1:
+            echo_with_color(BLUE, f"  📡 Poll attempt {attempt} (elapsed {elapsed:.0f}s): GET {url}", file=sys.stderr)
         try:
             response = requests.get(url, timeout=30)
             if not response.text:
@@ -1275,11 +1349,10 @@ def poll_workflow_status(
                         return data
                 except Exception:
                     echo_with_color(YELLOW, f"  ⚠️  Could not parse response: {response.text}", file=sys.stderr)
-            if attempt < max_attempts:
-                time.sleep(delay_seconds)
         except Exception as e:
             echo_with_color(YELLOW, f"  ⚠️  Error polling: {e}", file=sys.stderr)
-            if attempt < max_attempts:
-                time.sleep(delay_seconds)
-    echo_with_color(RED, f"  ❌ Workflow did not complete within {max_attempts} attempts", file=sys.stderr)
+        if elapsed + poll_interval_sec > timeout_sec:
+            break
+        time.sleep(poll_interval_sec)
+    echo_with_color(RED, f"  ❌ Workflow did not complete within {timeout_sec:.0f}s", file=sys.stderr)
     return None

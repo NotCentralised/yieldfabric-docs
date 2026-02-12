@@ -14,12 +14,15 @@ Reusable logic lives in the **`wisr`** package so other scripts or tools can imp
 | `wisr/auth.py` | Auth service: `login_user`, `get_user_id_from_profile`, `deploy_user_account`, `deploy_issuer_account`, `check_service_running`. |
 | `wisr/payments.py` | Payments API: wallets, issue/accept workflows, swap, mint/burn/deposit, `poll_workflow_status`, etc. |
 | `wisr/loan_csv.py` | CSV/loan parsing: `convert_currency_to_wei`, `convert_date_to_iso`, `safe_get`, `extract_loan_data`. |
-| `wisr/cli.py` | CLI: `print_usage`, `parse_cli_args`. |
+| `wisr/cli.py` | CLI: `print_usage`, `parse_cli_args` (issue workflow). |
+| `wisr/payment_cli.py` | CLI: `print_payment_usage`, `parse_payment_cli_args` (payment workflow). |
+| `wisr/workflow_config.py` | Config dataclasses from env (e.g. `PaymentWorkflowConfig.from_env`) — one source of truth per workflow, similar to nc_acacia.yaml parameters. |
+| `wisr/runner.py` | Shared preflight and auth context (e.g. `run_preflight`, `payment_auth_context`) — explicit setup before running steps. |
 | `wisr/register_external_key.py` | External key registration: generate Ethereum key, sign ownership message, register via `/keys/external`. |
 | `wisr/messages.py` | Messages API: `get_message`, `get_messages_awaiting_signature`, `wait_for_message_completion` (link Python to manual signing). |
 | `wisr/wallet_preferences.py` | Wallet execution mode: `set_wallet_execution_mode_preference`, `get_wallet_execution_mode_preferences` (Manual vs Automatic per message type). |
 
-**Entry point:** `issue_workflow.py` is a thin script that imports from `wisr` and runs the main loan-processing loop.
+**Entry points:** `issue_workflow.py` and `payment_workflow.py` are thin scripts: they load config, run preflight/auth, then process rows. The flow per row is a fixed sequence of steps (like `nc_acacia.yaml`’s command list): e.g. payment workflow docstring lists 1) resolve_loan_wallet 2) find_payment 3) accept_payment 4) create_swap 5) complete_swap 6) accept_all_both.
 
 **Example – use in another script:**
 

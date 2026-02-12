@@ -3,15 +3,13 @@
 """
 Payment workflow: process rows from a payment CSV (e.g. wisr_payment_test.csv).
 
-For each row:
-  1) Find the obligation initial payment for the loan (acceptor's contracts → contract for loan → payments).
-  2) Accept that payment for the CSV amount only (DWH_PRINCIPAL in wei), not the payment's fill/full amount.
-  3) Create a payment swap: the same user (acceptor) swaps partial credit DWH_PRINCIPAL (with obligor =
-     loan account) vs cash MAMBU_TOTAL_AMOUNT (obligor=null), where the counterparty is the
-     respective loan account (loan wallet).
-  4) The loan account (issuer acting as that loan wallet) completes the swap. Requires ISSUER_EMAIL
-     and ISSUER_PASSWORD; if not set, the swap is created but remains pending.
-  5) Accept all pending payables by both parties: acceptor (default wallet), then loan account (loan wallet).
+Flow per row (same idea as nc_acacia.yaml command list — explicit steps):
+  1) resolve_loan_wallet   — Resolve loan wallet (WLT-LOAN-{entity}-{loan_id})
+  2) find_payment           — Find obligation initial payment for the loan
+  3) accept_payment         — Accept that payment for CSV amount (DWH_PRINCIPAL) into acceptor wallet
+  4) create_swap             — Create payment swap: credit DWH_PRINCIPAL vs cash MAMBU_TOTAL, counterparty=loan
+  5) complete_swap          — Loan account completes the swap (optional if ISSUER_* set)
+  6) accept_all_both        — Accept all payables by acceptor then by loan account
 
 CSV columns (header row): MAMBU_LOANID, MAMBU_PAYMENTDATE, MAMBU_TRANSACTION, DWH_PRINCIPAL,
   DWH_INTEREST, DWH_FEE, MAMBU_TOTAL_AMOUNT, MAMBU_ISDISHONOURED.
@@ -20,94 +18,38 @@ Events are logged with [TRACE] so you can follow the flow.
 """
 
 import csv
-import os
-import re
 import sys
 import time
-from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Optional, Tuple
-
-try:
-    import requests
-except ImportError:
-    print("❌ Error: 'requests' library is required. Install it with: pip install requests")
-    sys.exit(1)
+from typing import Optional
 
 from modules import (
-    accept_all_tokens,
     accept_payment,
-    check_service_running,
     complete_swap_as_wallet,
     create_payment_swap,
     convert_currency_to_wei,
     echo_with_color,
     find_obligation_initial_payment_from_loan,
-    get_default_wallet_id,
-    get_user_id_from_profile,
     get_wallet_by_id,
     load_env_files,
-    login_user,
+    poll_accept_all_until_ready,
     safe_get,
 )
 from modules.console import BLUE, CYAN, GREEN, PURPLE, RED, YELLOW
+from modules.loan_wallet import loan_wallet_id, sanitize_loan_id
+from modules.payment_cli import parse_payment_cli_args, print_payment_usage
+from modules.runner import payment_auth_context
+from modules.workflow_common import (
+    BANNER_LINE,
+    print_workflow_summary,
+    run_preflight_checks,
+)
+from modules.workflow_config import PaymentWorkflowConfig
 
 
 def _trace(msg: str) -> None:
     """Log a trace line so we can follow the flow (prefix [TRACE])."""
     echo_with_color(BLUE, f"  [TRACE] {msg}")
-
-
-def _poll_accept_all_until_ready(
-    pay_service_url: str,
-    auth_service_url: str,
-    user_email: str,
-    user_password: str,
-    denomination: str,
-    obligor: Optional[str],
-    wallet_id: str,
-    account_address: Optional[str],
-    idempotency_key: str,
-    label: str,
-    poll_interval_sec: float = 2.0,
-    timeout_sec: float = 90.0,
-) -> Tuple[dict, bool]:
-    """
-    Poll accept_all until acceptedCount > 0 or timeout. Event-based: no fixed delay.
-    Returns (last_result, ready) where ready is True iff we accepted at least one payment.
-    """
-    start = time.monotonic()
-    attempt = 0
-    last_result: dict = {}
-    while True:
-        attempt += 1
-        elapsed = time.monotonic() - start
-        if elapsed >= timeout_sec:
-            _trace(f"Accept all ({label}): timeout after {elapsed:.0f}s")
-            return (last_result, False)
-        if attempt > 1:
-            _trace(f"Accept all ({label}): poll attempt {attempt} (elapsed {elapsed:.0f}s)")
-        res = accept_all_tokens(
-            pay_service_url,
-            auth_service_url,
-            user_email,
-            user_password,
-            denomination=denomination,
-            idempotency_key=idempotency_key,
-            obligor=obligor,
-            wallet_id=wallet_id,
-            account_address=account_address,
-        )
-        last_result = res
-        if not res.get("success"):
-            return (res, False)
-        accepted = (res.get("data") or {}).get("acceptedCount", 0) or 0
-        if accepted > 0:
-            _trace(f"Accept all ({label}): accepted {accepted} (after {elapsed:.0f}s)")
-            return (res, True)
-        if elapsed + poll_interval_sec > timeout_sec:
-            return (res, False)
-        time.sleep(poll_interval_sec)
 
 
 def main() -> int:
@@ -125,95 +67,67 @@ def main() -> int:
         echo_with_color(RED, f"❌ CSV file not found: {csv_file}")
         return 1
 
-    # --- Configuration ---
-    pay_service_url = os.environ.get("PAY_SERVICE_URL", "https://pay.yieldfabric.com")
-    auth_service_url = os.environ.get("AUTH_SERVICE_URL", "https://auth.yieldfabric.com")
-    denomination = os.environ.get("DENOMINATION", "aud-token-asset")
-    acceptor_email = os.environ.get("ACCEPTOR_EMAIL", "").strip()
-    acceptor_password = os.environ.get("ACCEPTOR_PASSWORD", "").strip()
-    issuer_email = os.environ.get("ISSUER_EMAIL", "").strip()
-    issuer_password = os.environ.get("ISSUER_PASSWORD", "").strip()
-    try:
-        payment_count = int(os.environ.get("PAYMENT_COUNT", "100").strip())
-        if payment_count < 1:
-            payment_count = 100
-    except ValueError:
-        payment_count = 100
-
+    config = PaymentWorkflowConfig.from_env(script_dir, csv_file)
     echo_with_color(CYAN, "🚀 Payment Workflow - Find payment, accept amount, then create payment swap")
     print()
     echo_with_color(BLUE, "📋 Configuration:")
-    echo_with_color(BLUE, f"  API Base URL: {pay_service_url}")
-    echo_with_color(BLUE, f"  Auth Service: {auth_service_url}")
-    echo_with_color(BLUE, f"  Acceptor (find + accept): {acceptor_email}")
-    if issuer_email:
-        echo_with_color(BLUE, f"  Issuer (loan wallet lookup): {issuer_email}")
-    echo_with_color(BLUE, f"  CSV File: {csv_file}")
-    echo_with_color(BLUE, f"  Denomination (swap): {denomination}")
-    echo_with_color(BLUE, f"  Max payment rows: {payment_count}")
+    echo_with_color(BLUE, f"  API Base URL: {config.pay_service_url}")
+    echo_with_color(BLUE, f"  Auth Service: {config.auth_service_url}")
+    echo_with_color(BLUE, f"  Acceptor (find + accept): {config.acceptor_email}")
+    if config.issuer_email:
+        echo_with_color(BLUE, f"  Issuer (loan wallet lookup): {config.issuer_email}")
+    echo_with_color(BLUE, f"  CSV File: {config.csv_file}")
+    echo_with_color(BLUE, f"  Denomination (swap): {config.denomination}")
+    echo_with_color(BLUE, f"  Max payment rows: {config.payment_count}")
     print()
 
-    if not acceptor_email or not acceptor_password:
+    if not config.acceptor_email or not config.acceptor_password:
         echo_with_color(RED, "❌ ACCEPTOR_EMAIL and ACCEPTOR_PASSWORD are required")
         return 1
 
-    # --- Preflight ---
-    if not check_service_running("Auth Service", auth_service_url):
-        echo_with_color(RED, f"❌ Auth service is not reachable at {auth_service_url}")
-        return 1
-    if not check_service_running("Payments Service", pay_service_url):
-        echo_with_color(RED, f"❌ Payments service is not reachable at {pay_service_url}")
+    if not run_preflight_checks(config.auth_service_url, config.pay_service_url):
         return 1
     print()
 
-    # --- Auth: acceptor for find + accept; issuer (if set) for loan wallet lookup ---
     _trace("Authenticating as acceptor.")
     echo_with_color(CYAN, "🔐 Authenticating as acceptor...")
-    acceptor_token = login_user(auth_service_url, acceptor_email, acceptor_password)
-    if not acceptor_token:
-        echo_with_color(RED, f"❌ Failed to get JWT for: {acceptor_email}")
+    ctx = payment_auth_context(
+        config.auth_service_url,
+        config.pay_service_url,
+        config.acceptor_email,
+        config.acceptor_password,
+        config.issuer_email or None,
+        config.issuer_password or None,
+    )
+    if not ctx.get("acceptor_token"):
+        echo_with_color(RED, f"❌ Failed to get JWT for: {config.acceptor_email}")
         return 1
-    echo_with_color(GREEN, f"  ✅ Acceptor JWT obtained (first 50 chars): {acceptor_token[:50]}...")
-
-    # Acceptor's default wallet for accept step (accept into this wallet)
-    acceptor_entity_id = get_user_id_from_profile(auth_service_url, acceptor_token)
-    acceptor_default_wallet_id = get_default_wallet_id(pay_service_url, acceptor_token, entity_id=acceptor_entity_id)
-    if not acceptor_default_wallet_id:
+    echo_with_color(GREEN, f"  ✅ Acceptor JWT obtained (first 50 chars): {ctx['acceptor_token'][:50]}...")
+    if not ctx.get("acceptor_default_wallet_id"):
         echo_with_color(RED, "❌ Could not resolve acceptor's default wallet (entityWallets empty or failed)")
         return 1
-    echo_with_color(GREEN, f"  ✅ Acceptor default wallet: {acceptor_default_wallet_id}")
-
-    # Entity ID for loan wallet naming: use issuer when set (loan wallets are created under issuer in issue_workflow)
-    issuer_token = None
-    if issuer_email and issuer_password:
-        echo_with_color(CYAN, "🔐 Authenticating as issuer (for loan wallet lookup)...")
-        issuer_token = login_user(auth_service_url, issuer_email, issuer_password)
-        if issuer_token:
-            echo_with_color(GREEN, f"  ✅ Issuer JWT obtained")
-        else:
-            echo_with_color(YELLOW, "  ⚠️  Issuer login failed; will use acceptor entity for loan wallet naming")
-    if issuer_token:
-        entity_user_id = get_user_id_from_profile(auth_service_url, issuer_token)
-    else:
-        entity_user_id = get_user_id_from_profile(auth_service_url, acceptor_token)
-    issuer_entity_id_raw = (entity_user_id or "").replace("ENTITY-USER-", "").replace("ENTITY-GROUP-", "").strip()
-    if not issuer_entity_id_raw:
+    echo_with_color(GREEN, f"  ✅ Acceptor default wallet: {ctx['acceptor_default_wallet_id']}")
+    if ctx.get("issuer_token"):
+        echo_with_color(GREEN, "  ✅ Issuer JWT obtained")
+    elif config.issuer_email and config.issuer_password:
+        echo_with_color(YELLOW, "  ⚠️  Issuer login failed; will use acceptor entity for loan wallet naming")
+    if not ctx.get("issuer_entity_id_raw"):
         echo_with_color(RED, "❌ Could not resolve entity ID for loan wallet naming (set ISSUER_EMAIL if loan wallets are under issuer)")
         return 1
     print()
 
     # --- Process payment rows ---
-    echo_with_color(CYAN, f"📖 Reading payment rows from CSV (max {payment_count})...")
+    echo_with_color(CYAN, f"📖 Reading payment rows from CSV (max {config.payment_count})...")
     row_count = 0
     success_count = 0
     fail_count = 0
 
     try:
-        with open(csv_file, "r", encoding="utf-8") as f:
+        with open(config.csv_file, "r", encoding="utf-8") as f:
             reader = csv.reader(f)
             header = next(reader, None)
             for row in reader:
-                if row_count >= payment_count:
+                if row_count >= config.payment_count:
                     break
                 if len(row) < 7:
                     echo_with_color(YELLOW, f"  ⚠️  Skipping row {row_count + 1}: insufficient columns")
@@ -241,36 +155,36 @@ def main() -> int:
                     continue
 
                 print()
-                echo_with_color(PURPLE, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-                echo_with_color(CYAN, f"📦 Payment row {row_count}/{payment_count}: Loan ID={loan_id}")
-                echo_with_color(PURPLE, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                echo_with_color(PURPLE, BANNER_LINE)
+                echo_with_color(CYAN, f"📦 Payment row {row_count}/{config.payment_count}: Loan ID={loan_id}")
+                echo_with_color(PURPLE, BANNER_LINE)
                 _trace(f"Row input: loan_id={loan_id!r} DWH_PRINCIPAL={dwh_principal!r} ({dwh_principal_wei} wei) MAMBU_TOTAL_AMOUNT={mambu_total!r} ({mambu_total_wei} wei)")
                 print()
 
-                # --- Resolve loan wallet (for contract/payment resolution) ---
+                # --- Step 1: Resolve loan wallet ---
                 _trace("Resolving loan wallet (convention: WLT-LOAN-{entity}-{loan_id}).")
-                sanitized_loan_id = re.sub(r"[^a-zA-Z0-9-]", "-", str(loan_id)).strip("-") or "loan"
-                loan_wallet_id = f"WLT-LOAN-{issuer_entity_id_raw}-{sanitized_loan_id}"
-                wallet_token = issuer_token if issuer_token else acceptor_token
-                existing_wallet = get_wallet_by_id(pay_service_url, wallet_token, loan_wallet_id)
+                sanitized_loan_id = sanitize_loan_id(loan_id)
+                wlt_id = loan_wallet_id(ctx["issuer_entity_id_raw"], loan_id)
+                wallet_token = ctx.get("issuer_token") or ctx["acceptor_token"]
+                existing_wallet = get_wallet_by_id(config.pay_service_url, wallet_token, wlt_id)
                 if not existing_wallet:
-                    _trace(f"Loan wallet lookup failed: {loan_wallet_id} not found.")
-                    echo_with_color(RED, f"  ❌ Loan wallet not found: {loan_wallet_id} (deploy loans first via issue_workflow)")
+                    _trace(f"Loan wallet lookup failed: {wlt_id} not found.")
+                    echo_with_color(RED, f"  ❌ Loan wallet not found: {wlt_id} (deploy loans first via issue_workflow)")
                     fail_count += 1
                     continue
                 loan_wallet_address = (existing_wallet.get("address") or "").strip()
                 if not loan_wallet_address or not loan_wallet_address.startswith("0x"):
-                    _trace(f"Loan wallet has no valid address: {loan_wallet_id}")
-                    echo_with_color(RED, f"  ❌ Loan wallet has no valid address: {loan_wallet_id}")
+                    _trace(f"Loan wallet has no valid address: {wlt_id}")
+                    echo_with_color(RED, f"  ❌ Loan wallet has no valid address: {wlt_id}")
                     fail_count += 1
                     continue
-                _trace(f"Loan wallet resolved: id={loan_wallet_id} address={loan_wallet_address[:18]}...")
-                echo_with_color(GREEN, f"  ✅ Using loan wallet: {loan_wallet_id} ({loan_wallet_address[:18]}...)")
+                _trace(f"Loan wallet resolved: id={wlt_id} address={loan_wallet_address[:18]}...")
+                echo_with_color(GREEN, f"  ✅ Using loan wallet: {wlt_id} ({loan_wallet_address[:18]}...)")
                 print()
 
-                # --- Find obligation initial payment: acceptor's contracts → contract for this loan → payments ---
+                # --- Step 2: Find obligation initial payment ---
                 _trace("Finding obligation initial payment: acceptor contracts → contract matching loan → payments.")
-                lookup_token = issuer_token if issuer_token else acceptor_token
+                lookup_token = ctx.get("issuer_token") or ctx["acceptor_token"]
 
                 def _resolution_debug(step: str, info: dict) -> None:
                     if step == "acceptor_contracts":
@@ -292,12 +206,12 @@ def main() -> int:
                         _trace(f"Payments by wallet: loan_wallet_id={info.get('loan_wallet_id', '')!r} payment_count={info.get('payment_count', 0)}")
 
                 payment = find_obligation_initial_payment_from_loan(
-                    pay_service_url,
+                    config.pay_service_url,
                     lookup_token,
                     loan_id=str(loan_id),
                     amount_wei=dwh_principal_wei,
-                    acceptor_token=acceptor_token,
-                    loan_wallet_id=loan_wallet_id,
+                    acceptor_token=ctx["acceptor_token"],
+                    loan_wallet_id=wlt_id,
                     loan_wallet_address=loan_wallet_address,
                     debug_callback=_resolution_debug,
                 )
@@ -321,18 +235,18 @@ def main() -> int:
                 echo_with_color(BLUE, f"     contractId: {payment.get('contractId', '')}")
                 print()
 
-                # --- Accept this payment for the CSV amount only (not fill amount) into acceptor's default wallet ---
-                accept_amount_wei = dwh_principal_wei  # amount from CSV (DWH_PRINCIPAL), not payment's full balance
-                _trace(f"Calling accept: payment_id={payment_id!r} amount_wei={accept_amount_wei!r} (CSV amount) wallet_id={acceptor_default_wallet_id!r}")
-                echo_with_color(CYAN, f"  Accepting payment (payment_id={payment_id}, amount={accept_amount_wei} wei from CSV) into wallet {acceptor_default_wallet_id}...")
+                # --- Step 3: Accept payment for CSV amount into acceptor wallet ---
+                accept_amount_wei = dwh_principal_wei
+                _trace(f"Calling accept: payment_id={payment_id!r} amount_wei={accept_amount_wei!r} (CSV amount) wallet_id={ctx['acceptor_default_wallet_id']!r}")
+                echo_with_color(CYAN, f"  Accepting payment (payment_id={payment_id}, amount={accept_amount_wei} wei from CSV) into wallet {ctx['acceptor_default_wallet_id']}...")
                 accept_res = accept_payment(
-                    pay_service_url,
-                    auth_service_url,
-                    acceptor_email,
-                    acceptor_password,
+                    config.pay_service_url,
+                    config.auth_service_url,
+                    config.acceptor_email,
+                    config.acceptor_password,
                     payment_id=payment_id,
                     amount=accept_amount_wei,
-                    wallet_id=acceptor_default_wallet_id,
+                    wallet_id=ctx["acceptor_default_wallet_id"],
                     account_address=None,
                 )
                 if not accept_res.get("success"):
@@ -344,26 +258,21 @@ def main() -> int:
                 echo_with_color(GREEN, "  ✅ Payment accepted for this amount.")
                 print()
 
-                # --- Create payment swap: partial credit (with obligor) vs cash (obligor=null), counterparty = loan account ---
-                swap_deadline_raw = os.environ.get("SWAP_DEADLINE", "").strip()
-                if swap_deadline_raw:
-                    swap_deadline = swap_deadline_raw
-                else:
-                    swap_deadline = (datetime.now(timezone.utc) + timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-                _trace(f"Creating payment swap: credit={accept_amount_wei} wei (DWH_PRINCIPAL), cash={mambu_total_wei} wei (MAMBU_TOTAL), obligor={loan_wallet_address[:18]}..., counterparty={loan_wallet_id!r}, deadline={swap_deadline!r}")
-                echo_with_color(CYAN, f"  Creating payment swap (credit DWH_PRINCIPAL ↔ cash MAMBU_TOTAL_AMOUNT, counterparty={loan_wallet_id})...")
+                # --- Step 4: Create payment swap ---
+                _trace(f"Creating payment swap: credit={accept_amount_wei} wei (DWH_PRINCIPAL), cash={mambu_total_wei} wei (MAMBU_TOTAL), obligor={loan_wallet_address[:18]}..., counterparty={wlt_id!r}, deadline={config.swap_deadline!r}")
+                echo_with_color(CYAN, f"  Creating payment swap (credit DWH_PRINCIPAL ↔ cash MAMBU_TOTAL_AMOUNT, counterparty={wlt_id})...")
                 swap_res = create_payment_swap(
-                    pay_service_url,
-                    acceptor_token,
-                    counterparty=loan_wallet_id,
+                    config.pay_service_url,
+                    ctx["acceptor_token"],
+                    counterparty=wlt_id,
                     initiator_amount_wei=accept_amount_wei,
                     counterparty_amount_wei=mambu_total_wei,
-                    denomination=denomination,
+                    denomination=config.denomination,
                     initiator_obligor_address=loan_wallet_address,
-                    deadline=swap_deadline,
-                    wallet_id=acceptor_default_wallet_id,
+                    deadline=config.swap_deadline,
+                    wallet_id=ctx["acceptor_default_wallet_id"],
                     account_address=None,
-                    counterparty_wallet_id=loan_wallet_id,
+                    counterparty_wallet_id=wlt_id,
                 )
                 if not swap_res.get("success"):
                     _trace(f"Create payment swap failed: {swap_res.get('error', 'Unknown error')!r}")
@@ -381,19 +290,20 @@ def main() -> int:
                     echo_with_color(YELLOW, "  ⚠️  No swap_id in response; cannot complete swap.")
                     fail_count += 1
                     continue
-                if not issuer_token:
+                if not ctx.get("issuer_token"):
                     _trace("Issuer credentials not set; swap created but not completed (set ISSUER_EMAIL/ISSUER_PASSWORD to complete as loan account).")
                     echo_with_color(YELLOW, "  ⚠️  Swap created; set ISSUER_EMAIL and ISSUER_PASSWORD to complete swap as loan account.")
                     success_count += 1
                     continue
-                _trace(f"Completing swap {swap_id_created!r} as loan wallet {loan_wallet_id!r} (account_address={loan_wallet_address[:18]}...).")
-                echo_with_color(CYAN, f"  Completing swap as loan account ({loan_wallet_id})...")
+                # --- Step 5: Loan account completes the swap ---
+                _trace(f"Completing swap {swap_id_created!r} as loan wallet {wlt_id!r} (account_address={loan_wallet_address[:18]}...).")
+                echo_with_color(CYAN, f"  Completing swap as loan account ({wlt_id})...")
                 complete_res = complete_swap_as_wallet(
-                    pay_service_url,
-                    issuer_token,
+                    config.pay_service_url,
+                    ctx["issuer_token"],
                     swap_id=swap_id_created,
                     account_address=loan_wallet_address,
-                    wallet_id=loan_wallet_id,
+                    wallet_id=wlt_id,
                 )
                 if not complete_res.get("success"):
                     _trace(f"Complete swap failed: {complete_res.get('error', 'Unknown error')!r}")
@@ -404,37 +314,23 @@ def main() -> int:
                 echo_with_color(GREEN, "  ✅ Swap completed by loan account.")
                 print()
 
-                # --- Accept all (pending payables) by both parties — event-based polling ---
-                # Poll accept_all until payables appear and are accepted; no fixed delay, no race.
-                # Acceptor: cash (obligor=null). Loan account: credit (obligor=address or wallet_id).
-                try:
-                    poll_interval = float(os.environ.get("ACCEPT_ALL_POLL_INTERVAL_SEC", "2").strip())
-                    if poll_interval <= 0:
-                        poll_interval = 2.0
-                except ValueError:
-                    poll_interval = 2.0
-                try:
-                    poll_timeout = float(os.environ.get("ACCEPT_ALL_TIMEOUT_SEC", "90").strip())
-                    if poll_timeout <= 0:
-                        poll_timeout = 90.0
-                except ValueError:
-                    poll_timeout = 90.0
-
+                # --- Step 6: Accept all payables (acceptor then loan account) ---
                 key_acceptor = f"accept-all-acceptor-{sanitized_loan_id}-{int(time.time() * 1000)}"
-                echo_with_color(CYAN, f"  Polling accept_all (acceptor) until payables ready (timeout {poll_timeout:.0f}s)...")
-                accept_all_acceptor, acceptor_ready = _poll_accept_all_until_ready(
-                    pay_service_url,
-                    auth_service_url,
-                    acceptor_email,
-                    acceptor_password,
-                    denomination=denomination,
+                echo_with_color(CYAN, f"  Polling accept_all (acceptor) until payables ready (timeout {config.accept_all_timeout_sec:.0f}s)...")
+                accept_all_acceptor, acceptor_ready = poll_accept_all_until_ready(
+                    config.pay_service_url,
+                    config.auth_service_url,
+                    config.acceptor_email,
+                    config.acceptor_password,
+                    denomination=config.denomination,
                     obligor=None,
-                    wallet_id=acceptor_default_wallet_id,
+                    wallet_id=ctx["acceptor_default_wallet_id"],
                     account_address=None,
                     idempotency_key=key_acceptor,
                     label="acceptor",
-                    poll_interval_sec=poll_interval,
-                    timeout_sec=poll_timeout,
+                    poll_interval_sec=config.accept_all_poll_interval_sec,
+                    timeout_sec=config.accept_all_timeout_sec,
+                    trace_cb=_trace,
                 )
                 if not accept_all_acceptor.get("success"):
                     _trace(f"Accept all (acceptor) failed: {accept_all_acceptor.get('error', 'Unknown')!r}")
@@ -442,43 +338,45 @@ def main() -> int:
                     fail_count += 1
                     continue
                 if not acceptor_ready:
-                    echo_with_color(RED, f"  ❌ Accept all (acceptor): no payables appeared within {poll_timeout:.0f}s")
+                    echo_with_color(RED, f"  ❌ Accept all (acceptor): no payables appeared within {config.accept_all_timeout_sec:.0f}s")
                     fail_count += 1
                     continue
                 echo_with_color(GREEN, "  ✅ Accept all (acceptor) done.")
 
                 key_loan = f"accept-all-loan-{sanitized_loan_id}-{int(time.time() * 1000)}"
-                echo_with_color(CYAN, f"  Polling accept_all (loan account) until payables ready (timeout {poll_timeout:.0f}s)...")
-                accept_all_loan, loan_ready = _poll_accept_all_until_ready(
-                    pay_service_url,
-                    auth_service_url,
-                    issuer_email,
-                    issuer_password,
-                    denomination=denomination,
+                echo_with_color(CYAN, f"  Polling accept_all (loan account) until payables ready (timeout {config.accept_all_timeout_sec:.0f}s)...")
+                accept_all_loan, loan_ready = poll_accept_all_until_ready(
+                    config.pay_service_url,
+                    config.auth_service_url,
+                    config.issuer_email,
+                    config.issuer_password,
+                    denomination=config.denomination,
                     obligor=loan_wallet_address,
-                    wallet_id=loan_wallet_id,
+                    wallet_id=wlt_id,
                     account_address=loan_wallet_address,
                     idempotency_key=key_loan,
                     label="loan",
-                    poll_interval_sec=poll_interval,
-                    timeout_sec=poll_timeout,
+                    poll_interval_sec=config.accept_all_poll_interval_sec,
+                    timeout_sec=config.accept_all_timeout_sec,
+                    trace_cb=_trace,
                 )
                 if not loan_ready and accept_all_loan.get("success"):
                     _trace("Accept all (loan): no payables with obligor=address; trying obligor=wallet_id")
                     key_loan2 = f"accept-all-loan-wlt-{sanitized_loan_id}-{int(time.time() * 1000)}"
-                    accept_all_loan, loan_ready = _poll_accept_all_until_ready(
-                        pay_service_url,
-                        auth_service_url,
-                        issuer_email,
-                        issuer_password,
-                        denomination=denomination,
-                        obligor=loan_wallet_id,
-                        wallet_id=loan_wallet_id,
+                    accept_all_loan, loan_ready = poll_accept_all_until_ready(
+                        config.pay_service_url,
+                        config.auth_service_url,
+                        config.issuer_email,
+                        config.issuer_password,
+                        denomination=config.denomination,
+                        obligor=wlt_id,
+                        wallet_id=wlt_id,
                         account_address=loan_wallet_address,
                         idempotency_key=key_loan2,
                         label="loan(wallet_id)",
-                        poll_interval_sec=poll_interval,
-                        timeout_sec=min(60.0, poll_timeout),
+                        poll_interval_sec=config.accept_all_poll_interval_sec,
+                        timeout_sec=min(60.0, config.accept_all_timeout_sec),
+                        trace_cb=_trace,
                     )
                 if not accept_all_loan.get("success"):
                     _trace(f"Accept all (loan account) failed: {accept_all_loan.get('error', 'Unknown')!r}")
@@ -497,70 +395,17 @@ def main() -> int:
         return 1
 
     # --- Summary ---
-    print()
-    echo_with_color(PURPLE, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    echo_with_color(CYAN, "📊 Summary")
-    echo_with_color(PURPLE, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    echo_with_color(BLUE, f"  Total payment rows processed: {row_count}")
-    echo_with_color(GREEN, f"  Accepted: {success_count}")
-    echo_with_color(RED, f"  Failed: {fail_count}")
-    print()
-    if success_count > 0:
-        echo_with_color(GREEN, f"🎉 Processed {success_count} row(s): accept + swap + complete + accept_all. ✨")
-    if success_count > 0:
-        return 0
-    echo_with_color(RED, "❌ No payments were accepted")
-    return 1
-
-
-def print_payment_usage() -> None:
-    """Print help text for the payment workflow script."""
-    print("Usage: payment_workflow.py [csv_file]")
-    print()
-    print("Arguments:")
-    print("  csv_file   Path to payment CSV (default: wisr_payment_test.csv)")
-    print()
-    print("CSV columns (header): MAMBU_LOANID, MAMBU_PAYMENTDATE, MAMBU_TRANSACTION,")
-    print("  DWH_PRINCIPAL, DWH_INTEREST, DWH_FEE, MAMBU_TOTAL_AMOUNT, MAMBU_ISDISHONOURED")
-    print()
-    print("Environment variables:")
-    print("  ACCEPTOR_EMAIL       Entity that finds, accepts the payment, and creates the swap")
-    print("  ACCEPTOR_PASSWORD    Password for ACCEPTOR_EMAIL")
-    print("  ISSUER_EMAIL         Entity that owns loan wallets; required to complete swap as loan account.")
-    print("  ISSUER_PASSWORD      Password for ISSUER_EMAIL (required for step 4).")
-    print("  DENOMINATION         Asset ID for the swap (default: aud-token-asset)")
-    print("  SWAP_DEADLINE        Optional; ISO deadline for the swap (default: 30 days from now)")
-    print("  ACCEPT_ALL_POLL_INTERVAL_SEC  Poll interval for accept_all (default: 2)")
-    print("  ACCEPT_ALL_TIMEOUT_SEC  Timeout for accept_all polling per party (default: 90)")
-    print("  PAY_SERVICE_URL      Payments service URL")
-    print("  AUTH_SERVICE_URL     Auth service URL")
-    print("  PAYMENT_COUNT        Max rows to process (default: 100)")
-    print()
-    print("Flow per row:")
-    print("  1) Find obligation initial payment for the loan (acceptor's contracts → contract → payments)")
-    print("  2) Accept that payment for the CSV amount (DWH_PRINCIPAL) only, not the fill amount")
-    print("  3) Create payment swap: credit DWH_PRINCIPAL (obligor=loan) vs cash MAMBU_TOTAL_AMOUNT (obligor=null), counterparty=loan account")
-    print("  4) Loan account completes the swap (requires ISSUER_EMAIL + ISSUER_PASSWORD)")
-    print("  5) Accept all payables by acceptor and by loan account")
-    print()
-    print("Example:")
-    print("  python3 payment_workflow.py wisr_payment_test.csv")
-    print("  ACCEPTOR_EMAIL=issuer@yieldfabric.com ACCEPTOR_PASSWORD=secret python3 payment_workflow.py")
-
-
-def parse_payment_cli_args(script_dir: Path) -> str:
-    """Parse argv and env into csv_file path."""
-    args = sys.argv[1:]
-    if not args or args[0] in ("-h", "--help"):
-        csv_file = os.environ.get("PAYMENT_CSV", "").strip() or str(script_dir / "wisr_payment_test.csv")
-        return csv_file
-    csv_file = args[0]
-    csv_path = Path(csv_file)
-    if not csv_path.is_absolute() and (script_dir / csv_path).exists():
-        csv_file = str(script_dir / csv_path)
-    elif not csv_path.is_absolute() and csv_path.exists():
-        csv_file = str(csv_path.resolve())
-    return csv_file
+    print_workflow_summary(
+        row_count,
+        success_count,
+        fail_count,
+        total_label="Total payment rows processed",
+        success_label="Accepted",
+        fail_label="Failed",
+        success_message=f"🎉 Processed {success_count} row(s): accept + swap + complete + accept_all. ✨" if success_count > 0 else None,
+        failure_message="❌ No payments were accepted",
+    )
+    return 0 if success_count > 0 else 1
 
 
 if __name__ == "__main__":
