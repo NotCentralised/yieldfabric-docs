@@ -22,7 +22,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from modules import (
     accept_payment,
@@ -34,12 +34,18 @@ from modules import (
     get_wallet_by_id,
     load_env_files,
     poll_accept_all_until_ready,
+    query_swap_status,
     safe_get,
 )
 from modules.console import BLUE, CYAN, GREEN, PURPLE, RED, YELLOW
 from modules.loan_wallet import loan_wallet_id, sanitize_loan_id
-from modules.messages import get_messages_awaiting_signature, sign_and_submit_manual_message
+from modules.messages import (
+    get_messages_awaiting_signature,
+    poll_until_sign_and_submit_manual_message,
+    sign_and_submit_manual_message,
+)
 from modules.payment_cli import parse_payment_cli_args, print_payment_usage
+from modules.wallet_preferences import set_wallet_execution_mode_preference
 from modules.runner import payment_auth_context
 from modules.workflow_common import (
     BANNER_LINE,
@@ -48,10 +54,63 @@ from modules.workflow_common import (
 )
 from modules.workflow_config import PaymentWorkflowConfig
 
+# Optional: ensure issuer external key and register with loan wallets / investor account
+try:
+    from modules.register_external_key import (
+        address_from_private_key,
+        ensure_issuer_external_key,
+        get_key_id_by_address,
+        register_external_key,
+        register_key_with_specific_wallet,
+        sign_ownership_message,
+        verify_external_key_ownership,
+    )
+    _HAS_ENSURE_ISSUER_KEY = True
+except ImportError:
+    _HAS_ENSURE_ISSUER_KEY = False
+
 
 def _trace(msg: str) -> None:
     """Log a trace line so we can follow the flow (prefix [TRACE])."""
     echo_with_color(BLUE, f"  [TRACE] {msg}")
+
+
+def _wait_accept_all_signatures(
+    pay_service_url: str,
+    ctx: dict,
+    has_issuer: bool,
+    has_acceptor: bool,
+    trace_cb: Optional[Callable[[str], None]],
+    max_wait_sec: float = 30.0,
+    poll_interval_sec: float = 2.0,
+) -> None:
+    """After accept_all, wait for listener to sign any new messages (e.g. Retrieve, Send) until none awaiting or timeout."""
+    start = time.monotonic()
+    total_pending = 0
+    echo_with_color(CYAN, "  Waiting for post-accept_all signatures (listener will sign Retrieve/Send if any)...")
+    while (time.monotonic() - start) < max_wait_sec:
+        total_pending = 0
+        try:
+            if has_acceptor and ctx.get("acceptor_token") and ctx.get("acceptor_user_id"):
+                acc_msgs = get_messages_awaiting_signature(
+                    pay_service_url, ctx["acceptor_token"], ctx["acceptor_user_id"]
+                )
+                total_pending += len(acc_msgs or [])
+            if has_issuer and ctx.get("issuer_token") and ctx.get("issuer_user_id"):
+                iss_msgs = get_messages_awaiting_signature(
+                    pay_service_url, ctx["issuer_token"], ctx["issuer_user_id"]
+                )
+                total_pending += len(iss_msgs or [])
+        except Exception as e:
+            if trace_cb:
+                trace_cb(f"Awaiting-signature check failed: {e}")
+        if total_pending == 0:
+            echo_with_color(GREEN, "  ✅ No messages awaiting signature.")
+            return
+        if trace_cb:
+            trace_cb(f"Messages awaiting signature: {total_pending}, waiting...")
+        time.sleep(poll_interval_sec)
+    echo_with_color(YELLOW, f"  ⚠️  Still {total_pending} message(s) awaiting signature after {max_wait_sec:.0f}s (listener may sign shortly).")
 
 
 def main() -> int:
@@ -83,6 +142,12 @@ def main() -> int:
     echo_with_color(BLUE, f"  Max payment rows: {config.payment_count}")
     if config.require_manual_signature:
         echo_with_color(CYAN, "  Require manual signature: yes (complete-swap step will wait for UX or script signing)")
+    if config.ensure_issuer_key:
+        echo_with_color(CYAN, "  Ensure issuer external key: yes (create + save to file if first run)")
+    if config.issuer_email:
+        echo_with_color(BLUE, f"  Issuer external key file: {config.issuer_external_key_file}")
+    if config.require_manual_signature:
+        echo_with_color(BLUE, f"  Investor external key file: {config.investor_external_key_file}")
     print()
 
     if not config.acceptor_email or not config.acceptor_password:
@@ -120,25 +185,143 @@ def main() -> int:
         return 1
     print()
 
-    # --- Start manual signature listener when require_manual_signature and issuer credentials + key file ---
+    # Optional: ensure issuer has an external key (create + save to file on first run); capture key_id and address
+    issuer_external_key_id = None
+    issuer_key_address = None
+    run_ensure = config.ensure_issuer_key or config.require_manual_signature
+    if run_ensure and ctx.get("issuer_user_id") and ctx.get("issuer_token"):
+        if _HAS_ENSURE_ISSUER_KEY:
+            key_path_ensure = (
+                Path(config.issuer_external_key_file)
+                if Path(config.issuer_external_key_file).is_absolute()
+                else (config.script_dir / config.issuer_external_key_file).resolve()
+            )
+            echo_with_color(CYAN, "🔑 Ensuring issuer external key (create + save to file if first time)...")
+            try:
+                issuer_key_address, _pk, _kp, issuer_external_key_id = ensure_issuer_external_key(
+                    auth_service_url=config.auth_service_url,
+                    jwt_token=ctx["issuer_token"],
+                    user_id=ctx["issuer_user_id"],
+                    key_file_path=key_path_ensure,
+                    key_name=config.issuer_external_key_name,
+                    register_with_wallet=False,
+                    verify_ownership=True,
+                )
+                if _kp is not None:
+                    echo_with_color(GREEN, f"  ✅ Issuer external key created and registered: {issuer_key_address}")
+                else:
+                    echo_with_color(GREEN, f"  ✅ Issuer external key loaded from file: {issuer_key_address}")
+                if not issuer_external_key_id and config.require_manual_signature:
+                    echo_with_color(YELLOW, "  ⚠️  Could not resolve issuer key id; will not register with loan wallets")
+            except Exception as e:
+                echo_with_color(RED, f"  ❌ Ensure issuer key failed: {e}")
+                return 1
+            print()
+        else:
+            echo_with_color(YELLOW, "  ⚠️  ENSURE_ISSUER_EXTERNAL_KEY set but eth_account not installed; pip install eth-account")
+            print()
+
+    # Ensure investor (acceptor) has their own external key (separate from issuer key) and register it with acceptor wallet.
+    # Same-entity flow: investor key + investor account + investor wallet → no auth UNIQUE or AddOwner cross-entity issues.
+    investor_external_key_id = None
+    if config.require_manual_signature and ctx.get("acceptor_token") and ctx.get("acceptor_user_id") and ctx.get("acceptor_default_wallet_id"):
+        if _HAS_ENSURE_ISSUER_KEY:
+            investor_key_path = (
+                Path(config.investor_external_key_file)
+                if Path(config.investor_external_key_file).is_absolute()
+                else (config.script_dir / config.investor_external_key_file).resolve()
+            )
+            echo_with_color(CYAN, "🔑 Ensuring investor (acceptor) external key (create + save to file if first time)...")
+            try:
+                _inv_addr, _inv_pk, _inv_kp, investor_external_key_id = ensure_issuer_external_key(
+                    auth_service_url=config.auth_service_url,
+                    jwt_token=ctx["acceptor_token"],
+                    user_id=ctx["acceptor_user_id"],
+                    key_file_path=investor_key_path,
+                    key_name=config.investor_external_key_name,
+                    register_with_wallet=False,
+                    verify_ownership=True,
+                )
+                if _inv_kp is not None:
+                    echo_with_color(GREEN, f"  ✅ Investor external key created and registered: {_inv_addr}")
+                else:
+                    echo_with_color(GREEN, f"  ✅ Investor external key loaded from file: {_inv_addr}")
+            except Exception as e:
+                echo_with_color(RED, f"  ❌ Ensure investor key failed: {e}")
+                return 1
+            # Register investor key with acceptor's wallet (same entity → AddOwner succeeds)
+            try:
+                acceptor_wallet = get_wallet_by_id(
+                    config.pay_service_url,
+                    ctx["acceptor_token"],
+                    ctx["acceptor_default_wallet_id"],
+                )
+                acceptor_wallet_address = (acceptor_wallet.get("address") or "").strip() if acceptor_wallet else ""
+                if acceptor_wallet_address and acceptor_wallet_address.startswith("0x") and investor_external_key_id:
+                    register_key_with_specific_wallet(
+                        config.auth_service_url,
+                        ctx["acceptor_token"],
+                        investor_external_key_id,
+                        acceptor_wallet_address,
+                    )
+                    echo_with_color(GREEN, "  ✅ Investor key registered with investor (acceptor) wallet for manual signing")
+            except Exception as reg_err:
+                echo_with_color(YELLOW, f"  ⚠️  Register investor key with wallet failed (continuing): {reg_err}")
+            print()
+        # Set investor (acceptor) wallet to Manual for message types it uses
+        if config.require_manual_signature and ctx.get("acceptor_token") and ctx.get("acceptor_default_wallet_id"):
+            for msg_type in ("CreateSwap", "Retrieve", "Send"):
+                try:
+                    set_wallet_execution_mode_preference(
+                        config.pay_service_url,
+                        ctx["acceptor_token"],
+                        wallet_id=ctx["acceptor_default_wallet_id"],
+                        message_type=msg_type,
+                        execution_mode="Manual",
+                    )
+                    echo_with_color(GREEN, f"  ✅ Investor wallet set to Manual for {msg_type}")
+                except Exception as pref_err:
+                    echo_with_color(YELLOW, f"  ⚠️  Set investor wallet preference for {msg_type} failed (continuing): {pref_err}")
+        print()
+
+    # --- Start manual signature listener: issuer key for issuer messages, investor key for acceptor messages ---
     listener_stop = threading.Event()
     listener_thread = None
-    if config.require_manual_signature and ctx.get("issuer_user_id") and ctx.get("issuer_token"):
-        key_path = Path(config.issuer_external_key_file)
-        if key_path.exists():
-            try:
-                private_key_hex = key_path.read_text().strip().removeprefix("0x").strip()
-                if private_key_hex:
-                    signed_ids = set()
-                    jwt_token = ctx["issuer_token"]
-                    issuer_user_id = ctx["issuer_user_id"]
+    has_issuer = ctx.get("issuer_user_id") and ctx.get("issuer_token")
+    has_acceptor = ctx.get("acceptor_user_id") and ctx.get("acceptor_token")
+    if config.require_manual_signature and (has_issuer or has_acceptor):
+        def _resolve_key_path(cfg_path: str) -> Path:
+            p = Path(cfg_path)
+            return p if p.is_absolute() else (config.script_dir / cfg_path).resolve()
 
-                    def _listen_and_sign():
-                        poll_interval = 3.0
-                        while True:
-                            try:
+        issuer_key_path = _resolve_key_path(config.issuer_external_key_file)
+        investor_key_path = _resolve_key_path(config.investor_external_key_file)
+        participants: list[tuple[str, str, str, str]] = []  # (label, jwt_token, user_id, private_key_hex)
+        if has_issuer and issuer_key_path.exists():
+            try:
+                pk = issuer_key_path.read_text().strip().removeprefix("0x").strip()
+                if pk:
+                    participants.append(("issuer", ctx["issuer_token"], ctx["issuer_user_id"], pk))
+            except Exception:
+                pass
+        if has_acceptor and investor_key_path.exists():
+            try:
+                pk = investor_key_path.read_text().strip().removeprefix("0x").strip()
+                if pk:
+                    participants.append(("acceptor", ctx["acceptor_token"], ctx["acceptor_user_id"], pk))
+            except Exception:
+                pass
+        if participants:
+            try:
+                signed_ids: set[str] = set()
+
+                def _listen_and_sign():
+                    poll_interval = 3.0
+                    while True:
+                        try:
+                            for label, jwt_token, user_id, private_key_hex in participants:
                                 messages = get_messages_awaiting_signature(
-                                    config.pay_service_url, jwt_token, issuer_user_id
+                                    config.pay_service_url, jwt_token, user_id
                                 )
                                 new_messages = [m for m in messages if m.get("id") and str(m["id"]) not in signed_ids]
                                 for m in new_messages:
@@ -148,28 +331,31 @@ def main() -> int:
                                         sign_and_submit_manual_message(
                                             config.pay_service_url,
                                             jwt_token,
-                                            issuer_user_id,
+                                            user_id,
                                             mid,
                                             private_key_hex,
                                         )
-                                        echo_with_color(GREEN, f"  ✅ [Listener] Signed and submitted message {mid}")
+                                        echo_with_color(GREEN, f"  ✅ [Listener] Signed and submitted message {mid} ({label})")
                                     except Exception as e:
                                         echo_with_color(RED, f"  ❌ [Listener] Failed to sign {mid}: {e}")
                                         signed_ids.discard(mid)
-                            except Exception as e:
-                                echo_with_color(RED, f"  ❌ [Listener] Poll error: {e}")
-                            if listener_stop.wait(timeout=poll_interval):
-                                break
+                        except Exception as e:
+                            echo_with_color(RED, f"  ❌ [Listener] Poll error: {e}")
+                        if listener_stop.wait(timeout=poll_interval):
+                            break
 
-                    listener_thread = threading.Thread(target=_listen_and_sign, daemon=True)
-                    listener_thread.start()
-                    echo_with_color(GREEN, "  ✅ Manual signature listener started in background (will sign issuer/loan messages as they appear)")
-                else:
-                    echo_with_color(YELLOW, "  ⚠️  Key file is empty; manual signature listener not started. Run manual_signature_flow.py listen in another terminal.")
+                listener_thread = threading.Thread(target=_listen_and_sign, daemon=True)
+                listener_thread.start()
+                echo_with_color(GREEN, "  ✅ Manual signature listener started (issuer key for issuer, investor key for acceptor)")
             except Exception as e:
                 echo_with_color(YELLOW, f"  ⚠️  Could not start manual signature listener: {e}. Run manual_signature_flow.py listen in another terminal.")
         else:
-            echo_with_color(YELLOW, f"  ⚠️  Key file not found: {key_path}; manual signature listener not started. Run manual_signature_flow.py listen in another terminal.")
+            missing = []
+            if has_issuer and not (issuer_key_path.exists() and issuer_key_path.read_text().strip()):
+                missing.append(str(issuer_key_path))
+            if has_acceptor and not (investor_key_path.exists() and investor_key_path.read_text().strip()):
+                missing.append(str(investor_key_path))
+            echo_with_color(YELLOW, f"  ⚠️  Missing or empty key file(s): {missing}; manual signature listener not started.")
         print()
 
     # --- Process payment rows ---
@@ -236,6 +422,19 @@ def main() -> int:
                     continue
                 _trace(f"Loan wallet resolved: id={wlt_id} address={loan_wallet_address[:18]}...")
                 echo_with_color(GREEN, f"  ✅ Using loan wallet: {wlt_id} ({loan_wallet_address[:18]}...)")
+                # Register issuer external key with this loan wallet so manual signature can sign for it
+                if config.require_manual_signature and issuer_external_key_id and loan_wallet_address.startswith("0x") and ctx.get("issuer_token"):
+                    if _HAS_ENSURE_ISSUER_KEY:
+                        try:
+                            register_key_with_specific_wallet(
+                                config.auth_service_url,
+                                ctx["issuer_token"],
+                                issuer_external_key_id,
+                                loan_wallet_address,
+                            )
+                            echo_with_color(GREEN, f"  ✅ Issuer external key registered with loan wallet {wlt_id}")
+                        except Exception as reg_err:
+                            echo_with_color(YELLOW, f"  ⚠️  Register key with loan wallet failed (continuing): {reg_err}")
                 print()
 
                 # --- Step 2: Find obligation initial payment ---
@@ -304,6 +503,7 @@ def main() -> int:
                     amount=accept_amount_wei,
                     wallet_id=ctx["acceptor_default_wallet_id"],
                     account_address=None,
+                    require_manual_signature=config.require_manual_signature,
                 )
                 if not accept_res.get("success"):
                     _trace(f"Accept failed: {accept_res.get('error', 'Unknown error')!r}")
@@ -329,6 +529,7 @@ def main() -> int:
                     wallet_id=ctx["acceptor_default_wallet_id"],
                     account_address=None,
                     counterparty_wallet_id=wlt_id,
+                    require_manual_signature=config.require_manual_signature,
                 )
                 if not swap_res.get("success"):
                     _trace(f"Create payment swap failed: {swap_res.get('error', 'Unknown error')!r}")
@@ -351,6 +552,20 @@ def main() -> int:
                     echo_with_color(YELLOW, "  ⚠️  Swap created; set ISSUER_EMAIL and ISSUER_PASSWORD to complete swap as loan account.")
                     success_count += 1
                     continue
+                # Set loan wallet execution mode to Manual for CompleteSwap so messages require manual signature
+                if config.require_manual_signature and ctx.get("issuer_token"):
+                    try:
+                        set_wallet_execution_mode_preference(
+                            config.pay_service_url,
+                            ctx["issuer_token"],
+                            wallet_id=wlt_id,
+                            message_type="CompleteSwap",
+                            execution_mode="Manual",
+                        )
+                        _trace(f"Set wallet {wlt_id} execution mode to Manual for CompleteSwap")
+                        echo_with_color(GREEN, f"  ✅ Loan wallet {wlt_id} set to Manual for CompleteSwap")
+                    except Exception as pref_err:
+                        echo_with_color(YELLOW, f"  ⚠️  Set wallet execution mode failed (continuing): {pref_err}")
                 # --- Step 5: Loan account completes the swap ---
                 _trace(f"Completing swap {swap_id_created!r} as loan wallet {wlt_id!r} (account_address={loan_wallet_address[:18]}...).")
                 echo_with_color(CYAN, f"  Completing swap as loan account ({wlt_id})...")
@@ -367,7 +582,69 @@ def main() -> int:
                     echo_with_color(RED, f"  ❌ Complete swap failed: {complete_res.get('error', 'Unknown error')}")
                     fail_count += 1
                     continue
-                _trace("Complete swap succeeded.")
+                # When require_manual_signature is True, the API returns success as soon as the message is
+                # submitted (not when the swap is completed). We must sign that message with the issuer key
+                # and then poll until the swap is COMPLETED.
+                message_id = complete_res.get("messageId")
+                if config.require_manual_signature and message_id and ctx.get("issuer_user_id") and ctx.get("issuer_token"):
+                    key_path = (
+                        Path(config.issuer_external_key_file)
+                        if Path(config.issuer_external_key_file).is_absolute()
+                        else (config.script_dir / config.issuer_external_key_file).resolve()
+                    )
+                    if key_path.exists():
+                        try:
+                            private_key_hex = key_path.read_text().strip().removeprefix("0x").strip()
+                            if private_key_hex:
+                                echo_with_color(CYAN, f"  Signing completeSwap message {message_id} with issuer key...")
+                                try:
+                                    poll_until_sign_and_submit_manual_message(
+                                        config.pay_service_url,
+                                        ctx["issuer_token"],
+                                        ctx["issuer_user_id"],
+                                        message_id,
+                                        private_key_hex,
+                                        poll_interval_seconds=2.0,
+                                        max_wait_seconds=120.0,
+                                    )
+                                    echo_with_color(GREEN, f"  ✅ Signed and submitted completeSwap message (manual signature).")
+                                except Exception as sign_err:
+                                    echo_with_color(RED, f"  ❌ Manual signature failed: {sign_err}")
+                                    fail_count += 1
+                                    continue
+                            else:
+                                echo_with_color(YELLOW, "  ⚠️  Key file empty; swap message may remain awaiting signature.")
+                        except Exception as e:
+                            echo_with_color(RED, f"  ❌ Could not read issuer key for manual signature: {e}")
+                            fail_count += 1
+                            continue
+                    else:
+                        echo_with_color(YELLOW, f"  ⚠️  Issuer key file not found: {key_path}; swap message may remain awaiting signature.")
+                # Poll until swap status is COMPLETED (backend returns success when message is submitted, not when swap is done)
+                echo_with_color(CYAN, f"  Polling swap status until COMPLETED (timeout 120s)...")
+                swap_complete_timeout = 120.0
+                swap_poll_interval = 2.0
+                swap_start = time.monotonic()
+                swap_completed = False
+                while (time.monotonic() - swap_start) < swap_complete_timeout:
+                    swap_data = query_swap_status(
+                        config.pay_service_url, ctx["issuer_token"], swap_id_created
+                    )
+                    if swap_data:
+                        status = (swap_data.get("status") or "").strip()
+                        _trace(f"Swap status: {status}")
+                        if status == "COMPLETED":
+                            swap_completed = True
+                            break
+                        if status in ("CANCELLED", "EXPIRED", "FORFEITED"):
+                            echo_with_color(RED, f"  ❌ Swap ended in status: {status}")
+                            break
+                    time.sleep(swap_poll_interval)
+                if not swap_completed:
+                    echo_with_color(RED, f"  ❌ Swap did not complete within {swap_complete_timeout:.0f}s")
+                    fail_count += 1
+                    continue
+                _trace("Swap completed.")
                 echo_with_color(GREEN, "  ✅ Swap completed by loan account.")
                 print()
 
@@ -445,6 +722,17 @@ def main() -> int:
                     fail_count += 1
                     continue
                 echo_with_color(GREEN, "  ✅ Accept all (loan account) done.")
+                # Wait for listener to sign any post-accept_all messages (e.g. Retrieve, Send) so "last" signatures complete
+                if config.require_manual_signature and listener_thread is not None:
+                    _wait_accept_all_signatures(
+                        config.pay_service_url,
+                        ctx,
+                        has_issuer,
+                        has_acceptor,
+                        _trace,
+                        max_wait_sec=30.0,
+                        poll_interval_sec=2.0,
+                    )
                 success_count += 1
 
     except Exception as e:

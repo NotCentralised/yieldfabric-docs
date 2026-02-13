@@ -78,9 +78,9 @@ def payment_auth_context(
     acceptor_token = login_user(auth_service_url, acceptor_email, acceptor_password)
     if not acceptor_token:
         return {}
-    entity_user_id = get_user_id_from_profile(auth_service_url, acceptor_token)
+    acceptor_user_id = get_user_id_from_profile(auth_service_url, acceptor_token)
     acceptor_default_wallet_id = get_default_wallet_id(
-        pay_service_url, acceptor_token, entity_id=entity_user_id
+        pay_service_url, acceptor_token, entity_id=acceptor_user_id
     )
     issuer_token = None
     issuer_user_id = None
@@ -91,11 +91,12 @@ def payment_auth_context(
     entity_user_id = (
         issuer_user_id
         if issuer_token and issuer_user_id
-        else get_user_id_from_profile(auth_service_url, acceptor_token)
+        else acceptor_user_id
     )
     issuer_entity_id_raw = (entity_user_id or "").replace("ENTITY-USER-", "").replace("ENTITY-GROUP-", "").strip()
     return {
         "acceptor_token": acceptor_token,
+        "acceptor_user_id": acceptor_user_id,
         "issuer_token": issuer_token,
         "issuer_user_id": issuer_user_id,
         "issuer_entity_id_raw": issuer_entity_id_raw,

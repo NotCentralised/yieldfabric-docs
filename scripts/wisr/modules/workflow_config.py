@@ -168,6 +168,7 @@ class IssueWorkflowConfig:
 class PaymentWorkflowConfig:
     """Configuration for the payment workflow (one source of truth from env)."""
 
+    script_dir: Path
     pay_service_url: str
     auth_service_url: str
     denomination: str
@@ -181,7 +182,11 @@ class PaymentWorkflowConfig:
     accept_all_poll_interval_sec: float
     accept_all_timeout_sec: float
     require_manual_signature: bool
+    ensure_issuer_key: bool
     issuer_external_key_file: str
+    issuer_external_key_name: str
+    investor_external_key_file: str
+    investor_external_key_name: str
 
     @classmethod
     def from_env(cls, script_dir: Path, csv_file: str) -> "PaymentWorkflowConfig":
@@ -217,7 +222,13 @@ class PaymentWorkflowConfig:
         issuer_key_file = os.environ.get("ISSUER_EXTERNAL_KEY_FILE", "").strip()
         if not issuer_key_file:
             issuer_key_file = str(script_dir / "issuer_external_key.txt")
+        key_name = os.environ.get("ISSUER_EXTERNAL_KEY_NAME", "Issuer script external key").strip()
+        investor_key_file = os.environ.get("INVESTOR_EXTERNAL_KEY_FILE", "").strip()
+        if not investor_key_file:
+            investor_key_file = str(script_dir / "investor_external_key.txt")
+        investor_key_name = os.environ.get("INVESTOR_EXTERNAL_KEY_NAME", "Investor script external key").strip()
         return cls(
+            script_dir=script_dir,
             pay_service_url=pay,
             auth_service_url=auth,
             denomination=denom,
@@ -231,5 +242,9 @@ class PaymentWorkflowConfig:
             accept_all_poll_interval_sec=poll_interval,
             accept_all_timeout_sec=poll_timeout,
             require_manual_signature=parse_bool_env("REQUIRE_MANUAL_SIGNATURE"),
+            ensure_issuer_key=parse_bool_env("ENSURE_ISSUER_EXTERNAL_KEY"),
             issuer_external_key_file=issuer_key_file,
+            issuer_external_key_name=key_name,
+            investor_external_key_file=investor_key_file,
+            investor_external_key_name=investor_key_name,
         )
