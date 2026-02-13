@@ -148,7 +148,12 @@ def get_messages_awaiting_signature(
             msg = resp.text
         raise RuntimeError(f"Get messages awaiting signature failed ({resp.status_code}): {msg}")
     data = resp.json()
-    return data if isinstance(data, list) else []
+    # API returns {"messages": [...], "count": N, ...}; support both list and object response
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict) and "messages" in data:
+        return data["messages"]
+    return []
 
 
 def wait_for_message_completion(

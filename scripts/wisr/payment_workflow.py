@@ -19,6 +19,7 @@ Events are logged with [TRACE] so you can follow the flow.
 
 import csv
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -37,6 +38,7 @@ from modules import (
 )
 from modules.console import BLUE, CYAN, GREEN, PURPLE, RED, YELLOW
 from modules.loan_wallet import loan_wallet_id, sanitize_loan_id
+from modules.messages import get_messages_awaiting_signature, sign_and_submit_manual_message
 from modules.payment_cli import parse_payment_cli_args, print_payment_usage
 from modules.runner import payment_auth_context
 from modules.workflow_common import (
@@ -79,6 +81,8 @@ def main() -> int:
     echo_with_color(BLUE, f"  CSV File: {config.csv_file}")
     echo_with_color(BLUE, f"  Denomination (swap): {config.denomination}")
     echo_with_color(BLUE, f"  Max payment rows: {config.payment_count}")
+    if config.require_manual_signature:
+        echo_with_color(CYAN, "  Require manual signature: yes (complete-swap step will wait for UX or script signing)")
     print()
 
     if not config.acceptor_email or not config.acceptor_password:
@@ -115,6 +119,58 @@ def main() -> int:
         echo_with_color(RED, "❌ Could not resolve entity ID for loan wallet naming (set ISSUER_EMAIL if loan wallets are under issuer)")
         return 1
     print()
+
+    # --- Start manual signature listener when require_manual_signature and issuer credentials + key file ---
+    listener_stop = threading.Event()
+    listener_thread = None
+    if config.require_manual_signature and ctx.get("issuer_user_id") and ctx.get("issuer_token"):
+        key_path = Path(config.issuer_external_key_file)
+        if key_path.exists():
+            try:
+                private_key_hex = key_path.read_text().strip().removeprefix("0x").strip()
+                if private_key_hex:
+                    signed_ids = set()
+                    jwt_token = ctx["issuer_token"]
+                    issuer_user_id = ctx["issuer_user_id"]
+
+                    def _listen_and_sign():
+                        poll_interval = 3.0
+                        while True:
+                            try:
+                                messages = get_messages_awaiting_signature(
+                                    config.pay_service_url, jwt_token, issuer_user_id
+                                )
+                                new_messages = [m for m in messages if m.get("id") and str(m["id"]) not in signed_ids]
+                                for m in new_messages:
+                                    mid = str(m["id"])
+                                    signed_ids.add(mid)
+                                    try:
+                                        sign_and_submit_manual_message(
+                                            config.pay_service_url,
+                                            jwt_token,
+                                            issuer_user_id,
+                                            mid,
+                                            private_key_hex,
+                                        )
+                                        echo_with_color(GREEN, f"  ✅ [Listener] Signed and submitted message {mid}")
+                                    except Exception as e:
+                                        echo_with_color(RED, f"  ❌ [Listener] Failed to sign {mid}: {e}")
+                                        signed_ids.discard(mid)
+                            except Exception as e:
+                                echo_with_color(RED, f"  ❌ [Listener] Poll error: {e}")
+                            if listener_stop.wait(timeout=poll_interval):
+                                break
+
+                    listener_thread = threading.Thread(target=_listen_and_sign, daemon=True)
+                    listener_thread.start()
+                    echo_with_color(GREEN, "  ✅ Manual signature listener started in background (will sign issuer/loan messages as they appear)")
+                else:
+                    echo_with_color(YELLOW, "  ⚠️  Key file is empty; manual signature listener not started. Run manual_signature_flow.py listen in another terminal.")
+            except Exception as e:
+                echo_with_color(YELLOW, f"  ⚠️  Could not start manual signature listener: {e}. Run manual_signature_flow.py listen in another terminal.")
+        else:
+            echo_with_color(YELLOW, f"  ⚠️  Key file not found: {key_path}; manual signature listener not started. Run manual_signature_flow.py listen in another terminal.")
+        print()
 
     # --- Process payment rows ---
     echo_with_color(CYAN, f"📖 Reading payment rows from CSV (max {config.payment_count})...")
@@ -304,6 +360,7 @@ def main() -> int:
                     swap_id=swap_id_created,
                     account_address=loan_wallet_address,
                     wallet_id=wlt_id,
+                    require_manual_signature=config.require_manual_signature,
                 )
                 if not complete_res.get("success"):
                     _trace(f"Complete swap failed: {complete_res.get('error', 'Unknown error')!r}")
@@ -393,6 +450,9 @@ def main() -> int:
     except Exception as e:
         echo_with_color(RED, f"❌ Error reading CSV: {e}")
         return 1
+
+    if listener_thread is not None:
+        listener_stop.set()
 
     # --- Summary ---
     print_workflow_summary(

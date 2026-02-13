@@ -21,6 +21,7 @@ This script is a thin entry point; reusable logic lives in the modules package.
 
 import csv
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -53,6 +54,7 @@ from modules import (
     poll_workflow_status,
     safe_get,
 )
+from modules.messages import get_messages_awaiting_signature, sign_and_submit_manual_message
 from modules.cli import parse_cli_args, print_usage
 from modules.console import BLUE, CYAN, GREEN, PURPLE, RED, YELLOW
 from modules.loan_wallet import loan_wallet_id, sanitize_loan_id
@@ -141,6 +143,8 @@ def main() -> int:
             echo_with_color(YELLOW, "  Mint before loans: yes but only applies to issue_swap/issue_swap_complete; will skip")
     if config.burn_after_env:
         echo_with_color(CYAN, f"  Burn after loans: yes (amount: {config.burn_amount or 'N/A'})")
+    if config.require_manual_signature:
+        echo_with_color(CYAN, "  Require manual signature: yes (messages will wait for UX signing)")
     print()
 
     # --- Preflight ---
@@ -227,6 +231,60 @@ def main() -> int:
         deploy_per_loan = False
     elif deploy_per_loan:
         echo_with_color(CYAN, f"  📌 Deploy one new wallet per loan under issuer entity (issuer user_id: {issuer_user_id[:8]}...)")
+        print()
+
+    # --- Start manual signature listener in background when require_manual_signature is True ---
+    listener_stop = threading.Event()
+    listener_thread = None
+    if config.require_manual_signature and issuer_user_id:
+        key_path = (
+            Path(config.issuer_external_key_file)
+            if Path(config.issuer_external_key_file).is_absolute()
+            else (config.script_dir / config.issuer_external_key_file).resolve()
+        )
+        if key_path.exists():
+            try:
+                private_key_hex = key_path.read_text().strip().removeprefix("0x").strip()
+                if private_key_hex:
+                    signed_ids = set()
+
+                    def _listen_and_sign():
+                        poll_interval = 3.0
+                        while True:
+                            try:
+                                messages = get_messages_awaiting_signature(
+                                    config.pay_service_url, jwt_token, issuer_user_id
+                                )
+                                new_messages = [m for m in messages if m.get("id") and str(m["id"]) not in signed_ids]
+                                for m in new_messages:
+                                    mid = str(m["id"])
+                                    signed_ids.add(mid)
+                                    try:
+                                        sign_and_submit_manual_message(
+                                            config.pay_service_url,
+                                            jwt_token,
+                                            issuer_user_id,
+                                            mid,
+                                            private_key_hex,
+                                        )
+                                        echo_with_color(GREEN, f"  ✅ [Listener] Signed and submitted message {mid}")
+                                    except Exception as e:
+                                        echo_with_color(RED, f"  ❌ [Listener] Failed to sign {mid}: {e}")
+                                        signed_ids.discard(mid)
+                            except Exception as e:
+                                echo_with_color(RED, f"  ❌ [Listener] Poll error: {e}")
+                            if listener_stop.wait(timeout=poll_interval):
+                                break
+
+                    listener_thread = threading.Thread(target=_listen_and_sign, daemon=True)
+                    listener_thread.start()
+                    echo_with_color(GREEN, "  ✅ Manual signature listener started in background (will sign messages as they appear)")
+                else:
+                    echo_with_color(YELLOW, "  ⚠️  Key file is empty; manual signature listener not started. Run manual_signature_flow.py listen in another terminal.")
+            except Exception as e:
+                echo_with_color(YELLOW, f"  ⚠️  Could not start manual signature listener: {e}. Run manual_signature_flow.py listen in another terminal.")
+        else:
+            echo_with_color(YELLOW, f"  ⚠️  Key file not found: {key_path}; manual signature listener not started. Run manual_signature_flow.py listen in another terminal.")
         print()
 
     # --- Process loans ---
@@ -412,6 +470,7 @@ def main() -> int:
                         deadline=deadline if deadline else None,
                         account_address=obligor_address_for_loan or None,
                         wallet_id=obligor_wallet_id_for_loan,
+                        require_manual_signature=config.require_manual_signature,
                     )
                 else:
                     echo_with_color(CYAN, "📤 Calling issue composed contract workflow endpoint...")
@@ -423,6 +482,7 @@ def main() -> int:
                         obligations_array,
                         account_address=obligor_address_for_loan or None,
                         wallet_id=obligor_wallet_id_for_loan,
+                        require_manual_signature=config.require_manual_signature,
                     )
 
                 workflow_id = start_response.get("workflow_id") if isinstance(start_response, dict) else None
@@ -571,6 +631,8 @@ def main() -> int:
         print()
     elif config.burn_after_env and (not config.policy_secret or not config.burn_amount):
         echo_with_color(YELLOW, "  ⚠️  BURN_AFTER_LOANS=true but POLICY_SECRET or BURN_AMOUNT missing; skipping burn")
+    if listener_thread is not None:
+        listener_stop.set()
     return 0 if success_count > 0 else 1
 
 

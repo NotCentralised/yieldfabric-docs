@@ -106,11 +106,12 @@ def sign_ownership_message(address: str, private_key_hex: str) -> tuple[str, str
 
 def sign_message_hash_manual_flow(private_key_hex: str, message_hash_hex: str) -> str:
     """
-    Sign a message hash for the manual signature flow (same format as MetaMask personal_sign).
+    Sign a message hash for the manual signature flow (same as frontend + contract).
 
-    The app sends the raw message_hash hex to MetaMask; we sign the same string with our
-    private key using Ethereum personal_sign (encode_defunct + sign). Backend verifies
-    with the same message hash and recovered address.
+    The contract recovers with: ecrecover(keccak256("\x19Ethereum Signed Message:\n32" + hash), v, r, s).
+    The frontend (SignaturePreviewDrawer) and vault sign the digest of that prefixed 32-byte hash.
+    We must sign the same: use encode_defunct(primitive=hash_bytes) so the prefix is "\\n32" and
+    the signed digest matches.
 
     Args:
         private_key_hex: Private key as hex (with or without 0x).
@@ -125,12 +126,14 @@ def sign_message_hash_manual_flow(private_key_hex: str, message_hash_hex: str) -
         )
     key = private_key_hex.removeprefix("0x").strip()
     acct = Account.from_key(key)
-    msg_hex = (message_hash_hex or "").strip()
+    msg_hex = (message_hash_hex or "").strip().removeprefix("0x").strip()
     if not msg_hex:
         raise ValueError("message_hash_hex is required")
-    if not msg_hex.startswith("0x"):
-        msg_hex = "0x" + msg_hex
-    message = encode_defunct(text=msg_hex)
+    hash_bytes = bytes.fromhex(msg_hex)
+    if len(hash_bytes) != 32:
+        raise ValueError(f"message_hash must be 32 bytes, got {len(hash_bytes)}")
+    # Same as contract/frontend: "\x19Ethereum Signed Message:\n32" + 32 bytes, then sign
+    message = encode_defunct(primitive=hash_bytes)
     signed = acct.sign_message(message)
     sig_hex = signed.signature.hex()
     if sig_hex.startswith("0x"):

@@ -149,11 +149,14 @@ def _issue_composed_contract_workflow(
     request_body_extra: Optional[dict] = None,
     account_address: Optional[str] = None,
     wallet_id: Optional[str] = None,
+    require_manual_signature: Optional[bool] = None,
 ) -> dict:
     """Shared workflow POST: build body, log, and call post_workflow_json."""
     request_body = {"name": name, "description": description, "obligations": obligations_json}
     if request_body_extra:
         request_body.update(request_body_extra)
+    if require_manual_signature is True:
+        request_body["require_manual_signature"] = True
     echo_with_color(BLUE, "  📋 Request body:", file=sys.stderr)
     print(json.dumps(request_body, indent=2), file=sys.stderr)
     echo_with_color(BLUE, f"  🌐 Making REST API request to: {pay_service_url.rstrip('/')}{path}", file=sys.stderr)
@@ -171,6 +174,7 @@ def issue_composed_contract_workflow(
     obligations_json: list,
     account_address: Optional[str] = None,
     wallet_id: Optional[str] = None,
+    require_manual_signature: Optional[bool] = None,
 ) -> dict:
     """Issue a composed contract workflow (obligations only, no swap)."""
     echo_with_color(CYAN, "🏦 Starting composed contract issuance workflow...", file=sys.stderr)
@@ -178,6 +182,7 @@ def issue_composed_contract_workflow(
         pay_service_url, jwt_token, name, description, obligations_json,
         "/api/composed_contract/issue_workflow",
         account_address=account_address, wallet_id=wallet_id,
+        require_manual_signature=require_manual_signature,
     )
 
 
@@ -193,6 +198,7 @@ def issue_composed_contract_issue_swap_workflow(
     deadline: Optional[str] = None,
     account_address: Optional[str] = None,
     wallet_id: Optional[str] = None,
+    require_manual_signature: Optional[bool] = None,
 ) -> dict:
     """Issue a composed contract and create a swap with the given counterparty."""
     echo_with_color(CYAN, "🏦 Starting composed contract issue + swap workflow...", file=sys.stderr)
@@ -208,6 +214,7 @@ def issue_composed_contract_issue_swap_workflow(
         "/api/composed_contract/issue_swap_workflow",
         request_body_extra=extra,
         account_address=account_address, wallet_id=wallet_id,
+        require_manual_signature=require_manual_signature,
     )
 
 
@@ -730,6 +737,7 @@ def accept_payment(
     wallet_id: Optional[str] = None,
     account_address: Optional[str] = None,
     idempotency_key: Optional[str] = None,
+    require_manual_signature: Optional[bool] = None,
 ) -> dict:
     """Accept a single payment by payment ID. Mirrors frontend (yieldfabric-app src/pages/wallets/[walletId].tsx):
     same mutation (accept(input: $input)) and same input shape: paymentId, walletId (optional)."""
@@ -748,6 +756,8 @@ def accept_payment(
         inp["amount"] = str(amount)
     if wallet_id:
         inp["walletId"] = wallet_id
+    if require_manual_signature is True:
+        inp["requireManualSignature"] = True
     variables = {"input": inp}
     try:
         data = post_graphql(
@@ -784,6 +794,7 @@ def create_payment_swap(
     account_address: Optional[str] = None,
     idempotency_key: Optional[str] = None,
     counterparty_wallet_id: Optional[str] = None,
+    require_manual_signature: Optional[bool] = None,
 ) -> dict:
     """Create a payment swap: initiator gives amount with obligor, counterparty gives amount with obligor=null.
     counterparty_wallet_id: optional; when counterparty is an entity, use this to specify the counterparty wallet (e.g. loan wallet)."""
@@ -829,6 +840,8 @@ def create_payment_swap(
     }
     if counterparty_wallet_id is not None and counterparty_wallet_id.strip():
         variables["input"]["counterpartyWalletId"] = counterparty_wallet_id.strip()
+    if require_manual_signature is True:
+        variables["input"]["requireManualSignature"] = True
     try:
         data = post_graphql(
             pay_service_url, jwt_token, query, variables,
@@ -860,6 +873,7 @@ def complete_swap_as_wallet(
     wallet_id: str,
     max_retries: int = 12,
     retry_delay_seconds: float = 2.0,
+    require_manual_signature: Optional[bool] = None,
 ) -> dict:
     """Call completeSwap as a specific wallet (sub-account) using JWT + X-Account-Address + X-Wallet-Id."""
     echo_with_color(CYAN, f"  🤝 Completing swap {swap_id} as wallet {wallet_id}...", file=sys.stderr)
@@ -869,7 +883,10 @@ def complete_swap_as_wallet(
             "mutation($input: CompleteSwapInput!) { completeSwap(input: $input) { success message "
             "accountAddress swapId completeResult messageId transactionId signature timestamp } }"
         )
-        variables = {"input": {"swapId": swap_id, "idempotencyKey": idempotency_key}}
+        inp = {"swapId": swap_id, "idempotencyKey": idempotency_key}
+        if require_manual_signature is True:
+            inp["requireManualSignature"] = True
+        variables = {"input": inp}
         try:
             if attempt > 1:
                 echo_with_color(BLUE, f"    ⏳ Retry {attempt}/{max_retries} for completeSwap...", file=sys.stderr)

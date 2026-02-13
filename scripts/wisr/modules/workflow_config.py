@@ -57,6 +57,7 @@ class IssueWorkflowConfig:
     workflow_poll_interval_sec: float
     swap_poll_timeout_sec: float
     swap_poll_interval_sec: float
+    require_manual_signature: bool
 
     @classmethod
     def from_env(
@@ -159,6 +160,7 @@ class IssueWorkflowConfig:
             workflow_poll_interval_sec=workflow_poll_interval,
             swap_poll_timeout_sec=swap_poll_timeout,
             swap_poll_interval_sec=swap_poll_interval,
+            require_manual_signature=parse_bool_env("REQUIRE_MANUAL_SIGNATURE"),
         )
 
 
@@ -178,6 +180,8 @@ class PaymentWorkflowConfig:
     swap_deadline: str
     accept_all_poll_interval_sec: float
     accept_all_timeout_sec: float
+    require_manual_signature: bool
+    issuer_external_key_file: str
 
     @classmethod
     def from_env(cls, script_dir: Path, csv_file: str) -> "PaymentWorkflowConfig":
@@ -210,6 +214,9 @@ class PaymentWorkflowConfig:
                 poll_timeout = 90.0
         except ValueError:
             poll_timeout = 90.0
+        issuer_key_file = os.environ.get("ISSUER_EXTERNAL_KEY_FILE", "").strip()
+        if not issuer_key_file:
+            issuer_key_file = str(script_dir / "issuer_external_key.txt")
         return cls(
             pay_service_url=pay,
             auth_service_url=auth,
@@ -223,4 +230,6 @@ class PaymentWorkflowConfig:
             swap_deadline=swap_deadline,
             accept_all_poll_interval_sec=poll_interval,
             accept_all_timeout_sec=poll_timeout,
+            require_manual_signature=parse_bool_env("REQUIRE_MANUAL_SIGNATURE"),
+            issuer_external_key_file=issuer_key_file,
         )

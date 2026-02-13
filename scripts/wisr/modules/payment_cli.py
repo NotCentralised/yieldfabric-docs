@@ -24,6 +24,8 @@ def print_payment_usage() -> None:
     print("  SWAP_DEADLINE        Optional; ISO deadline for the swap (default: 30 days from now)")
     print("  ACCEPT_ALL_POLL_INTERVAL_SEC  Poll interval for accept_all (default: 2)")
     print("  ACCEPT_ALL_TIMEOUT_SEC  Timeout for accept_all polling per party (default: 90)")
+    print("  REQUIRE_MANUAL_SIGNATURE  If set, complete-swap step requires manual signing (script signs via issuer key file)")
+    print("  ISSUER_EXTERNAL_KEY_FILE  Path to issuer private key for manual signing (default: issuer_external_key.txt)")
     print("  PAY_SERVICE_URL      Payments service URL")
     print("  AUTH_SERVICE_URL     Auth service URL")
     print("  PAYMENT_COUNT        Max rows to process (default: 100)")

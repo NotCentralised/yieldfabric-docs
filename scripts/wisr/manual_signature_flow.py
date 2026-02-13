@@ -9,6 +9,9 @@ Usage:
   # Sign and submit using the issuer private key (Python signs; no app needed)
   ./run.sh manual_signature_flow.py sign-and-submit --message-id <uuid> [--key-file issuer_external_key.txt]
 
+  # Concurrent listener: poll for messages awaiting signature and sign them with the private key
+  ./run.sh manual_signature_flow.py listen [--key-file issuer_external_key.txt] [--poll-interval 5]
+
   # Poll until a message is completed
   ./run.sh manual_signature_flow.py wait --message-id <uuid> [--user-id <user_id>]
 
@@ -21,6 +24,8 @@ Environment: AUTH_SERVICE_URL, PAY_SERVICE_URL, ISSUER_EMAIL, ISSUER_PASSWORD (o
 import argparse
 import os
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -84,6 +89,77 @@ def cmd_list_awaiting(
     return 0
 
 
+def cmd_listen(
+    pay_service_url: str,
+    jwt_token: str,
+    user_id: str,
+    key_file: Path,
+    poll_interval: float,
+    once: bool,
+    max_workers: int,
+) -> int:
+    """Concurrently poll for messages awaiting signature and sign them with the private key."""
+    if not key_file.exists():
+        echo_with_color(RED, f"  ❌ Key file not found: {key_file}")
+        return 1
+    private_key_hex = key_file.read_text().strip().removeprefix("0x").strip()
+    if not private_key_hex:
+        echo_with_color(RED, "  ❌ Key file is empty")
+        return 1
+
+    echo_with_color(CYAN, f"  🎧 Listening for messages awaiting signature (key: {key_file.name}, poll every {poll_interval}s). Ctrl+C to stop.")
+    signed_ids: set[str] = set()
+    cycle = 0
+
+    try:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            while True:
+                cycle += 1
+                try:
+                    messages = get_messages_awaiting_signature(pay_service_url, jwt_token, user_id)
+                except Exception as e:
+                    echo_with_color(RED, f"  ❌ List awaiting failed: {e}")
+                    if once:
+                        return 1
+                    time.sleep(poll_interval)
+                    continue
+
+                new_messages = [m for m in messages if m.get("id") and m["id"] not in signed_ids]
+                if new_messages:
+                    echo_with_color(BLUE, f"  📬 Cycle {cycle}: {len(new_messages)} new message(s) awaiting signature")
+                    futures = {}
+                    for m in new_messages:
+                        mid = m["id"]
+                        signed_ids.add(mid)
+                        fut = executor.submit(
+                            sign_and_submit_manual_message,
+                            pay_service_url,
+                            jwt_token,
+                            user_id,
+                            mid,
+                            private_key_hex,
+                        )
+                        futures[fut] = mid
+
+                    for fut in as_completed(futures):
+                        mid = futures[fut]
+                        try:
+                            result = fut.result()
+                            echo_with_color(GREEN, f"  ✅ Signed and submitted message {mid}: {result.get('message', result)}")
+                        except Exception as e:
+                            echo_with_color(RED, f"  ❌ Failed to sign message {mid}: {e}")
+                            signed_ids.discard(mid)  # allow retry next cycle
+
+                if once:
+                    break
+                time.sleep(poll_interval)
+    except KeyboardInterrupt:
+        echo_with_color(CYAN, "\n  👋 Listener stopped.")
+        return 0
+
+    return 0
+
+
 def cmd_sign_and_submit(
     pay_service_url: str,
     jwt_token: str,
@@ -135,6 +211,34 @@ def main() -> int:
     # list-awaiting
     p_list = sub.add_parser("list-awaiting", help="List messages awaiting signature")
     p_list.add_argument("--user-id", default="", help="User ID (default: from /auth/users/me)")
+    # listen
+    p_listen = sub.add_parser(
+        "listen",
+        help="Concurrently poll for messages awaiting signature and sign them with the private key",
+    )
+    p_listen.add_argument(
+        "--key-file",
+        default="",
+        help="Path to file with private key hex (default: issuer_external_key.txt in script dir)",
+    )
+    p_listen.add_argument("--user-id", default="", help="User ID (default: from /auth/users/me)")
+    p_listen.add_argument(
+        "--poll-interval",
+        type=float,
+        default=5.0,
+        help="Seconds between polls (default: 5)",
+    )
+    p_listen.add_argument(
+        "--once",
+        action="store_true",
+        help="Run one poll cycle and exit (default: run until Ctrl+C)",
+    )
+    p_listen.add_argument(
+        "--max-workers",
+        type=int,
+        default=4,
+        help="Max concurrent sign-and-submit tasks (default: 4)",
+    )
     # sign-and-submit
     p_sign = sub.add_parser(
         "sign-and-submit",
@@ -159,7 +263,7 @@ def main() -> int:
         echo_with_color(RED, "  ❌ Login failed")
         return 1
     user_id = args.user_id if args.user_id else get_user_id_from_profile(auth_service_url, jwt_token)
-    if not user_id and args.command in ("wait", "list-awaiting", "sign-and-submit"):
+    if not user_id and args.command in ("wait", "list-awaiting", "sign-and-submit", "listen"):
         echo_with_color(RED, "  ❌ Could not get user_id (set --user-id or ensure /auth/users/me returns id)")
         return 1
 
@@ -172,6 +276,19 @@ def main() -> int:
         )
     if args.command == "list-awaiting":
         return cmd_list_awaiting(pay_service_url, jwt_token, user_id)
+    if args.command == "listen":
+        key_file = Path(args.key_file) if args.key_file else (script_dir / "issuer_external_key.txt")
+        if not key_file.is_absolute():
+            key_file = (script_dir / key_file).resolve()
+        return cmd_listen(
+            pay_service_url,
+            jwt_token,
+            user_id,
+            key_file,
+            args.poll_interval,
+            args.once,
+            args.max_workers,
+        )
     if args.command == "sign-and-submit":
         key_file = Path(args.key_file) if args.key_file else (script_dir / "issuer_external_key.txt")
         if not key_file.is_absolute():
