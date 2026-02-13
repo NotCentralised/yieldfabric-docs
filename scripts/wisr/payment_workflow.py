@@ -45,7 +45,7 @@ from modules.messages import (
     sign_and_submit_manual_message,
 )
 from modules.payment_cli import parse_payment_cli_args, print_payment_usage
-from modules.wallet_preferences import set_wallet_execution_mode_preference
+# Manual for a single message is controlled by require_manual_signature on the API only; do not set wallet-level policy.
 from modules.runner import payment_auth_context
 from modules.workflow_common import (
     BANNER_LINE,
@@ -268,20 +268,6 @@ def main() -> int:
             except Exception as reg_err:
                 echo_with_color(YELLOW, f"  ⚠️  Register investor key with wallet failed (continuing): {reg_err}")
             print()
-        # Set investor (acceptor) wallet to Manual for message types it uses
-        if config.require_manual_signature and ctx.get("acceptor_token") and ctx.get("acceptor_default_wallet_id"):
-            for msg_type in ("CreateSwap", "Retrieve", "Send"):
-                try:
-                    set_wallet_execution_mode_preference(
-                        config.pay_service_url,
-                        ctx["acceptor_token"],
-                        wallet_id=ctx["acceptor_default_wallet_id"],
-                        message_type=msg_type,
-                        execution_mode="Manual",
-                    )
-                    echo_with_color(GREEN, f"  ✅ Investor wallet set to Manual for {msg_type}")
-                except Exception as pref_err:
-                    echo_with_color(YELLOW, f"  ⚠️  Set investor wallet preference for {msg_type} failed (continuing): {pref_err}")
         print()
 
     # --- Start manual signature listener: issuer key for issuer messages, investor key for acceptor messages ---
@@ -552,20 +538,6 @@ def main() -> int:
                     echo_with_color(YELLOW, "  ⚠️  Swap created; set ISSUER_EMAIL and ISSUER_PASSWORD to complete swap as loan account.")
                     success_count += 1
                     continue
-                # Set loan wallet execution mode to Manual for CompleteSwap so messages require manual signature
-                if config.require_manual_signature and ctx.get("issuer_token"):
-                    try:
-                        set_wallet_execution_mode_preference(
-                            config.pay_service_url,
-                            ctx["issuer_token"],
-                            wallet_id=wlt_id,
-                            message_type="CompleteSwap",
-                            execution_mode="Manual",
-                        )
-                        _trace(f"Set wallet {wlt_id} execution mode to Manual for CompleteSwap")
-                        echo_with_color(GREEN, f"  ✅ Loan wallet {wlt_id} set to Manual for CompleteSwap")
-                    except Exception as pref_err:
-                        echo_with_color(YELLOW, f"  ⚠️  Set wallet execution mode failed (continuing): {pref_err}")
                 # --- Step 5: Loan account completes the swap ---
                 _trace(f"Completing swap {swap_id_created!r} as loan wallet {wlt_id!r} (account_address={loan_wallet_address[:18]}...).")
                 echo_with_color(CYAN, f"  Completing swap as loan account ({wlt_id})...")

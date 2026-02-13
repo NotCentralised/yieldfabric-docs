@@ -59,7 +59,7 @@ from modules.cli import parse_cli_args, print_usage
 from modules.console import BLUE, CYAN, GREEN, PURPLE, RED, YELLOW
 from modules.loan_wallet import loan_wallet_id, sanitize_loan_id
 from modules.runner import issue_auth_context
-from modules.wallet_preferences import set_wallet_execution_mode_preference
+# Manual for a single message is controlled by require_manual_signature on the API only; do not set wallet-level policy.
 from modules.workflow_common import (
     BANNER_LINE,
     print_workflow_summary,
@@ -424,20 +424,6 @@ def main() -> int:
                         echo_with_color(GREEN, f"  ✅ Issuer external key registered with loan wallet {obligor_wallet_id_for_loan}")
                     except Exception as reg_err:
                         echo_with_color(YELLOW, f"  ⚠️  Register key with loan wallet failed (continuing): {reg_err}")
-                # Set loan wallet execution mode to Manual so messages require manual signature (AcceptObligation, CompleteSwap)
-                if config.require_manual_signature and obligor_wallet_id_for_loan:
-                    for msg_type in ("AcceptObligation", "CompleteSwap", "CreateSwap"):
-                        try:
-                            set_wallet_execution_mode_preference(
-                                config.pay_service_url,
-                                jwt_token,
-                                wallet_id=obligor_wallet_id_for_loan,
-                                message_type=msg_type,
-                                execution_mode="Manual",
-                            )
-                            echo_with_color(GREEN, f"  ✅ Loan wallet set to Manual for {msg_type}")
-                        except Exception as pref_err:
-                            echo_with_color(YELLOW, f"  ⚠️  Set wallet execution mode for {msg_type} failed (continuing): {pref_err}")
                 print()
 
                 # --- Step 4: Issue workflow (issue or issue+swap) ---
