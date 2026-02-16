@@ -845,6 +845,52 @@ Swaps progress through the following statuses:
 
 ---
 
+## Rehypothecation and True Collateral Mobility
+
+YieldFabric’s repo swap design supports **rehypothecation** in a way that keeps risk anchored to the obligor and makes the **chain of risk** explicit. That is what enables **true collateral mobility**.
+
+### How risk is anchored by the obligor
+
+When an obligor pledges an asset as collateral in a repo swap, they remain the **anchor of credit risk**. The underlying obligation (e.g. bond or loan) stays tied to that obligor: payment streams and default risk are not reassigned. The obligor has committed to either **repurchasing** (paying cash by expiry) or **forfeiting** the collateral. That binary outcome is what the lender is exposed to.
+
+### The contingent token the lender receives
+
+On swap completion, the **lender** (counterparty) receives a **new tokenised asset** that is **contingent** in nature. In the system this is represented as a composed contract (e.g. Cont_A) that bundles:
+
+- **Collateral (Col_A)**: the pledged assets (obligations / digital assets) held in escrow
+- **Repurchase (Rep_A)**: the right to receive a repurchase payment by expiry
+
+The lender therefore holds a single instrument whose economic outcome is **either** the repurchase payment **or** the collateral. There is no ambiguity: the contract and the swap rules define exactly what the lender gets in each branch (repurchase vs. default/expiry).
+
+### How rehypothecation works in this context
+
+**Rehypothecation** is the reuse of collateral by the party that received it. Here, the lender holds a **token** (the contingent composed contract) that represents those clear rights. They can:
+
+- **Pledge that contingent token** as collateral in a **further** repo swap with another lender.
+- In that new repo, the “collateral” is the contingent asset (repurchase or underlying collateral), not a vague claim. The new lender (or the system) can treat the contingent token as the encumbered asset and, if needed, resolve to repurchase payment or collateral according to the first repo’s outcome.
+
+So the **flow** is: Obligor pledges asset → Lender receives contingent token (repurchase or collateral) → Lender can pledge that contingent token → Next lender receives a new contingent layer (Cont_B), and so on. Each link is a repo with defined collateral and repurchase terms; the **chain of risk** is the sequence of these links, and the **obligor remains the anchor** at the root.
+
+### Value of defining the flow / chain of risk
+
+Defining and encoding the flow in this way delivers:
+
+1. **True collateral mobility**  
+   Collateral can move through multiple layers of financing without physically moving the same underlying assets each time. What moves is the **tokenised rights** (the contingent asset): repurchase payment or collateral, with rules and expiry defined at each repo.
+
+2. **Transparent chain of risk**  
+   Each repo is a clear link: who pledged what, who received which contingent token, and what happens on repurchase vs. expiry. Regulators and participants can trace risk from any contingent token back to the original obligor and the underlying collateral.
+
+3. **No double-counting of collateral**  
+   The structure (Col_A, Rep_A, Cont_A, and nested Cont_B where applicable) makes it explicit what is locked as collateral at each level and what is repurchase obligation. The same physical or on-chain collateral is not “used” in two places without the chain being visible.
+
+4. **Efficient re-use of collateral**  
+   Lenders can fund themselves by re-pledging the contingent token they received, while the original obligor’s commitment (repurchase or forfeit) remains the anchor. Liquidity and leverage are improved without breaking the link to the initial source of risk.
+
+In summary: **risk is anchored by the obligor** when they pledge the asset; the **lender receives a tokenised contingent asset** (repurchase or collateral); that contingent asset can be **rehypothecated** in further repos; and defining the **flow and chain of risk** in this way is what makes **true collateral mobility** possible—collateral that can be reused and re-pledged along a clear, auditable chain back to the obligor.
+
+---
+
 ## Summary
 
 YieldFabric's swap system provides:
