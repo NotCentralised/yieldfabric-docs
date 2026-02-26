@@ -49,31 +49,31 @@ tokens:
     name: AUD Token
     description: AUD Token Description
     address: 0x68B1D87F95878fE05B998F19b66F4baba5De1aed
-    chain_id: 33117
+    chain_id: 31337
 
   - id: wRBNT
     name: wRBNT Token
     description: wRBNT Token Description
     address: 0x3Aa5ebB10DC797CAC828524e59A333d0A371443c
-    chain_id: 33117
+    chain_id: 31337
 
   - id: USDC
     name: USDC Token
     description: USDC Token Description
     address: 0xc6e7DF5E7b4f2A278906862b61205850344D4e7d
-    chain_id: 33117
+    chain_id: 31337
 
   - id: wBTC
     name: wBTC Token
     description: wBTC Token Description
     address: 0x59b670e9fA9D0A427751Af201D676719a970857b
-    chain_id: 33117
+    chain_id: 31337
 
   - id: wAAPL
     name: wAAPL Token
     description: wAAPL Token Description
     address: 0x4ed7c70F96B99c776995fB64377f0d4aB3B0e1C1
-    chain_id: 33117
+    chain_id: 31337
 
 assets:
   - id: AUD
