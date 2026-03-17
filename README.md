@@ -289,7 +289,7 @@ When acting on behalf of groups:
 │                       YieldFabric Platform                          │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                     │
-│  ┌──────────────────┐     ┌───────────────────┐   ┌──────────────┐ │
+│  ┌───────────────────┐     ┌───────────────────┐   ┌──────────────┐ │
 │  │  Auth Service     │────▶│  Payments Service │──▶│ Vault Service│ │
 │  │                   │ JWT │                   │   │              │ │
 │  │  • Authentication │     │  • GraphQL API    │   │  • ZK Proofs │ │
@@ -298,7 +298,7 @@ When acting on behalf of groups:
 │  │  • Groups         │     │  • Obligations    │   │  • Smart     │ │
 │  │  • Key Management │     │  • Swaps          │   │    Contract  │ │
 │  │  • Crypto Ops     │     │  • Distributions  │   │    Calls     │ │
-│  └──────────────────┘     └───────────────────┘   └──────────────┘ │
+│  └───────────────────┘     └───────────────────┘   └──────────────┘ │
 │                                     │                    │          │
 │                                     ▼                    ▼          │
 │  ┌──────────────────────────────────────────────────────────────┐   │
