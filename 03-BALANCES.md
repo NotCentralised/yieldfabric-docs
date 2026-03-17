@@ -133,7 +133,7 @@ curl -X GET "https://pay.yieldfabric.com/balance?denomination=aud-token-asset&ob
 
 - **`private_balance`**: Your balance in encrypted/private form (zero-knowledge proof protected)
 - **`public_balance`**: Your balance in public/transparent form (visible on-chain)
-- **`decimals`**: Decimal precision for the asset (typically "100" for 2 decimal places)
+- **`decimals`**: Token decimal precision as returned by the ERC-20 `decimals()` call (e.g., `"1000000000000000000"` for 18 decimals). Divide amounts by this value to get the human-readable figure
 - **`outstanding`**: Total amount currently locked out in pending outgoing transactions
 
 ### Transaction Arrays
@@ -187,7 +187,9 @@ Each transaction in `locked_out` and `locked_in` contains:
 - **`oracle_key_recipient`**: Oracle key that recipient must satisfy  
 - **`oracle_value_recipient`**: Required oracle value for recipient condition
 
-**Note:** Instant payments have `obligation_id = "0"` and typically have minimal oracle requirements. Contract-based obligations have non-zero `obligation_id` and may include oracle conditions for conditional release.
+**Notes:**
+- Instant payments have `obligation_id = "0"` and typically have minimal oracle requirements. Contract-based obligations have non-zero `obligation_id` and may include oracle conditions for conditional release.
+- **Distribution** payments also appear in `locked_in` / `locked_out`. Each recipient sees their share as a `locked_in` entry with the distribution contract's address. The sender sees the total locked amount in `locked_out`.
 
 ---
 

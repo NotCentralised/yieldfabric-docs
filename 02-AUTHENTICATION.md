@@ -67,14 +67,14 @@ curl -X POST https://auth.yieldfabric.com/auth/delegation/jwt \
 ### List Delegation Tokens
 
 ```bash
-curl -X GET https://auth.yieldfabric.com/auth/delegation-tokens \
+curl -X GET https://auth.yieldfabric.com/auth/groups/{group_id}/delegation-tokens \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ### Revoke Delegation Token
 
 ```bash
-curl -X DELETE https://auth.yieldfabric.com/auth/delegation-tokens/{token_id} \
+curl -X POST https://auth.yieldfabric.com/auth/groups/{group_id}/delegation-tokens/{token_id}/revoke \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -312,18 +312,21 @@ When using group delegation, the JWT structure includes additional fields:
 ### **Cryptographic Operations**
 | **Operation** | **Required Permission** | **API Endpoint** | **Description** |
 |---------------|------------------------|------------------|-----------------|
-| **Encrypt Data** | `CryptoOperations` | `POST /api/v1/crypto/encrypt` | Encrypt data using public keys |
-| **Decrypt Data** | `CryptoOperations` | `POST /api/v1/crypto/decrypt` | Decrypt data using private keys |
-| **Sign Data** | `CryptoOperations` | `POST /api/v1/crypto/sign` | Create digital signatures |
-| **Verify Signatures** | `CryptoOperations` | `POST /api/v1/crypto/verify` | Verify digital signatures |
-| **Manage Keypairs** | `CryptoOperations` | Various endpoints | Create and manage cryptographic keys |
+| **Encrypt Data** | `CryptoOperations` | `POST /api/v1/encrypt` | Encrypt data using public keys |
+| **Decrypt Data** | `CryptoOperations` | `POST /api/v1/decrypt` | Decrypt data using private keys |
+| **Sign Data** | `CryptoOperations` | `POST /api/v1/sign` | Create digital signatures |
+| **Verify Signatures** | `CryptoOperations` | `POST /api/v1/verify` | Verify digital signatures |
+| **Generate Keypair** | `CryptoOperations` | `POST /api/v1/generate-keypair` | Generate cryptographic key pair |
+| **Get Key Info** | `CryptoOperations` | `GET /api/v1/keys/{key_id}/info` | Retrieve key pair details |
+| **Get Public Key** | `CryptoOperations` | `GET /api/v1/public-key/{contact_id}` | Get public key by contact |
 
 ### **Delegation Operations**
 | **Operation** | **Required Permission** | **API Endpoint** | **Description** |
 |---------------|------------------------|------------------|-----------------|
-| **Create Delegation JWT** | `CreateDelegationToken` | `POST /auth/delegation/jwt` | Generate limited-scope tokens |
-| **View Delegation Tokens** | `ViewDelegationTokens` | `GET /auth/delegation/jwt` | List active delegation tokens |
-| **Revoke Delegation Token** | `RevokeDelegationToken` | `DELETE /auth/delegation/jwt/{id}` | Invalidate delegation tokens |
+| **Create Delegation JWT** | `CreateDelegationToken` | `POST /auth/delegation/jwt` | Generate limited-scope JWT |
+| **Create Delegation Token** | `CreateDelegationToken` | `POST /auth/groups/{group_id}/delegation-tokens` | Create delegation token for group |
+| **View Delegation Tokens** | `ViewDelegationTokens` | `GET /auth/groups/{group_id}/delegation-tokens` | List active delegation tokens for group |
+| **Revoke Delegation Token** | `RevokeDelegationToken` | `POST /auth/groups/{group_id}/delegation-tokens/{token_id}/revoke` | Invalidate delegation token |
 
 ### **System Administration Operations**
 | **Operation** | **Required Permission** | **API Endpoint** | **Description** |
@@ -382,12 +385,15 @@ When acting on behalf of groups:
 
 ## Auth Service Endpoints
 
-- `POST /auth/login/with-services` - Login with service selection
-- `POST /auth/refresh` - Refresh access token
-- `GET /auth/users/me` - Get user profile
-- `POST /auth/logout` - Logout current device
-- `POST /auth/logout-all` - Logout all devices
-- `POST /auth/delegation/jwt` - Create delegation token
-- `GET /auth/delegation-tokens` - List delegation tokens
-- `DELETE /auth/delegation-tokens/{id}` - Revoke delegation token
+- `POST /auth/login/with-services` — Login with service selection
+- `POST /auth/refresh` — Refresh access token
+- `GET /auth/users/me` — Get user profile
+- `POST /auth/logout` — Logout current device
+- `POST /auth/logout-all` — Logout all devices
+- `POST /auth/delegation/jwt` — Create delegation JWT
+- `GET /auth/groups/{group_id}/delegation-tokens` — List delegation tokens for a group
+- `POST /auth/groups/{group_id}/delegation-tokens` — Create delegation token for a group
+- `POST /auth/groups/{group_id}/delegation-tokens/{token_id}/revoke` — Revoke delegation token
+- `POST /auth/users` — Create a new user
+- `POST /auth/users/{user_id}/deploy-account` — Deploy an intelligent account for a user
 

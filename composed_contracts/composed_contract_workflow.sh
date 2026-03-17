@@ -452,7 +452,7 @@ main() {
     DEADLINE="${DEADLINE:-${END_DATE}T23:59:59Z}"
 
     # Composed contract details
-    COMPOSED_CONTRACT_NAME="${COMPOSED_CONTRACT_NAME:-Corporate Bond}"
+    COMPOSED_CONTRACT_NAME="${COMPOSED_CONTRACT_NAME:-Structured Loan}"
     COMPOSED_CONTRACT_DESCRIPTION="${COMPOSED_CONTRACT_DESCRIPTION:-A generic composed contract with parametric actions}"
 
     # Determine actions based on mode

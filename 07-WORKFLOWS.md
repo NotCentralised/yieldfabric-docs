@@ -198,6 +198,146 @@ This pattern enables **secure securitization**: Pre-package future payment oblig
 
 ---
 
+## Distribution Workflow
+
+This example demonstrates a **one-to-many distribution**: a single sender pays multiple recipients in a single operation.
+
+### Overview
+
+A sender distributes funds to multiple parties (e.g., dividend payout, commission splits). Each recipient accepts their share independently.
+
+---
+
+### Step 1: Create Distribution
+
+Sender creates a distribution specifying each recipient and amount:
+
+```bash
+curl -X POST https://pay.yieldfabric.com/graphql \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "mutation { createDistribution(input: { assetId: \"aud-token-asset\", recipients: [{ address: \"0x037b69a7ca6b327ddf843c9ac4ff784e08b5eb6d\", amount: \"5000000000000000000\" }, { address: \"0x5821aa342bd011e0e77ac5eb8663b052592363a5\", amount: \"10000000000000000000\" }], idempotencyKey: \"dist-dividend-001\" }) { success messageId transactionId } }"
+  }'
+```
+
+**What happens:**
+- One `CONTRACT-DISTRIBUTION-*` is created
+- One RECEIVABLE payment per recipient is created
+- Total amount (15 × 10^18) is locked from the sender's balance
+
+---
+
+### Step 2: Recipients Accept Their Share
+
+Each recipient accepts their individual payment using the standard `accept` mutation:
+
+```bash
+# Recipient 1 accepts
+curl -X POST https://pay.yieldfabric.com/graphql \
+  -H "Authorization: Bearer $RECIPIENT1_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "mutation { accept(input: { paymentId: \"PAYMENT-DIST-177374060471601661010-0\" }) { success messageId } }"
+  }'
+
+# Recipient 2 accepts
+curl -X POST https://pay.yieldfabric.com/graphql \
+  -H "Authorization: Bearer $RECIPIENT2_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "mutation { accept(input: { paymentId: \"PAYMENT-DIST-177374060471601661010-1\" }) { success messageId } }"
+  }'
+```
+
+---
+
+### Step 3 (Optional): Cancel Distribution
+
+If **no** recipient has accepted yet, the sender can cancel the entire distribution:
+
+```bash
+curl -X POST https://pay.yieldfabric.com/graphql \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "mutation { accept(input: { paymentId: \"PAYMENT-DIST-177374060471601661010-0\" }) { success messageId } }"
+  }'
+```
+
+> Once any recipient has accepted their share, `canCancel` becomes `false` and the distribution can no longer be cancelled.
+
+---
+
+### Distribution Key Points
+
+- **Atomic creation**: All recipient payments are created in a single transaction
+- **Independent acceptance**: Each recipient accepts independently; no dependency between recipients
+- **Cancel-all-or-nothing**: Sender can only cancel if zero claims have been made
+- **NFT recipients**: Set `obligationId` on a recipient to enable NFT-based claiming (claimant = `ownerOf` at claim time)
+
+---
+
+## Repo Rolling Workflow
+
+This example demonstrates **repo rolling**: moving collateral from an existing repo into a new repo with a new counterparty and terms.
+
+### Overview
+
+A borrower has an existing repo swap (Swap A) with Lender A. The borrower wants to roll the collateral into a new repo (Swap B) with Lender B, possibly with different terms or to obtain better rates.
+
+---
+
+### Step 1: Initiate Roll
+
+The borrower (initiator / collateral provider) proposes a new repo:
+
+```bash
+curl -X POST https://pay.yieldfabric.com/graphql \
+  -H "Authorization: Bearer $BORROWER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "mutation { initiateRoll(input: { oldSwapId: \"987654321\", newSwapId: \"987654322\", newCounterparty: \"newlender@yieldfabric.com\", newDeadline: \"2025-12-15\", newExpiry: \"2026-01-15\" }) { success oldSwapId newSwapId messageId } }"
+  }'
+```
+
+**What happens:**
+- New swap `987654322` is created in `PENDING` state
+- Upfront payment(s) from borrower to the new lender are created
+- Original swap `987654321` remains `COMPLETED` (unchanged for now)
+
+---
+
+### Step 2: Complete Roll
+
+The new lender completes the roll:
+
+```bash
+curl -X POST https://pay.yieldfabric.com/graphql \
+  -H "Authorization: Bearer $NEW_LENDER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "mutation { completeRoll(input: { newSwapId: \"987654322\" }) { success newSwapId messageId } }"
+  }'
+```
+
+**What happens (atomically):**
+1. New lender's payment repurchases the old repo (R1 sent to Lender A)
+2. Collateral moves from old repo → new repo
+3. New swap `987654322` becomes `COMPLETED`
+4. Old swap is effectively settled
+
+---
+
+### Repo Rolling Key Points
+
+- **Initiator only**: Only the party who provided collateral in the original repo can initiate a roll
+- **New counterparty only**: Only the party specified in `newCounterparty` can complete the roll
+- **Atomic**: Old repo repurchase and new repo completion happen in a single atomic step
+- **No manual repurchase**: The borrower does not need to repurchase the old repo first — the roll handles it
+
+---
+
 ## Other Common Workflows
 
 ### Simple Invoice Payment

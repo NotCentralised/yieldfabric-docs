@@ -12,7 +12,8 @@ YieldFabric is a blockchain-based platform that enables the creation, management
 - **Intelligent Accounts**: Policy-based account abstraction enabling fund segregation and programmable access control
 - **Contracts**: Programmable payment commitments with time locks, oracle conditions, and multiple payment streams
 - **Atomic Swaps**: Risk-free bilateral exchanges of contracts and payments
-- **Repurchase Agreements (Repos)**: Collateralized lending with repurchase options and automatic forfeiture
+- **Repurchase Agreements (Repos)**: Collateralized lending with repurchase options, automatic forfeiture, and repo rolling
+- **Distributions**: One-to-many payments with Merkle proof verification (dividends, splits, waterfalls)
 - **Credit & Cash Payments**: Support for both funded and unfunded payment structures
 - **Time-Based & Event-Based Unlocks**: Payments that execute based on dates or external events
 
@@ -48,9 +49,9 @@ Atomic exchange mechanisms enabling simultaneous trading of contracts and paymen
 
 ### 3. Repurchase Agreements (Repos)
 
-Collateralized lending built on swap infrastructure with repurchase options and automatic forfeiture. Two time windows: deadline (swap completion) and expiry (repurchase). Bilateral collateral; each party can repurchase their own collateral before expiry. Automatic forfeiture after expiry.
+Collateralized lending built on swap infrastructure with repurchase options and automatic forfeiture. Two time windows: deadline (swap completion) and expiry (repurchase). Bilateral collateral; each party can repurchase their own collateral before expiry. Automatic forfeiture after expiry. **Repo rolling** enables moving collateral to a new counterparty with new terms via a two-step atomic flow (initiate roll → complete roll).
 
-**Use Cases:** Short-term funding, securities lending, liquidity management, secured financing, margin lending.
+**Use Cases:** Short-term funding, securities lending, liquidity management, secured financing, margin lending, refinancing via repo rolling.
 
 ### 4. Payments
 
@@ -58,9 +59,17 @@ Individual payment transactions (cash or credit). Support time locks, oracle tri
 
 **Use Cases:** Instant transfers, scheduled payments, conditional payments, vesting schedules.
 
-### 5. Intelligent Accounts
+### 5. Distributions
 
-Policy-based account abstraction enabling fund segregation and programmable access control. Cryptographic policies govern fund access and usage. Supports multi-signature, delegation, and token-based access. All operations automatically checked against policies.
+One-to-many payment mechanism. A single sender creates a distribution with a list of (recipient, amount) pairs; each recipient accepts their share independently via Merkle proof verification. Sender can cancel only if no recipient has claimed. Supports NFT-based recipients (claim by `ownerOf` at claim time).
+
+**Use Cases:** Dividend payouts, commission splits, waterfall distributions, royalty payments, fund distributions, payroll.
+
+### 6. Intelligent Accounts
+
+Policy-based account abstraction enabling fund segregation and programmable access control. The on-chain infrastructure (`ConfidentialAccessControl`) supports adding policies, multi-signature verification, and ZK-proof-based access checks. The auth layer provides delegation JWTs and group accounts with role-based permissions.
+
+> **Note:** The policy infrastructure is deployed on-chain. The application-level use cases below (e.g., "equipment-only drawdowns", "budget-based spending controls") describe target capabilities that can be built on top of the existing policy primitives. They require application-layer policy definitions and oracle integrations that are configured per deployment.
 
 **Use Cases:** Segregated fund accounts, escrow accounts, treasury management, multi-party accounts, delegated access.
 
@@ -69,6 +78,8 @@ Policy-based account abstraction enabling fund segregation and programmable acce
 ## Applications Built on Building Blocks
 
 ### Application 1: Tokenized Credit Facilities
+
+> Applications using Intelligent Account policies (1, 2, 5, 6, 8, 10) are built on the on-chain policy infrastructure. They require application-layer policy definitions and oracle integrations configured per deployment.
 
 Credit facilities using Intelligent Accounts with policy-based drawdown rules. Credit lines are represented as transferable tokens that automatically enforce usage restrictions.
 
@@ -510,9 +521,15 @@ Combine multiple payment streams into a single contract. Each stream can have di
 
 Payments execute based on external events (oracles). Define oracle conditions; payments remain locked until confirmed. Supports event verification, price movements, and other external data.
 
-### Pattern 4: Repurchase Agreements (Repos)
+### Pattern 4: Repurchase Agreements (Repos) & Rolling
 
 Collateralized lending with repurchase options and automatic forfeiture. Two time windows: deadline (swap completion) and expiry (repurchase). Bilateral collateral; each party can repurchase their own collateral before expiry. Automatic forfeiture after expiry.
+
+**Repo Rolling:** The collateral provider can **roll** a completed repo into a new repo with a new counterparty and new terms via a two-step flow:
+1. **Initiate Roll** — creates a new swap in `PENDING`; upfront payment(s) sent to the new counterparty
+2. **Complete Roll** — new counterparty accepts; atomically repurchases the old repo and moves collateral into the new repo
+
+This enables refinancing, counterparty substitution, and term extension without manual repurchase-and-recreate steps. See [06-SWAPS.md section 5](./06-SWAPS.md) for full details.
 
 **Collateralization of Bonds and Loans:** Repos enable collateralization of bonds and loans with digital assets. The bond or loan contract (with future payment streams) is combined with digital asset collateral in a repo structure, providing secured financing with automatic forfeiture mechanisms.
 
@@ -528,7 +545,7 @@ Create hierarchical payment structures with different risk/return profiles. Each
 
 **Conditional Structures**: Create contracts with oracle conditions; structure remains locked until condition met. Supports AND/OR logic.
 
-**Multi-Currency Structures**: Create contracts with different denominations. Each payment stream uses different asset ID. Swaps can exchange multiple currencies atomically.
+**Multi-Currency Structures**: Individual contracts use a **single denomination** (all payment streams share one asset ID). To create multi-currency structures, use **swaps** — each side of a swap can use a different denomination, enabling atomic multi-currency exchanges (e.g., AUD obligations swapped for USD cash).
 
 **Time-Based Vesting**: Use `linearVesting = true` for gradual unlock over time. Payments unlock proportionally; partial acceptance supported.
 
@@ -610,8 +627,10 @@ YieldFabric provides a powerful platform for financial structuring with:
 1. **Intelligent Accounts**: Policy-based account abstraction for fund segregation and programmable access control
 2. **Contracts**: Create sophisticated payment structures with time locks, conditions, and multiple payment streams
 3. **Atomic Swaps**: Execute risk-free bilateral exchanges
-4. **Credit & Cash Support**: Handle both funded and unfunded structures
-5. **Oracle Integration**: Event-based and price-based payment execution
+4. **Repurchase Agreements**: Collateralized lending with repurchase, forfeiture, and repo rolling
+5. **Distributions**: One-to-many payments with Merkle proof verification
+6. **Credit & Cash Support**: Handle both funded and unfunded structures
+7. **Oracle Integration**: Event-based and price-based payment execution
 
 **Applications Built on Building Blocks:**
 - **Bonds**: Debt instruments implemented using Contracts with coupon and principal payment streams
@@ -638,11 +657,12 @@ YieldFabric provides a powerful platform for financial structuring with:
 - Escrows (via Intelligent Accounts)
 - Progress Payments (via Contracts)
 - Asset Backed Securities (via Contracts)
+- Distributions / Dividends / Payroll (via Distributions)
 - Corporate Treasury Management (via Intelligent Accounts)
 - Supply Chain Financing (via Contracts)
 - Funds and SPV Balance Sheet Management (via Intelligent Accounts)
 - Structured products
-- Repurchase agreements
+- Repurchase agreements and repo rolling
 - Employee compensation
 - Royalty agreements
 - Segregated fund management
@@ -650,7 +670,10 @@ YieldFabric provides a powerful platform for financial structuring with:
 - Investor callable accounts (via Intelligent Accounts)
 
 For technical implementation details, refer to:
-- [Contracts Documentation](./04-CONTRACTS.md)
-- [Payments Documentation](./05-PAYMENTS.md)
-- [Swaps Documentation](./06-SWAPS.md)
+- [Overview](./01-OVERVIEW.md) — Platform overview and core concepts
+- [Contracts Documentation](./04-CONTRACTS.md) — Creating and managing obligations
+- [Payments Documentation](./05-PAYMENTS.md) — Deposits, instant payments, distributions, accept and cancel
+- [Swaps Documentation](./06-SWAPS.md) — Atomic swaps, repo swaps, repurchase, and repo rolling
+- [Workflows](./07-WORKFLOWS.md) — End-to-end examples (annuity securitization, distributions, repo rolling)
+- [Asset Backed Securities](./11_ABS.md) — ABS structures and waterfall distributions
 

@@ -26,6 +26,15 @@ Individual contracts represent single payment obligations with:
 - **Initial Payments**: Optional scheduled payments that unlock based on time/oracle conditions
 - **Status**: ACTIVE, COMPLETED, CANCELLED, PENDING
 
+### Distribution Contracts
+
+Distribution contracts represent **one-to-many** payments:
+- **Sender**: Creates a single distribution with multiple (recipient, amount) pairs
+- **Recipients**: Each recipient accepts their share via the standard `accept` mutation
+- **Cancellation**: Sender can cancel the distribution only if **no recipient** has claimed yet
+- **ID Format**: Start with `CONTRACT-DISTRIBUTION-` prefix
+- **See**: [05-PAYMENTS.md section 6](./05-PAYMENTS.md) for full details
+
 ### Composed Contracts
 
 Composed contracts are collections of multiple individual contracts that are:
@@ -404,6 +413,8 @@ mutation {
 - **CANCELLED**: Contract cancelled by party or system
 - **PENDING**: Intermediate state during processing
 - **EXPIRED**: Acceptance window expired without acceptance
+
+**Note:** Distribution contracts follow the same status model. A distribution is `ACTIVE` while recipients can still claim, `CANCELLED` if the sender cancels before any claim, and `COMPLETED` once all shares are claimed or the distribution concludes.
 
 ### Composed Contract Statuses
 

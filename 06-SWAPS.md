@@ -11,6 +11,8 @@ YieldFabric's swap system enables atomic trading of obligations and payments bet
 1. **Atomic Swaps**: Immediate execution with no collateral (expiry = 0)
 2. **Repo Swaps**: Collateralized swaps with repurchase options (expiry > deadline)
 
+**Repo rolling** allows the collateral provider (initiator) of a completed repo to move collateral into a new repo with a new counterparty and terms via a two-step flow: **initiate roll** (creates a new pending swap) and **complete roll** (new counterparty pays the original repurchase amount; old repo is repurchased and collateral migrates to the new repo). See section 5.
+
 **Important**: Users primarily interact with swaps through the GraphQL API. The swap system provides atomic settlement guarantees, ensuring either both sides execute or neither does.
 
 ---
@@ -435,7 +437,166 @@ mutation {
 
 ---
 
-### 5. Expire Collateral (Repo Swaps Only)
+### 5. Repo Rolling (Two-Step Roll)
+
+**Repo rolling** extends a repo swap by moving collateral into a new repo with a new counterparty and new terms, without the original counterparty first repurchasing. The **initiator** (the party who provided collateral in the original repo) proposes a new repo; the **new counterparty** completes the roll by paying the original repurchase amount (R1) to the original counterparty. Atomically: the old repo is repurchased and the collateral moves into the new repo.
+
+**Two-step flow:**
+1. **Initiate Roll** (initiator only): Creates a new swap in `PENDING` state on-chain. The old repo is unchanged. Initiator specifies new swap ID, new counterparty, new deadline/expiry, and new expected/repurchase payments. The system creates upfront payment(s) from initiator to the new counterparty (used when the new counterparty completes the roll).
+2. **Complete Roll** (new counterparty only): New counterparty accepts the initiator’s upfront payment(s), which atomically repurchases the old repo and completes the new repo (collateral migrates to the new repo).
+
+---
+
+#### 5a. Initiate Roll (Repo Swaps Only)
+
+Initiator (collateral provider) of an existing **completed** repo proposes a roll into a new repo.
+
+**GraphQL Mutation:**
+```graphql
+mutation InitiateRoll($input: RollRepoInput!) {
+  initiateRoll(input: $input) {
+    success
+    message
+    accountAddress
+    oldSwapId
+    newSwapId
+    messageId
+    transactionId
+    signature
+    timestamp
+  }
+}
+```
+
+**Input Parameters:**
+- `oldSwapId`: The existing (completed) repo swap ID to roll (required)
+- `newSwapId`: Unique ID for the new swap (required)
+- `newCounterparty`: Entity name/email or wallet address of the new counterparty (required)
+- `newCounterpartyWalletId`: Optional wallet ID for the new counterparty
+- `newDeadline`: New swap completion deadline – ISO 8601 or YYYY-MM-DD (required)
+- `newExpiry`: New repurchase deadline – ISO 8601 or YYYY-MM-DD (optional; must be > newDeadline for repo)
+- `newCounterpartyExpectedPayments`: What the new counterparty will pay at complete_roll (R1). If omitted, derived from old swap’s initiator repurchase terms
+- `newInitiatorExpectedPayments`: Upfront payment from initiator to new counterparty. If omitted, derived from old swap’s counterparty repurchase (R1) so amounts match
+- `newInitiatorRepurchasePayments`: Initiator’s repurchase terms in the new repo (optional)
+- `newCounterpartyRepurchasePayments`: New counterparty’s repurchase terms in the new repo (optional)
+- `idempotencyKey`: Unique key for duplicate prevention (optional)
+- `requireManualSignature`: If true, message is queued for manual signing (optional)
+- `name`: Optional label for the roll (optional)
+
+**Rules:**
+1. **Permission**: Only the **initiator** (collateral provider) of the old repo can initiate a roll
+2. **Old swap**: Must be in `COMPLETED` status (repo swap)
+3. **New swap**: Created in `PENDING`; old swap is not repurchased until the new counterparty completes the roll
+4. **Upfront**: Initiator’s upfront payment to the new counterparty typically matches the old repo’s R1 (amount the new counterparty will pay to the original counterparty at complete_roll)
+5. **Time-weighted repos**: If the old repo uses linear vesting for repurchase, the amount may be prorated when initiating the roll
+
+**Example:**
+```graphql
+mutation {
+  initiateRoll(input: {
+    oldSwapId: "987654321"
+    newSwapId: "987654322"
+    newCounterparty: "newlender@yieldfabric.com"
+    newDeadline: "2025-12-15"
+    newExpiry: "2026-01-15"
+  }) {
+    success
+    oldSwapId
+    newSwapId
+    messageId
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "data": {
+    "initiateRoll": {
+      "success": true,
+      "message": "Initiate roll message submitted successfully",
+      "accountAddress": "0x...",
+      "oldSwapId": "987654321",
+      "newSwapId": "987654322",
+      "messageId": "msg-initiate-roll-123",
+      "transactionId": "TXN-INITIATE-ROLL-...",
+      "signature": "0x...",
+      "timestamp": "2025-12-01T10:00:00.000Z"
+    }
+  }
+}
+```
+
+---
+
+#### 5b. Complete Roll (Repo Swaps Only)
+
+New counterparty completes the roll by accepting the initiator’s upfront payment(s). This atomically repurchases the old repo (R1 paid to the original counterparty) and completes the new repo (collateral moves to the new repo).
+
+**GraphQL Mutation:**
+```graphql
+mutation CompleteRoll($input: CompleteRollInput!) {
+  completeRoll(input: $input) {
+    success
+    message
+    accountAddress
+    newSwapId
+    messageId
+    transactionId
+    signature
+    timestamp
+  }
+}
+```
+
+**Input Parameters:**
+- `newSwapId`: The new swap ID (created by initiate roll) (required)
+- `walletId`: Optional wallet ID for the completing party
+- `idempotencyKey`: Unique key for duplicate prevention (optional)
+- `requireManualSignature`: If true, message is queued for manual signing (optional)
+
+**Rules:**
+1. **Permission**: Only the **new counterparty** (the entity specified as `newCounterparty` at initiate roll) can complete the roll
+2. **Status**: New swap must be in `PENDING` (created by initiate roll)
+3. **Payment**: Completing party accepts the initiator’s upfront payment(s) (e.g. via the standard Accept flow or as part of this atomic step); that acceptance triggers the on-chain complete_roll
+4. **Effect**: Old repo is repurchased (R1); new repo is completed; collateral is now in the new repo
+
+**Example:**
+```graphql
+mutation {
+  completeRoll(input: {
+    newSwapId: "987654322"
+  }) {
+    success
+    newSwapId
+    messageId
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "data": {
+    "completeRoll": {
+      "success": true,
+      "message": "Complete roll message submitted successfully",
+      "accountAddress": "0x...",
+      "newSwapId": "987654322",
+      "messageId": "msg-complete-roll-123",
+      "transactionId": "TXN-COMPLETE-ROLL-...",
+      "signature": "0x...",
+      "timestamp": "2025-12-02T14:00:00.000Z"
+    }
+  }
+}
+```
+
+**Note:** If you call `completeSwap` with a swap that was created via a roll (`source_swap_id` set), the API redirects to the complete roll flow automatically.
+
+---
+
+### 6. Expire Collateral (Repo Swaps Only)
 
 Forfeit collateral after expiry, transferring it to the other party.
 
@@ -558,6 +719,19 @@ mutation {
    - If deadline passed, automatically expires
    - All locked assets (including collateral) returned to original owners
    - Swap becomes inactive
+
+6. **Repo Rolling** (optional): Initiator can **initiate roll** to propose a new repo (new counterparty, new terms). New counterparty **completes roll** by accepting the upfront payment; old repo is repurchased and collateral moves into the new repo. See section 5.
+
+### Repo Roll Lifecycle
+
+1. **Initiate Roll** (initiator):
+   - Initiator of a **completed** repo calls `initiateRoll` with old swap ID, new swap ID, new counterparty, new deadline/expiry, and payment terms
+   - New swap is created in `PENDING`; upfront payment(s) from initiator to new counterparty are created (new counterparty sees them as incoming)
+
+2. **Complete Roll** (new counterparty):
+   - New counterparty calls `completeRoll` with the new swap ID (or accepts the upfront payment, which may route through `completeSwap` to complete roll)
+   - On-chain: old repo is repurchased (R1), new repo is completed, collateral migrates to the new repo
+   - New repo is in `COMPLETED`; original repo is effectively replaced by the new one
 
 ---
 
@@ -814,6 +988,13 @@ Swaps progress through the following statuses:
 4. **Cash Payments**: Repurchase payments are always cash (obligor = null)
 5. **Forfeiture Risk**: Be aware that collateral can be forfeited after expiry
 
+### Repo Rolling
+
+1. **Initiator only**: Only the initiator (collateral provider) of the existing completed repo can call `initiateRoll`
+2. **Complete roll**: Only the new counterparty (specified in `initiateRoll`) can call `completeRoll` (or complete via the redirected `completeSwap` flow)
+3. **Upfront amounts**: Initiator’s upfront payment to the new counterparty typically matches the old repo’s R1 so the new counterparty can pay R1 when completing the roll
+4. **New swap ID**: Use a unique `newSwapId`; the new swap is created in `PENDING` until the roll is completed
+
 ### General
 
 1. **Idempotency Keys**: Use idempotency keys to prevent duplicate operations
@@ -897,6 +1078,7 @@ YieldFabric's swap system provides:
 
 - **Atomic Swaps**: Immediate settlement with no collateral
 - **Repo Swaps**: Collateralized swaps with repurchase options
+- **Repo Rolling**: Two-step roll (initiate roll → complete roll) to move collateral into a new repo with a new counterparty and terms without the original counterparty repurchasing first
 - **Deadline Management**: Acceptance window for swap completion
 - **Expiry Management**: Repurchase window for collateral (repo swaps)
 - **Contract Locking**: Prevents double-spending

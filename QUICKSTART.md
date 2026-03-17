@@ -7,6 +7,7 @@ Get up and running with YieldFabric in 5 minutes.
 ## What You'll Learn
 
 - Authenticate and get a JWT token
+- Deposit funds into your intelligent account
 - Check your account balance
 - Send an instant payment
 - Accept an incoming payment
@@ -37,7 +38,22 @@ echo "Token: ${TOKEN:0:50}..."
 
 ---
 
-## Step 2: Check Your Balance
+## Step 2: Deposit Funds
+
+Before you can send payments, deposit tokens into your intelligent account:
+
+```bash
+curl -s -X POST https://pay.yieldfabric.com/graphql \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "mutation { deposit(input: { assetId: \"aud-token-asset\", amount: \"100\" }) { success message messageId accountAddress } }"
+  }' | jq
+```
+
+---
+
+## Step 3: Check Your Balance
 
 ```bash
 curl -s -X GET "https://pay.yieldfabric.com/balance?denomination=aud-token-asset&obligor=null" \
@@ -45,15 +61,15 @@ curl -s -X GET "https://pay.yieldfabric.com/balance?denomination=aud-token-asset
 ```
 
 **What to look for:**
-- `private_balance`: Your encrypted balance
-- `public_balance`: Your public balance
+- `private_balance`: Your encrypted balance (zero-knowledge proof protected)
+- `public_balance`: Your public balance (visible on-chain)
 - `locked_out`: Payments you've sent (pending acceptance)
 - `locked_in`: Payments you've received (awaiting your acceptance)
 - `outstanding`: Total locked in outgoing payments
 
 ---
 
-## Step 3: Send an Instant Payment
+## Step 4: Send an Instant Payment
 
 ```bash
 curl -s -X POST https://pay.yieldfabric.com/graphql \
@@ -73,7 +89,7 @@ curl -s -X POST https://pay.yieldfabric.com/graphql \
 
 ---
 
-## Step 4: Accept an Incoming Payment (As Recipient)
+## Step 5: Accept an Incoming Payment (As Recipient)
 
 First, check your balance to see incoming payments:
 
@@ -95,7 +111,7 @@ curl -s -X POST https://pay.yieldfabric.com/graphql \
 
 ---
 
-## Step 5: Check Balance Again
+## Step 6: Check Balance Again
 
 ```bash
 curl -s -X GET "https://pay.yieldfabric.com/balance?denomination=aud-token-asset&obligor=null" \
@@ -112,10 +128,11 @@ curl -s -X GET "https://pay.yieldfabric.com/balance?denomination=aud-token-asset
 
 ### Learn More
 
-1. **[01-OVERVIEW.md](./01-OVERVIEW.md)** - Understand intelligent accounts and zero-knowledge privacy
-2. **[04-CONTRACTS.md](./04-CONTRACTS.md)** - Create payment obligations (invoices, loans, annuities)
-3. **[06-SWAPS.md](./06-SWAPS.md)** - Trade obligations using atomic swaps
-4. **[07-WORKFLOWS.md](./07-WORKFLOWS.md)** - See complete annuity securitization example
+1. **[01-OVERVIEW.md](./01-OVERVIEW.md)** — Understand intelligent accounts and zero-knowledge privacy
+2. **[04-CONTRACTS.md](./04-CONTRACTS.md)** — Create payment obligations (invoices, loans, annuities)
+3. **[05-PAYMENTS.md](./05-PAYMENTS.md)** — Distributions, obligation payments, and advanced payment features
+4. **[06-SWAPS.md](./06-SWAPS.md)** — Trade obligations using atomic swaps and repos
+5. **[07-WORKFLOWS.md](./07-WORKFLOWS.md)** — Complete end-to-end examples (annuities, distributions, repo rolling)
 
 ### Try Advanced Features
 
@@ -126,6 +143,16 @@ curl -X POST https://pay.yieldfabric.com/graphql \
   -H "Content-Type: application/json" \
   -d '{
     "query": "mutation { createObligation(input: { counterpart: \"buyer@yieldfabric.com\", denomination: \"aud-token-asset\", notional: \"1000\", expiry: \"2025-12-31\" }) { success contractId } }"
+  }' | jq
+```
+
+**Create a Distribution (One-to-Many Payment):**
+```bash
+curl -X POST https://pay.yieldfabric.com/graphql \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "mutation { createDistribution(input: { assetId: \"aud-token-asset\", recipients: [{ address: \"0xRecipient1...\", amount: \"50\" }, { address: \"0xRecipient2...\", amount: \"30\" }] }) { success message messageId } }"
   }' | jq
 ```
 
@@ -191,7 +218,8 @@ cd scripts
 ## Support
 
 For detailed documentation:
-- API Reference: [SIMPLE.md](./SIMPLE.md)
+- Navigation Guide: [NAVIGATION.md](./NAVIGATION.md)
+- API Reference: [08-REFERENCE.md](./08-REFERENCE.md)
+- Curl Examples: [SIMPLE.md](./SIMPLE.md)
 - Workflow Examples: [07-WORKFLOWS.md](./07-WORKFLOWS.md)
-- Error Codes: [08-REFERENCE.md](./08-REFERENCE.md)
-
+- Error Codes: [08-REFERENCE.md](./08-REFERENCE.md#error-handling)

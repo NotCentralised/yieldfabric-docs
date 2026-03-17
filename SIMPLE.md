@@ -150,14 +150,14 @@ curl -X POST https://auth.yieldfabric.com/auth/delegation/jwt \
 ### List Delegation Tokens
 
 ```bash
-curl -X GET https://auth.yieldfabric.com/auth/delegation-tokens \
+curl -X GET https://auth.yieldfabric.com/auth/delegation/tokens \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ### Revoke Delegation Token
 
 ```bash
-curl -X DELETE https://auth.yieldfabric.com/auth/delegation-tokens/{token_id} \
+curl -X DELETE https://auth.yieldfabric.com/auth/delegation/tokens/{token_id} \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -189,7 +189,7 @@ curl -X GET "https://pay.yieldfabric.com/balance?denomination=aud-token-asset&ob
 {
   "private_balance": "125",
   "public_balance": "99775",
-  "decimals": "100",
+  "decimals": "1000000000000000000",
   "locked_out": [
     {
       "id_hash": "38226576697392579486248991160328482056897095088953678834306466678621490414681",
@@ -286,7 +286,7 @@ curl -X GET "https://pay.yieldfabric.com/balance?denomination=aud-token-asset&ob
 ### Balance Fields
 - **`private_balance`**: Your balance in encrypted/private form (zero-knowledge proof protected)
 - **`public_balance`**: Your balance in public/transparent form (visible on-chain)
-- **`decimals`**: Decimal precision for the asset (typically "100" for 2 decimal places)
+- **`decimals`**: Token decimal precision as returned by the ERC-20 `decimals()` call (e.g., `"1000000000000000000"` for 18 decimals). Divide amounts by this value to get the human-readable figure
 - **`outstanding`**: Total amount currently locked out in pending outgoing transactions
 
 ### Transaction Arrays
@@ -1150,7 +1150,134 @@ curl -X POST https://pay.yieldfabric.com/graphql \
 
 ---
 
-## 13. Annuity Settlement Workflow
+## 13. Create Distribution (One-to-Many Payment)
+
+Send tokens to multiple recipients in a single operation using Merkle trees:
+
+```bash
+curl -X POST https://pay.yieldfabric.com/graphql \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "mutation { createDistribution(input: { assetId: \"aud-token-asset\", recipients: [{ address: \"0xRecipient1Address\", amount: \"50\" }, { address: \"0xRecipient2Address\", amount: \"30\" }, { address: \"0xRecipient3Address\", amount: \"20\" }] }) { success message messageId accountAddress transactionId signature } }"
+  }' | jq
+```
+
+**Required Input:**
+- `assetId`: Asset/denomination ID
+- `recipients`: Array of `{ address, amount }` pairs
+
+**Optional Input:**
+- `obligor`: Obligor entity (defaults to sender)
+- `walletId`: Sender wallet to use
+- `idempotencyKey`: Unique key for duplicate prevention
+- `requireManualSignature`: Route to manual signing UX
+
+**Each recipient** accepts their share using the standard `accept` mutation. The sender can cancel the distribution only if **no recipient** has claimed yet.
+
+**NFT Recipients:** Set `obligationId` to a non-zero token ID to make the claim available to the NFT owner (`ownerOf(address, obligationId)`) at claim time.
+
+---
+
+## 14. Deposit Funds
+
+Deposit tokens into your intelligent account:
+
+```bash
+curl -X POST https://pay.yieldfabric.com/graphql \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "mutation { deposit(input: { assetId: \"aud-token-asset\", amount: \"100\" }) { success message messageId accountAddress } }"
+  }' | jq
+```
+
+---
+
+## 15. Withdraw Funds
+
+Withdraw tokens from your intelligent account:
+
+```bash
+curl -X POST https://pay.yieldfabric.com/graphql \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "mutation { withdraw(input: { assetId: \"aud-token-asset\", amount: \"50\" }) { success message messageId accountAddress } }"
+  }' | jq
+```
+
+---
+
+## 16. Batch Accept All Payments
+
+Accept all pending payables for a given denomination in a single call:
+
+```bash
+curl -X POST https://pay.yieldfabric.com/graphql \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "mutation { acceptAll(input: { denomination: \"aud-token-asset\" }) { success message totalAccepted paymentIds } }"
+  }' | jq
+```
+
+**Optional Input:**
+- `obligor`: Filter by obligor entity
+- `walletId`: Scope to a specific wallet
+
+---
+
+## 17. Repurchase Collateral (Repo Swap)
+
+Repurchase collateral from a repo swap before expiry:
+
+```bash
+curl -X POST https://pay.yieldfabric.com/graphql \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "mutation { repurchaseSwap(input: { swapId: \"REPO-SWAP-001\" }) { success message swapId messageId transactionId signature } }"
+  }' | jq
+```
+
+---
+
+## 18. Roll a Repo (Two-Step Process)
+
+**Step 1: Initiate Roll** — Creates a new swap in Pending state:
+
+```bash
+curl -X POST https://pay.yieldfabric.com/graphql \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "mutation($input: RollRepoInput!) { initiateRoll(input: $input) { success message newSwapId messageId } }",
+    "variables": {
+      "input": {
+        "oldSwapId": "REPO-SWAP-001",
+        "newSwapId": "REPO-SWAP-002",
+        "newCounterparty": "new-counterparty@yieldfabric.com",
+        "newDeadline": "2025-12-31"
+      }
+    }
+  }' | jq
+```
+
+**Step 2: Complete Roll** — Counterparty pays upfront, old repo repurchased, collateral migrated:
+
+```bash
+curl -X POST https://pay.yieldfabric.com/graphql \
+  -H "Authorization: Bearer $COUNTERPARTY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "mutation { completeRoll(input: { newSwapId: \"REPO-SWAP-002\" }) { success message newSwapId accountAddress messageId transactionId signature } }"
+  }' | jq
+```
+
+---
+
+## 19. Annuity Settlement Workflow
 
 This example demonstrates how to create and settle an annuity using self-referential obligations and atomic swaps:
 
@@ -1306,21 +1433,26 @@ All authenticated requests require:
 
 ## Quick Reference
 
-### Auth Service (Port 3000)
-- `POST /auth/login/with-services` - Login with service selection
-- `POST /auth/refresh` - Refresh access token
-- `GET /auth/users/me` - Get user profile
-- `POST /auth/logout` - Logout current device
-- `POST /auth/logout-all` - Logout all devices
-- `POST /auth/delegation/jwt` - Create delegation token
-- `GET /auth/delegation-tokens` - List delegation tokens
-- `DELETE /auth/delegation-tokens/{id}` - Revoke delegation token
+### Auth Service
+- `POST /auth/login/with-services` — Login with service selection
+- `POST /auth/refresh` — Refresh access token
+- `GET /auth/users/me` — Get user profile
+- `POST /auth/logout` — Logout current device
+- `POST /auth/logout-all` — Logout all devices
+- `POST /auth/delegation/jwt` — Create delegation JWT
+- `POST /auth/delegation/tokens` — Create delegation token
+- `GET /auth/delegation/tokens` — List delegation tokens
+- `DELETE /auth/delegation/tokens/{id}` — Revoke delegation token
+- `POST /auth/users` — Create user
+- `POST /auth/users/:user_id/deploy-account` — Deploy user account
+- `POST /auth/api-key` — Authenticate with API key
+- `POST /auth/api-key/generate` — Generate API key
 
-### Payments/GraphQL Service (Port 3002)
-- `GET /balance?denomination={asset}&obligor={obligor}&group_id={group_id}` - Get balance
-- `POST /graphql` - GraphQL endpoint for:
-  - Queries: `contractFlow.coreContracts`, `paymentsByEntity`, `swapFlow.coreSwaps`, `entities`, `wallets`
-  - Mutations: `instant`, `accept`, `createObligation`, `acceptObligation`, `createSwap`, `completeSwap`, `deposit`, `withdraw`
+### Payments/GraphQL Service
+- `GET /balance?denomination={asset}&obligor={obligor}&group_id={group_id}` — Get balance
+- `POST /graphql` — GraphQL endpoint for:
+  - **Queries:** `contractFlow.coreContracts`, `paymentsByEntity`, `swapFlow.coreSwaps`, `entities`, `wallets`, `contracts`, `loans`, `payments`, `tokens`, `assets`, `transactions`, `entityWallets`, `health`
+  - **Mutations:** `deposit`, `withdraw`, `instant`, `accept`, `acceptAll`, `createDistribution`, `createObligation`, `acceptObligation`, `transferObligation`, `cancelObligation`, `createSwap`, `completeSwap`, `cancelSwap`, `repurchaseSwap`, `initiateRoll`, `completeRoll`, `expireCollateral`, `swapObligorPayment`, `createLoan`, `updateLoan`, `acceptLoan`, `processLoan`, `executeComposedOperations`, `hidePayment`, `hideContract`
 
 ---
 

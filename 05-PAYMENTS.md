@@ -23,6 +23,8 @@ Payments are categorized by their source and purpose:
 3. **OBLIGATION**: Scheduled payment from a contract/obligation (can be cash or credit)
 4. **SWAP_PAYMENT**: Payment created during swap settlement (can be cash or credit)
 
+**Distribution** is a one-to-many send: one contract of type DISTRIBUTION with multiple RECEIVABLE payments (one per recipient). Created via `createDistribution`; each recipient accepts with the standard **Accept** mutation. See section 6.
+
 ### Payment Direction
 
 Payments have a direction indicating your role:
@@ -286,7 +288,7 @@ mutation Accept($input: AcceptInput!) {
 - `idempotencyKey`: Unique key for duplicate prevention (optional)
 
 **Rules:**
-1. **Permission**: Only payee (receiver) can accept payment
+1. **Permission**: Payee (receiver) accepts to receive funds; payer (sender) may cancel/retrieve in some cases (e.g. instant or distribution before any claim)
 2. **Status**: Payment must be `PENDING` or `PROCESSING`
 3. **Token**: Payment must have valid token with `id_hash` (address)
 4. **Unlock**: Payment must be unlocked for receiver (`unlock_receiver` is `None` or in the past)
@@ -333,7 +335,7 @@ mutation {
 }
 ```
 
-**Note:** For linear vesting payments, you can accept partial amounts. The system calculates the vested amount based on elapsed time and vesting period.
+**Note:** For linear vesting payments, you can accept partial amounts. The system calculates the vested amount based on elapsed time and vesting period. For **distribution** payments, each recipient accepts their share using the same `accept` mutation with their distribution payment ID (see section 5).
 
 ---
 
@@ -493,7 +495,88 @@ mutation {
 
 ---
 
-### 6. Hide Payment
+### 6. Create Distribution
+
+Create a **distribution**: a single transfer from one sender to many recipients. Each recipient gets a fixed amount. The contract stores a Merkle tree of (recipient, amount); recipients claim via Merkle proof. Distributions can be cash (default obligor) or credit (optional `obligor`). Recipients can be wallets or NFT-based (claim by `ownerOf` at claim time).
+
+**GraphQL Mutation:**
+```graphql
+mutation CreateDistribution($input: CreateDistributionInput!) {
+  createDistribution(input: $input) {
+    success
+    message
+    accountAddress
+    idHash
+    messageId
+    transactionId
+    signature
+    timestamp
+  }
+}
+```
+
+**Input Parameters:**
+- `assetId`: Asset identifier (e.g. `"aud-token-asset"`) (required)
+- `recipients`: List of recipients; each has `address`, optional `obligationId`, and `amount` (required)
+  - `address`: Recipient wallet address (or obligation/NFT contract address if using NFT claim)
+  - `obligationId`: Optional; `"0"` or omit = wallet claim; non-zero = NFT token id (claimant = `ownerOf(obligation_address, obligation_id)`)
+  - `amount`: Amount as integer string for that recipient
+- `obligor`: Optional entity name/ID; if omitted, sender is obligor (cash-like). If set, distribution is credit from that obligor
+- `walletId`: Optional payer wallet ID (default: JWT wallet)
+- `idempotencyKey`: Unique key for duplicate prevention (optional)
+- `requireManualSignature`: If `true`, message is queued for manual signing instead of automatic execution (optional)
+
+**Rules:**
+1. **Recipients**: At least one recipient; each has `address` and `amount`
+2. **Amounts**: All amounts are integer strings; total is locked from sender’s balance
+3. **Contract**: Creates one contract of type `DISTRIBUTION` and one payment per recipient (RECEIVABLE for each)
+4. **Claim**: Each recipient accepts their share via the standard **Accept** mutation (section 3) using their distribution payment ID
+5. **Cancel**: Sender can cancel the entire distribution **only if no recipient has claimed yet**. Once any recipient has accepted, the distribution cannot be cancelled (on-chain and in API: `canCancel` is false)
+6. **NFT claims**: If a recipient has `obligationId` set, the actual claimant at claim time is `ownerOf(obligation_address, obligation_id)` (same pattern as single instant payments with NFT ownership)
+
+**Example:**
+```graphql
+mutation {
+  createDistribution(input: {
+    assetId: "aud-token-asset"
+    recipients: [
+      { address: "0x037b69a7ca6b327ddf843c9ac4ff784e08b5eb6d", amount: "5000000000000000000" }
+      { address: "0x5821aa342bd011e0e77ac5eb8663b052592363a5", amount: "10000000000000000000" }
+    ]
+    idempotencyKey: "dist-001"
+  }) {
+    success
+    messageId
+    transactionId
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "data": {
+    "createDistribution": {
+      "success": true,
+      "message": "Create distribution message submitted successfully",
+      "accountAddress": "0xb42f6411e055c9907e0101e76a6ae74b612b08bd",
+      "idHash": null,
+      "messageId": "3a9f9599-e100-491e-a613-539f444143a2",
+      "transactionId": "TXN-CREATE-DISTRIBUTION-1710672207000",
+      "signature": "0x...",
+      "timestamp": "2025-03-17T09:43:25.581090Z"
+    }
+  }
+}
+```
+
+**Accept and cancel:**
+- **Recipients**: Use **Accept** (section 3) with the payment ID for that recipient (e.g. `PAYMENT-DIST-177374060471601661010-1`). The backend uses the distribution’s Merkle proof and calls `acceptDistribution` on the vault.
+- **Sender cancel**: The sender sees an outgoing distribution with `canCancel` true until any recipient accepts. Cancelling is done via the same cancel/retrieve flow as instant payments (contract-level `cancelDistribution`); once any recipient has claimed, `canCancel` is false and cancel is no longer available.
+
+---
+
+### 7. Hide Payment
 
 Hide a payment from your view (soft delete).
 
@@ -714,6 +797,20 @@ Calculated balance considering locked amounts:
    - Funds returned to sender
    - Status: `CANCELLED`
 
+### Distribution Lifecycle
+
+1. **Create** (`PENDING`):
+   - Sender creates distribution via `createDistribution` with list of (address, amount) and optional `obligationId` per recipient
+   - One DISTRIBUTION contract and one RECEIVABLE payment per recipient are created
+   - Total amount locked from sender
+
+2. **Claim** (per recipient, `COMPLETED`):
+   - Each recipient accepts their share via `accept` with their distribution payment ID (Merkle proof used on-chain via `acceptDistribution`)
+
+3. **Cancel** (sender only, `CANCELLED`):
+   - Sender can cancel the whole distribution only if **no** recipient has claimed yet (`canCancel` is true)
+   - Once any recipient has accepted, cancel is no longer available
+
 ### Obligation Payment Lifecycle
 
 1. **Create** (`PENDING`):
@@ -927,7 +1024,7 @@ Payments can be created during swap settlement:
 
 YieldFabric's payment system provides:
 
-- **Multiple Payment Types**: Deposit, Instant, Obligation, Swap
+- **Multiple Payment Types**: Deposit, Instant, Obligation, Swap, and Distribution (one-to-many)
 - **Cash & Credit Support**: Payments with or without obligor
 - **Time Locks**: Scheduled unlock conditions for sender and receiver
 - **Linear Vesting**: Gradual unlock over time

@@ -10,7 +10,7 @@ Complete API documentation and examples for YieldFabric - a platform for program
 - [Example Workflows](#example-workflows)
 - [GraphQL Schema](#graphql-schema)
 - [Authentication & Authorization](#authentication--authorization)
-- [Support & Resources](#support--resources)
+- [Architecture](#architecture)
 
 ---
 
@@ -24,7 +24,9 @@ YieldFabric provides **intelligent accounts** that enable sophisticated financia
 - 💰 **Intelligent Accounts**: Programmable accounts for users and groups
 - 📅 **Payment Obligations**: Create invoices, loans, annuities, and structured payments
 - ⚡ **Instant Payments**: Send and receive payments with atomic settlement
+- 📤 **Distributions**: One-to-many payments (one sender, multiple recipients; each accepts their share)
 - 🔄 **Atomic Swaps**: Exchange payment obligations with guaranteed execution
+- 📦 **Repo Swaps & Rolling**: Collateralized repos with repurchase and two-step roll to a new counterparty
 - ⏰ **Programmable Triggers**: Timelocks and oracle-based conditional execution
 - 👥 **Group Accounts**: Collaborative operations with fine-grained access control
 - 🔍 **Full Audit Trail**: Complete transaction history and delegation tracking
@@ -36,14 +38,15 @@ YieldFabric provides **intelligent accounts** that enable sophisticated financia
 ### Quick Start
 - **[QUICKSTART.md](./QUICKSTART.md)** - Get started in 5 minutes ⚡
 - **[01-OVERVIEW.md](./01-OVERVIEW.md)** - How the platform works 📖
+- **[00-ARCHITECTURE.md](./00-ARCHITECTURE.md)** - Platform architecture and components 🏗️
 
 ### Core Guides (Step-by-Step)
 - **[02-AUTHENTICATION.md](./02-AUTHENTICATION.md)** - Login, delegation, JWT tokens 🔐
 - **[03-BALANCES.md](./03-BALANCES.md)** - Balance queries and locked transactions 💰
 - **[04-CONTRACTS.md](./04-CONTRACTS.md)** - Creating and querying obligations 📄
-- **[05-PAYMENTS.md](./05-PAYMENTS.md)** - Sending and accepting payments 💸
-- **[06-SWAPS.md](./06-SWAPS.md)** - Atomic swaps and bilateral trading 🔄
-- **[07-WORKFLOWS.md](./07-WORKFLOWS.md)** - Complete end-to-end examples 🎯
+- **[05-PAYMENTS.md](./05-PAYMENTS.md)** - Deposits, instant payments, distributions, accept and cancel 💸
+- **[06-SWAPS.md](./06-SWAPS.md)** - Atomic swaps, repo swaps, repurchase, and repo rolling 🔄
+- **[07-WORKFLOWS.md](./07-WORKFLOWS.md)** - End-to-end examples: annuity securitization, distributions, repo rolling 🎯
 - **[08-REFERENCE.md](./08-REFERENCE.md)** - Error codes, assets, quick reference 📚
 - **[09-CRYPTOGRAPHIC-OPERATIONS.md](./09-CRYPTOGRAPHIC-OPERATIONS.md)** - Key management, encryption, signatures 🔑
 
@@ -51,6 +54,10 @@ YieldFabric provides **intelligent accounts** that enable sophisticated financia
 - **[SIMPLE.md](./SIMPLE.md)** - All API examples in one comprehensive file
 - **[NAVIGATION.md](./NAVIGATION.md)** - Reading guide based on your needs
 
+### Additional Documentation
+- **[10_STRUCTURING.md](./10_STRUCTURING.md)** - Structuring and intelligent accounts
+- **[11_ABS.md](./11_ABS.md)** - Asset-backed securities and waterfall distributions
+- **Subdirectories**: [composed_contracts/](./composed_contracts/), [loan_management/](./loan_management/), [annuities/](./annuities/), [python/](./python/) for domain-specific guides
 
 ### Service URLs
 - **Production Auth**: `https://auth.yieldfabric.com`
@@ -114,6 +121,11 @@ curl -X POST https://pay.yieldfabric.com/graphql \
 - Locked until counterpart accepts or sender cancels
 - Atomic settlement guarantees
 
+**Distributions**
+- One-to-many payments: one sender, multiple recipients with fixed amounts
+- Each recipient accepts their share via the same Accept flow; sender can cancel only if no one has claimed yet
+- See [05-PAYMENTS.md](./05-PAYMENTS.md) section 6
+
 **Payment Obligations**
 - Create structured payment commitments (invoices, loans, annuities)
 - **Fully Funded (Escrow)**: Funds locked upfront
@@ -125,6 +137,11 @@ curl -X POST https://pay.yieldfabric.com/graphql \
 - Both parties exchange simultaneously or transaction fails
 - Enables securitization and structured finance
 
+**Repo Swaps & Rolling**
+- **Repo swaps**: Collateralized swaps with repurchase before expiry; collateral can be forfeited after expiry
+- **Repo rolling**: Two-step flow (initiate roll → complete roll) to move collateral into a new repo with a new counterparty without the original counterparty repurchasing first
+- See [06-SWAPS.md](./06-SWAPS.md) sections 4–6
+
 ## API Sections
 
 The complete API documentation in [SIMPLE.md](./SIMPLE.md) includes:
@@ -134,8 +151,9 @@ The complete API documentation in [SIMPLE.md](./SIMPLE.md) includes:
 3. **Contracts** - View and create payment obligations
 4. **Payments** - Query payment history
 5. **Instant Payments** - Send and accept payments
-6. **Swaps** - Create and execute atomic swaps
-7. **Annuity Workflows** - Complete securitization examples
+6. **Distributions** - Create one-to-many payments; recipients accept their share
+7. **Swaps** - Create and complete atomic swaps; repo repurchase, expire collateral, and repo rolling
+8. **Annuity Workflows** - Complete securitization examples
 
 ## Key Concepts
 
@@ -180,6 +198,15 @@ All account balances and transactions use ZK-proofs:
 
 See [Section 13 in SIMPLE.md](./SIMPLE.md#13-annuity-settlement-workflow) for complete example.
 
+### Distribution Flow
+1. Sender creates distribution with asset and list of (recipient, amount)
+2. Each recipient accepts their share via `accept` with their distribution payment ID
+3. Sender can cancel the whole distribution only before any recipient has claimed
+
+### Repo Roll Flow
+1. Initiator (collateral provider) of a completed repo calls `initiateRoll` with new swap ID, new counterparty, and new terms
+2. New counterparty calls `completeRoll` (or completes via the swap flow); old repo is repurchased and collateral moves into the new repo
+
 ## GraphQL Schema
 
 The API uses GraphQL for most operations:
@@ -192,14 +219,24 @@ The API uses GraphQL for most operations:
 - `wallets` - Query wallets
 
 **Mutations:**
-- `instant` - Send instant payment
-- `accept` - Accept incoming payment
-- `createObligation` - Create payment obligation
-- `acceptObligation` - Accept obligation
-- `createSwap` - Create atomic swap
-- `completeSwap` - Execute swap
-- `deposit` - Deposit funds
-- `withdraw` - Withdraw funds
+- `deposit` — Deposit funds into your wallet
+- `withdraw` — Withdraw funds from your wallet
+- `instant` — Send instant payment (cash or credit)
+- `accept` — Accept incoming payment (or cancel/retrieve where allowed)
+- `acceptAll` — Batch-accept all pending payments matching a denomination/obligor
+- `hidePayment` — Hide a payment from view (soft delete)
+- `createDistribution` — Create one-to-many distribution
+- `createObligation` — Create payment obligation
+- `acceptObligation` — Accept obligation
+- `transferObligation` — Transfer obligation to new holder
+- `cancelObligation` — Cancel obligation
+- `createSwap` — Create atomic or repo swap
+- `completeSwap` — Complete swap (or complete roll when swap was created via roll)
+- `cancelSwap` — Cancel pending swap
+- `repurchaseSwap` — Repurchase collateral (repo swaps)
+- `initiateRoll` — Initiate repo roll (new repo, new counterparty)
+- `completeRoll` — Complete repo roll (new counterparty)
+- `expireCollateral` — Forfeit collateral after expiry (repo swaps)
 
 ## Authentication & Authorization
 
@@ -248,33 +285,31 @@ When acting on behalf of groups:
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                    YieldFabric Platform                      │
-├──────────────────────────────────────────────────────────────┤
-│                                                              │
-│  ┌──────────────────┐         ┌───────────────────┐          │
-│  │  Auth Service    │────────▶│  Payments Service │          │
-│  │                  │  JWT    │                   │          │
-│  │                  │         │                   │          │
-│  │  • Authentication│         │  • GraphQL API    │          │
-│  │  • Authorization │         │  • Balance Queries│          │
-│  │  • Delegation    │         │  • Payments       │          │
-│  │  • Groups        │         │  • Obligations    │          │
-│  │  • Permissions   │         │  • Atomic Swaps   │          │
-│  └──────────────────┘         └───────────────────┘          │
-│           │                            │                     │
-│           │                            │                     │
-│           ▼                            ▼                     │
-│  ┌───────────────────────────────────────────────┐           │
-│  │     Intelligent Accounts (On-Chain)           │           │
-│  │                                               │           │
-│  │  • Zero-Knowledge Privacy                     │           │
-│  │  • Programmable Payments                      │           │
-│  │  • Timelocks & Oracles                        │           │
-│  │  • Atomic Swaps                               │           │
-│  └───────────────────────────────────────────────┘           │
-│                                                              │
-└──────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                       YieldFabric Platform                          │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  ┌──────────────────┐     ┌───────────────────┐   ┌──────────────┐ │
+│  │  Auth Service     │────▶│  Payments Service │──▶│ Vault Service│ │
+│  │                   │ JWT │                   │   │              │ │
+│  │  • Authentication │     │  • GraphQL API    │   │  • ZK Proofs │ │
+│  │  • Authorization  │     │  • Balance Queries│   │  • Balances  │ │
+│  │  • Delegation     │     │  • Payments       │   │  • Token Ops │ │
+│  │  • Groups         │     │  • Obligations    │   │  • Smart     │ │
+│  │  • Key Management │     │  • Swaps          │   │    Contract  │ │
+│  │  • Crypto Ops     │     │  • Distributions  │   │    Calls     │ │
+│  └──────────────────┘     └───────────────────┘   └──────────────┘ │
+│                                     │                    │          │
+│                                     ▼                    ▼          │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │          Intelligent Accounts (On-Chain)                     │   │
+│  │                                                              │   │
+│  │  • Zero-Knowledge Privacy   • Programmable Payments          │   │
+│  │  • Timelocks & Oracles      • Atomic Swaps & Repos           │   │
+│  │  • Distribution Merkle Trees                                 │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
 ## License
