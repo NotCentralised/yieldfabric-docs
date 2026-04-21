@@ -1,5 +1,5 @@
 """
-Treasury operations executor
+Treasury operations executor — mint, burn, total_supply.
 """
 
 from .base import BaseExecutor
@@ -8,216 +8,145 @@ from ..utils.graphql import GraphQLMutation
 
 
 class TreasuryExecutor(BaseExecutor):
-    """Executor for treasury operations (mint, burn, total_supply)."""
-    
+    """Executor for mint / burn / total_supply."""
+
     def execute(self, command: Command) -> CommandResponse:
-        """Execute treasury command."""
         command_type = command.type.lower()
-        
-        if command_type == "mint":
-            return self._execute_mint(command)
-        elif command_type == "burn":
-            return self._execute_burn(command)
-        elif command_type == "total_supply":
-            return self._execute_total_supply(command)
-        else:
+        dispatch = {
+            "mint": self._execute_mint,
+            "burn": self._execute_burn,
+            "total_supply": self._execute_total_supply,
+        }
+        handler = dispatch.get(command_type)
+        if handler is None:
             return CommandResponse.error_response(
                 command.name, command.type,
                 [f"Unknown treasury command type: {command_type}"]
             )
-    
+        return handler(command)
+
+    # ------------------------------------------------------------------
+    # mint / burn share shape: {assetId, amount, policySecret?, idem?}.
+    # ------------------------------------------------------------------
+
     def _execute_mint(self, command: Command) -> CommandResponse:
-        """Execute mint command."""
-        self.log_command_start(command)
-        
-        token = self.get_token(command)
-        if not token:
-            self.log_command_failure(command)
-            return CommandResponse.error_response(
-                command.name, command.type, ["Failed to get JWT token"]
-            )
-        
-        params = command.parameters
-        denomination = params.denomination or params.asset_id
-        amount = params.amount
-        policy_secret = params.policy_secret
-        idempotency_key = params.idempotency_key
-        
-        self.log_parameters({
-            "denomination": denomination,
-            "amount": amount,
-            "policy_secret": "***" if policy_secret else None,
-            "idempotency_key": idempotency_key
-        })
-        
-        mutation = GraphQLMutation.MINT
-        variables = {
-            "input": {
-                "assetId": denomination,
-                "amount": str(amount),
-            }
-        }
-        
-        if policy_secret:
-            variables["input"]["policySecret"] = policy_secret
-        
-        if idempotency_key:
-            variables["input"]["idempotencyKey"] = idempotency_key
-        
-        response = self.payments_service.graphql_mutation(mutation, variables, token)
-        
-        if not response.success:
-            self.logger.error(f"    ❌ Mint failed: {response.get_error_message()}")
-            self.log_command_failure(command)
-            return CommandResponse.error_response(
-                command.name, command.type, [response.get_error_message() or "Mint failed"]
-            )
-        
-        mint_data = response.get_data("mint", {})
-        if mint_data.get("success"):
-            outputs = {
-                "account_address": mint_data.get("accountAddress"),
-                "message": mint_data.get("message"),
-                "mint_result": mint_data.get("mintResult"),
-                "message_id": mint_data.get("messageId"),
-                "timestamp": mint_data.get("timestamp"),
-            }
-            self.store_outputs(command.name, outputs)
-            
-            self.logger.success("    ✅ Mint successful!")
-            for key, value in outputs.items():
-                if value:
-                    self.logger.info(f"      {key}: {value}")
-            
-            self.log_command_success(command)
-            return CommandResponse.success_response(command.name, command.type, outputs)
-        else:
-            message = mint_data.get("message", "Operation not successful")
-            self.logger.error(f"    ❌ Mint failed: {message}")
-            self.log_command_failure(command)
-            return CommandResponse.error_response(command.name, command.type, [message])
-    
+        return self._execute_treasury_mutation(
+            command, GraphQLMutation.MINT, "mint", "Mint",
+            result_field="mintResult", output_key="mint_result",
+        )
+
     def _execute_burn(self, command: Command) -> CommandResponse:
-        """Execute burn command."""
+        return self._execute_treasury_mutation(
+            command, GraphQLMutation.BURN, "burn", "Burn",
+            result_field="burnResult", output_key="burn_result",
+        )
+
+    def _execute_treasury_mutation(
+        self,
+        command: Command,
+        mutation: str,
+        response_root: str,
+        operation_name: str,
+        *,
+        result_field: str,
+        output_key: str,
+    ) -> CommandResponse:
         self.log_command_start(command)
-        
-        token = self.get_token(command)
-        if not token:
-            self.log_command_failure(command)
-            return CommandResponse.error_response(
-                command.name, command.type, ["Failed to get JWT token"]
-            )
-        
+        token, err = self._acquire_token_or_error(command)
+        if err:
+            return err
+
         params = command.parameters
         denomination = params.denomination or params.asset_id
-        amount = params.amount
-        policy_secret = params.policy_secret
-        idempotency_key = params.idempotency_key
-        
+
         self.log_parameters({
             "denomination": denomination,
-            "amount": amount,
-            "policy_secret": "***" if policy_secret else None,
-            "idempotency_key": idempotency_key
+            "amount": params.amount,
+            "policy_secret": "***" if params.policy_secret else None,
+            "idempotency_key": params.idempotency_key,
         })
-        
-        mutation = GraphQLMutation.BURN
+
         variables = {
             "input": {
                 "assetId": denomination,
-                "amount": str(amount),
+                "amount": str(params.amount),
             }
         }
-        
-        if policy_secret:
-            variables["input"]["policySecret"] = policy_secret
-        
-        if idempotency_key:
-            variables["input"]["idempotencyKey"] = idempotency_key
-        
+        if params.policy_secret:
+            variables["input"]["policySecret"] = params.policy_secret
+        if params.idempotency_key:
+            variables["input"]["idempotencyKey"] = params.idempotency_key
+
         response = self.payments_service.graphql_mutation(mutation, variables, token)
-        
         if not response.success:
-            self.logger.error(f"    ❌ Burn failed: {response.get_error_message()}")
-            self.log_command_failure(command)
-            return CommandResponse.error_response(
-                command.name, command.type, [response.get_error_message() or "Burn failed"]
+            return self._finalize_graphql_error(
+                command, response, operation_name=operation_name
             )
-        
-        burn_data = response.get_data("burn", {})
-        if burn_data.get("success"):
-            outputs = {
-                "account_address": burn_data.get("accountAddress"),
-                "message": burn_data.get("message"),
-                "burn_result": burn_data.get("burnResult"),
-                "message_id": burn_data.get("messageId"),
-                "timestamp": burn_data.get("timestamp"),
-            }
-            self.store_outputs(command.name, outputs)
-            
-            self.logger.success("    ✅ Burn successful!")
-            for key, value in outputs.items():
-                if value:
-                    self.logger.info(f"      {key}: {value}")
-            
-            self.log_command_success(command)
-            return CommandResponse.success_response(command.name, command.type, outputs)
-        else:
-            message = burn_data.get("message", "Operation not successful")
-            self.logger.error(f"    ❌ Burn failed: {message}")
-            self.log_command_failure(command)
-            return CommandResponse.error_response(command.name, command.type, [message])
-    
+
+        data = response.get_data(response_root, {})
+        if not data.get("success"):
+            return self._finalize_business_error(
+                command,
+                data.get("message", f"{operation_name} not successful"),
+                operation_name=operation_name,
+            )
+
+        outputs = {
+            "account_address": data.get("accountAddress"),
+            "message": data.get("message"),
+            output_key: data.get(result_field),
+            "message_id": data.get("messageId"),
+            "timestamp": data.get("timestamp"),
+        }
+        return self._finalize_success(
+            command, token, outputs,
+            success_message=f"{operation_name} successful!",
+        )
+
+    # ------------------------------------------------------------------
+    # total_supply — read query; no message_id, no wait.
+    # ------------------------------------------------------------------
+
     def _execute_total_supply(self, command: Command) -> CommandResponse:
-        """Execute total supply query."""
         self.log_command_start(command)
-        
-        token = self.get_token(command)
-        if not token:
-            self.log_command_failure(command)
-            return CommandResponse.error_response(
-                command.name, command.type, ["Failed to get JWT token"]
-            )
-        
+        token, err = self._acquire_token_or_error(command)
+        if err:
+            return err
+
         params = command.parameters
         denomination = params.denomination or params.asset_id
         obligor = params.obligor
-        
-        self.log_parameters({
-            "denomination": denomination,
-            "obligor": obligor
-        })
-        
+
+        self.log_parameters({"denomination": denomination, "obligor": obligor})
+
         response = self.payments_service.get_total_supply(denomination, obligor, token)
-        
         if not response.success:
-            self.logger.error(f"    ❌ Total supply query failed: {response.get_error_message()}")
+            # get_total_supply returns RESTResponse; use a lightweight
+            # local error path (not graphql-shaped, so we don't use
+            # _finalize_graphql_error which expects a GraphQLResponse).
+            message = (
+                response.get_error_message() or "Total supply query failed"
+            )
+            self.logger.error(f"    ❌ Total supply query failed: {message}")
             self.log_command_failure(command)
             return CommandResponse.error_response(
-                command.name, command.type, [response.get_error_message() or "Total supply query failed"]
+                command.name, command.type, [message]
             )
-        
-        total_supply = response.get_data("total_supply")
-        decimals = response.get_data("decimals")
-        timestamp = response.get_data("timestamp")
-        
+
         outputs = {
-            "total_supply": total_supply,
-            "decimals": decimals,
+            "total_supply": response.get_data("total_supply"),
+            "decimals": response.get_data("decimals"),
             "denomination": denomination,
             "obligor": obligor,
-            "timestamp": timestamp,
+            "timestamp": response.get_data("timestamp"),
         }
         self.store_outputs(command.name, outputs)
-        
+
         self.logger.success("    ✅ Total supply retrieved successfully!")
-        self.logger.info("  📋 Total Supply Information:")
-        self.logger.info(f"      Total Supply: {total_supply}")
-        self.logger.info(f"      Decimals: {decimals}")
-        self.logger.info(f"      Denomination: {denomination}")
-        if obligor:
-            self.logger.info(f"      Obligor: {obligor}")
-        
+        self.logger.info(
+            f"    Total Supply: {outputs['total_supply']}  "
+            f"Decimals: {outputs['decimals']}  Denomination: {denomination}"
+            + (f"  Obligor: {obligor}" if obligor else "")
+        )
         self.log_command_success(command)
         return CommandResponse.success_response(command.name, command.type, outputs)
-

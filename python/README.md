@@ -1,50 +1,79 @@
-# YieldFabric Python SDK
+# YieldFabric Python Port v2.0 - Refactored Architecture
 
-A clean, production-ready Python SDK for executing YieldFabric blockchain operations via GraphQL and REST APIs. Built with enterprise-grade architecture, complete type safety, and comprehensive operation support.
+A completely refactored Python implementation of YieldFabric GraphQL command execution with clean architecture, separation of concerns, and enterprise-grade design patterns.
 
-## 🚀 Features
+## 🎯 What's New in v2.0
 
-- **Complete Operation Support**: All payment, obligation, swap, and treasury operations
-- **Clean Architecture**: Modular design with clear separation of concerns
+### Architecture Improvements
+- **Clean Architecture**: Separation of concerns with distinct layers (models, services, executors, core, utils)
+- **Service Clients**: Dedicated HTTP client abstraction for Auth and Payments services
+- **Executor Pattern**: Specialized executors for different operation types
+- **Configuration Management**: Centralized configuration with environment variable support
+- **Enhanced Logging**: Structured, colored logging with debug mode
 - **Type Safety**: Comprehensive data models with validation
-- **Variable Substitution**: Chain commands with dynamic variable references
-- **Group Delegation**: Full support for group-based authentication
-- **Service Health Checks**: Automatic service availability validation
-- **Enhanced Logging**: Structured, colored output with debug mode
-- **Production Ready**: Enterprise-grade error handling and resource management
+- **Context Managers**: Proper resource management with context manager support
 
-## 📦 Installation
+### Code Organization
 
-### Prerequisites
+```
+yieldfabric/
+├── __init__.py              # Package initialization
+├── config.py                # Configuration management
+├── cli.py                   # CLI interface
+│
+├── core/                    # Core business logic
+│   ├── output_store.py      # Variable substitution
+│   ├── yaml_parser.py       # YAML parsing
+│   └── runner.py            # Main orchestrator
+│
+├── services/                # Service clients
+│   ├── base.py              # Base HTTP client
+│   ├── auth_service.py      # Auth service client
+│   └── payments_service.py  # Payments service client
+│
+├── executors/               # Command executors
+│   ├── base.py              # Base executor
+│   ├── payment_executor.py  # Payment operations
+│   ├── obligation_executor.py # Obligation operations
+│   ├── query_executor.py    # Query operations
+│   ├── swap_executor.py     # Swap operations
+│   └── treasury_executor.py # Treasury operations
+│
+├── models/                  # Data models
+│   ├── command.py           # Command models
+│   ├── user.py              # User models
+│   └── response.py          # Response models
+│
+├── validation/              # Validators
+│   ├── yaml_validator.py    # YAML validation
+│   ├── service_validator.py # Service health checks
+│   └── command_validator.py # Command validation
+│
+└── utils/                   # Utilities
+    ├── logger.py            # Logging utilities
+    ├── graphql.py           # GraphQL helpers
+    └── shell.py             # Shell command utilities
+```
 
-- Python 3.8 or higher
-- Access to YieldFabric services (Auth Service and Payments Service)
+## 🚀 Quick Start
 
-### Install from Source
+### Installation
 
 ```bash
 cd yieldfabric-docs/python
 pip install -e .
 ```
 
-### Install Dependencies Only
+### Usage
 
 ```bash
-pip install -r requirements.txt
-```
-
-## 🎯 Quick Start
-
-### Command Line Usage
-
-```bash
-# Execute commands from YAML file
+# Execute commands
 yieldfabric execute commands.yaml
 
-# Check service status
+# Check status
 yieldfabric status commands.yaml
 
-# Validate YAML structure
+# Validate YAML
 yieldfabric validate commands.yaml
 
 # Show version
@@ -52,6 +81,9 @@ yieldfabric version
 
 # Enable debug mode
 yieldfabric --debug execute commands.yaml
+
+# Override service URLs
+yieldfabric --pay-service-url https://custom-pay.example.com execute commands.yaml
 ```
 
 ### Programmatic Usage
@@ -70,235 +102,102 @@ config = YieldFabricConfig(
 with YieldFabricRunner(config) as runner:
     success = runner.execute_file("commands.yaml")
     if success:
-        print("✅ All commands executed successfully!")
+        print("All commands executed successfully!")
 ```
 
-## 📝 YAML Configuration
+## 📚 Key Components
 
-### Basic Command Structure
+### 1. Configuration (`config.py`)
 
-```yaml
-commands:
-  - name: "deposit_1"
-    type: "deposit"
-    user:
-      id: "user@example.com"
-      password: "password123"
-      group: "Admin Group"  # Optional: for group delegation
-    parameters:
-      denomination: "USD"
-      amount: "100.00"
-      idempotency_key: "deposit_$(date +%s)"
-```
-
-### Variable Substitution
-
-Chain commands by referencing previous outputs:
-
-```yaml
-commands:
-  - name: "deposit_1"
-    type: "deposit"
-    # ... parameters
-
-  - name: "balance_1"
-    type: "balance"
-    parameters:
-      denomination: "USD"
-      obligor: "$deposit_1.account_address"  # Reference previous output
-      group_id: "$deposit_1.group_id"
-```
-
-### Shell Command Substitution
-
-```yaml
-parameters:
-  idempotency_key: "deposit_$(date +%s)"  # Evaluates shell command
-```
-
-## 🎨 Supported Operations
-
-### Payment Operations
-- `deposit` - Deposit funds to an account
-- `withdraw` - Withdraw funds from an account
-- `instant` - Send instant payments
-- `accept` - Accept incoming payments
-
-### Obligation Operations
-- `create_obligation` - Create financial obligations
-- `accept_obligation` - Accept obligations
-- `transfer_obligation` - Transfer obligations to another party
-- `cancel_obligation` - Cancel existing obligations
-
-### Query Operations
-- `balance` - Query account balances
-- `obligations` - List obligations
-- `list_groups` - List user groups
-
-### Swap Operations
-- `create_swap` - Create unified swaps
-- `create_obligation_swap` - Create obligation-specific swaps
-- `create_payment_swap` - Create payment-specific swaps
-- `complete_swap` - Complete pending swaps
-- `cancel_swap` - Cancel pending swaps
-
-### Treasury Operations
-- `mint` - Mint new tokens (requires policy secret)
-- `burn` - Burn existing tokens (requires policy secret)
-- `total_supply` - Query total token supply
-
-## 🏗️ Architecture
-
-### Clean, Modular Structure
-
-```
-yieldfabric/
-├── config.py                # Configuration management
-├── cli.py                   # CLI interface
-├── core/                    # Core business logic
-│   ├── runner.py            # Main orchestrator
-│   ├── output_store.py      # Variable substitution
-│   └── yaml_parser.py       # YAML parsing
-├── services/                # Service clients
-│   ├── auth_service.py      # Authentication
-│   └── payments_service.py  # Payments API
-├── executors/               # Command executors
-│   ├── payment_executor.py
-│   ├── obligation_executor.py
-│   ├── query_executor.py
-│   ├── swap_executor.py
-│   └── treasury_executor.py
-├── models/                  # Data models
-│   ├── command.py
-│   ├── user.py
-│   └── response.py
-├── validation/              # Validators
-│   ├── yaml_validator.py
-│   └── service_validator.py
-└── utils/                   # Utilities
-    ├── logger.py
-    ├── graphql.py
-    └── shell.py
-```
-
-### Key Design Patterns
-
-- **Service Layer Pattern**: Abstracted HTTP clients
-- **Strategy Pattern**: Specialized executors per operation type
-- **Builder Pattern**: Flexible configuration
-- **Context Manager**: Proper resource cleanup
-- **Dependency Injection**: Testable components
-
-## ⚙️ Configuration
-
-### Environment Variables
-
-```bash
-# Service URLs
-export PAY_SERVICE_URL="https://pay.yieldfabric.io"
-export AUTH_SERVICE_URL="https://auth.yieldfabric.io"
-
-# Execution settings
-export COMMAND_DELAY="3"          # Delay between commands (seconds)
-export DEBUG="true"               # Enable debug logging
-export REQUEST_TIMEOUT="10"       # HTTP request timeout (seconds)
-```
-
-### Configuration File
+Centralized configuration management:
 
 ```python
-from yieldfabric import YieldFabricConfig
-
-config = YieldFabricConfig(
-    pay_service_url="https://pay.yieldfabric.io",
-    auth_service_url="https://auth.yieldfabric.io",
-    command_delay=3,
-    debug=True,
-    request_timeout=10
-)
+@dataclass
+class YieldFabricConfig:
+    pay_service_url: str
+    auth_service_url: str
+    command_delay: int = 3
+    debug: bool = False
+    request_timeout: int = 10
+    # ... more settings
 ```
 
-## 📚 Examples
+### 2. Service Clients (`services/`)
 
-### Example 1: Deposit and Balance Check
+Clean HTTP client abstraction:
 
-```yaml
-commands:
-  - name: "deposit_usd"
-    type: "deposit"
-    user:
-      id: "user@example.com"
-      password: "password123"
-      group: "Trading Group"
-    parameters:
-      denomination: "USD"
-      amount: "1000.00"
-      idempotency_key: "deposit_$(date +%s)"
+```python
+# Base client with common functionality
+class BaseServiceClient:
+    def _post(self, endpoint, data, token): ...
+    def _get(self, endpoint, params, token): ...
+    def check_health(self): ...
 
-  - name: "check_balance"
-    type: "balance"
-    user:
-      id: "user@example.com"
-      password: "password123"
-      group: "Trading Group"
-    parameters:
-      denomination: "USD"
+# Specialized clients
+class AuthService(BaseServiceClient):
+    def login(self, email, password): ...
+    def login_with_group(self, email, password, group): ...
+
+class PaymentsService(BaseServiceClient):
+    def graphql_mutation(self, mutation, variables, token): ...
+    def get_balance(self, denomination, obligor, group_id, token): ...
 ```
 
-### Example 2: Create and Accept Obligation
+### 3. Executors (`executors/`)
 
-```yaml
-commands:
-  - name: "create_obligation"
-    type: "create_obligation"
-    user:
-      id: "lender@example.com"
-      password: "password123"
-    parameters:
-      counterpart: "borrower@example.com"
-      denomination: "USD"
-      notional: "10000.00"
-      expiry: "2025-12-31"
+Specialized command executors:
 
-  - name: "accept_obligation"
-    type: "accept_obligation"
-    user:
-      id: "borrower@example.com"
-      password: "password123"
-    parameters:
-      contract_id: "$create_obligation.contract_id"
+```python
+class PaymentExecutor(BaseExecutor):
+    def execute(self, command): ...
+    def _execute_deposit(self, command): ...
+    def _execute_withdraw(self, command): ...
+    def _execute_instant(self, command): ...
+    def _execute_accept(self, command): ...
 ```
 
-### Example 3: Swap Operations
+### 4. Output Store (`core/output_store.py`)
 
-```yaml
-commands:
-  - name: "create_swap"
-    type: "create_payment_swap"
-    user:
-      id: "trader1@example.com"
-      password: "password123"
-    parameters:
-      counterparty: "trader2@example.com"
-      initiator:
-        expected_payments:
-          amount: "100.00"
-      counterparty:
-        expected_payments:
-          amount: "95.00"
+Advanced variable substitution:
 
-  - name: "complete_swap"
-    type: "complete_swap"
-    user:
-      id: "trader2@example.com"
-      password: "password123"
-    parameters:
-      swap_id: "$create_swap.swap_id"
+```python
+class OutputStore:
+    def store(self, command_name, field_name, value): ...
+    def get(self, command_name, field_name): ...
+    def substitute(self, value): ...  # Handles $var.field, $(shell), JSON
+    def substitute_params(self, params): ...
+```
+
+### 5. Runner (`core/runner.py`)
+
+Main orchestrator:
+
+```python
+class YieldFabricRunner:
+    def execute_file(self, yaml_file): ...
+    def execute_command(self, command): ...
+    def show_status(self, yaml_file): ...
 ```
 
 ## 🔧 Advanced Features
 
+### Custom Executors
+
+Extend the base executor to add custom operations:
+
+```python
+from yieldfabric.executors.base import BaseExecutor
+from yieldfabric.models import Command, CommandResponse
+
+class CustomExecutor(BaseExecutor):
+    def execute(self, command: Command) -> CommandResponse:
+        # Your custom logic here
+        pass
+```
+
 ### Custom Service Clients
+
+Create custom service clients:
 
 ```python
 from yieldfabric.services.base import BaseServiceClient
@@ -309,135 +208,119 @@ class CustomService(BaseServiceClient):
         return response.json()
 ```
 
-### Custom Executors
+### Configuration from File
+
+Load configuration from a file:
 
 ```python
-from yieldfabric.executors.base import BaseExecutor
-from yieldfabric.models import Command, CommandResponse
+import json
+from yieldfabric import YieldFabricConfig
 
-class CustomExecutor(BaseExecutor):
-    def execute(self, command: Command) -> CommandResponse:
-        # Your custom logic
-        pass
+with open('config.json') as f:
+    config_dict = json.load(f)
+
+config = YieldFabricConfig.from_dict(config_dict)
 ```
 
-## 🐛 Debugging
+## 🎨 Design Patterns Used
 
-### Enable Debug Mode
+1. **Service Layer Pattern**: Services encapsulate external API interactions
+2. **Strategy Pattern**: Different executors for different command types
+3. **Builder Pattern**: Configuration and command builders
+4. **Template Method**: Base executor defines execution flow
+5. **Factory Pattern**: Executor selection based on command type
+6. **Singleton Pattern**: Global output store and logger instances
+7. **Context Manager**: Proper resource cleanup
+
+## 🧪 Testing
+
+```bash
+# Run tests
+pytest
+
+# With coverage
+pytest --cov=yieldfabric --cov-report=html
+
+# Run specific test
+pytest tests/test_executors/test_payment_executor.py
+```
+
+## 🔍 Debugging
+
+Enable debug mode to see detailed execution logs:
 
 ```bash
 # Via command line
 yieldfabric --debug execute commands.yaml
 
-# Via environment
+# Via environment variable
 export DEBUG=true
 yieldfabric execute commands.yaml
+
+# Programmatically
+config = YieldFabricConfig(debug=True)
 ```
 
-### Show Stored Variables
+## 📊 Comparison: v1.0 vs v2.0
 
-```bash
-# View all stored variables for debugging
-yieldfabric variables
+| Feature | v1.0 | v2.0 |
+|---------|------|------|
+| Architecture | Monolithic | Layered/Clean |
+| Service Clients | Direct requests | Abstracted clients |
+| Executors | Single file | Specialized classes |
+| Configuration | Environment only | Centralized config |
+| Logging | Basic colored output | Structured logger |
+| Models | Dictionaries | Dataclasses |
+| Validation | Basic | Multi-level |
+| Testing | Limited | Test-ready |
+| Extensibility | Difficult | Easy |
+| Type Safety | Minimal | Comprehensive |
+
+## 🛠️ Migration from v1.0
+
+### API Changes
+
+```python
+# v1.0
+from yieldfabric.main import YieldFabricCommandRunner
+runner = YieldFabricCommandRunner(pay_url, auth_url)
+runner.execute_all_commands("commands.yaml")
+
+# v2.0
+from yieldfabric import YieldFabricConfig, YieldFabricRunner
+config = YieldFabricConfig(pay_service_url=pay_url, auth_service_url=auth_url)
+with YieldFabricRunner(config) as runner:
+    runner.execute_file("commands.yaml")
 ```
 
-### Validate Configuration
+### YAML Compatibility
 
-```bash
-# Check services and YAML structure
-yieldfabric status commands.yaml
-```
-
-## 🧪 Testing
-
-```bash
-# Run all tests
-pytest
-
-# Run with coverage
-pytest --cov=yieldfabric --cov-report=html
-
-# Run specific test file
-pytest tests/test_executors/test_payment_executor.py
-```
-
-## 🚢 Production Deployment
-
-### Docker Support
-
-```dockerfile
-FROM python:3.11-slim
-
-WORKDIR /app
-COPY . .
-RUN pip install -e .
-
-CMD ["yieldfabric", "execute", "commands.yaml"]
-```
-
-### Best Practices
-
-1. **Use environment variables** for service URLs and secrets
-2. **Enable health checks** before executing commands
-3. **Set appropriate timeouts** for network operations
-4. **Use idempotency keys** for all mutations
-5. **Implement retry logic** for production systems
-6. **Monitor and log** all operations
-
-## 📊 Performance
-
-- **Service Reuse**: HTTP sessions are reused across requests
-- **Connection Pooling**: Efficient connection management
-- **Context Managers**: Proper resource cleanup
-- **Lazy Initialization**: Components created only when needed
-
-## 🔒 Security
-
-- **No Password Logging**: Credentials never logged
-- **HTTPS Only**: All API calls use HTTPS
-- **Token Expiry**: JWT tokens with configurable expiry
-- **Timeout Protection**: All requests have timeouts
+YAML files from v1.0 are fully compatible with v2.0. No changes required!
 
 ## 🤝 Contributing
 
 1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Make your changes with tests
-4. Ensure all tests pass (`pytest`)
-5. Format code (`black yieldfabric/`)
-6. Submit a pull request
+2. Create a feature branch
+3. Implement your changes with tests
+4. Ensure all tests pass
+5. Submit a pull request
 
-## 📄 License
+## 📝 License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+MIT License
+
+## 🙏 Acknowledgments
+
+- Original bash scripts by YieldFabric team
+- Python port v1.0 contributors
+- Refactoring and v2.0 architecture
 
 ## 📮 Support
 
-- **Issues**: [GitHub Issues](https://github.com/yieldfabric/yieldfabric-docs/issues)
-- **Documentation**: See `docs/` directory
-- **Examples**: See `examples/` directory
-
-## 📈 Changelog
-
-### Version 2.0.0 (Current)
-
-- ✅ Complete architectural refactoring
-- ✅ All 19 operations fully implemented
-- ✅ Clean, modular architecture
-- ✅ Type-safe data models
-- ✅ Enhanced logging and debugging
-- ✅ Production-ready error handling
-- ✅ Comprehensive documentation
-
-### Version 1.0.0
-
-- Initial Python port from bash scripts
-- Basic GraphQL and REST API support
-- Variable substitution
-- Group delegation
+- GitHub Issues: https://github.com/yieldfabric/yieldfabric-docs/issues
+- Documentation: See `docs/` directory
+- Examples: See `examples/` directory
 
 ---
 
-**Built with ❤️ by the YieldFabric team**
-
-**Status**: ✅ Production Ready | **Version**: 2.0.0 | **Python**: 3.8+
+**YieldFabric Python Port v2.0** - Enterprise-grade architecture for blockchain payment operations

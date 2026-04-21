@@ -11,27 +11,35 @@ from typing import Optional
 class YieldFabricConfig:
     """Configuration for YieldFabric services and execution."""
     
-    # Service URLs
+    # Service URLs — defaults to LOCALHOST so the CLI works out of the
+    # box against a dev backend. Override with env vars (PAY_SERVICE_URL,
+    # AUTH_SERVICE_URL) to target a remote environment.
     pay_service_url: str = field(
-        default_factory=lambda: os.getenv('PAY_SERVICE_URL', 'https://pay.yieldfabric.io')
+        default_factory=lambda: os.getenv('PAY_SERVICE_URL', 'http://localhost:3002')
     )
     auth_service_url: str = field(
-        default_factory=lambda: os.getenv('AUTH_SERVICE_URL', 'https://auth.yieldfabric.io')
+        default_factory=lambda: os.getenv('AUTH_SERVICE_URL', 'http://localhost:3000')
     )
-    
-    # Execution settings
+
+    # Execution settings — default is 0 (no blind sleep between
+    # commands). Callers that need sequencing should set `wait: true`
+    # on the individual command so the framework polls real state
+    # instead of burning wall-clock time. `COMMAND_DELAY` env still
+    # honoured for compatibility with the shell harness's config.
     command_delay: int = field(
-        default_factory=lambda: int(os.getenv('COMMAND_DELAY', '3'))
+        default_factory=lambda: int(os.getenv('COMMAND_DELAY', '0'))
     )
-    
+
     # Debug settings
     debug: bool = field(
         default_factory=lambda: os.getenv('DEBUG', 'false').lower() in ('true', '1', 'yes')
     )
-    
-    # Timeout settings
+
+    # Timeout settings — 30s rather than 10s; the dev backend can return
+    # transient 5xxs under concurrent load and we'd rather wait than fail
+    # spuriously. Production deployments can tighten via REQUEST_TIMEOUT.
     request_timeout: int = field(
-        default_factory=lambda: int(os.getenv('REQUEST_TIMEOUT', '10'))
+        default_factory=lambda: int(os.getenv('REQUEST_TIMEOUT', '30'))
     )
     health_check_timeout: int = field(
         default_factory=lambda: int(os.getenv('HEALTH_CHECK_TIMEOUT', '5'))

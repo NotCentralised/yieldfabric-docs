@@ -9,11 +9,14 @@ from ..config import YieldFabricConfig
 from ..models import Command, CommandResponse
 from ..services import AuthService, PaymentsService
 from ..executors import (
-    PaymentExecutor,
+    ComposedExecutor,
+    GroupAdminExecutor,
     ObligationExecutor,
+    PaymentExecutor,
     QueryExecutor,
     SwapExecutor,
-    TreasuryExecutor
+    TreasuryExecutor,
+    WaitExecutor,
 )
 from ..validation import YAMLValidator, ServiceValidator
 from ..core.output_store import OutputStore
@@ -63,7 +66,19 @@ class YieldFabricRunner:
             self.auth_service, self.payments_service,
             self.output_store, self.config
         )
-        
+        self.group_admin_executor = GroupAdminExecutor(
+            self.auth_service, self.payments_service,
+            self.output_store, self.config
+        )
+        self.composed_executor = ComposedExecutor(
+            self.auth_service, self.payments_service,
+            self.output_store, self.config
+        )
+        self.wait_executor = WaitExecutor(
+            self.auth_service, self.payments_service,
+            self.output_store, self.config
+        )
+
         # Initialize validators
         self.yaml_validator = YAMLValidator(debug=self.config.debug)
         self.service_validator = ServiceValidator(
@@ -125,8 +140,12 @@ class YieldFabricRunner:
             
             self.logger.separator()
             
-            # Wait between commands (except for the last one)
-            if i + 1 < total_count:
+            # Wait between commands only if explicitly configured to
+            # > 0. Default is 0 — callers should use `wait: true` on
+            # commands for event-based sequencing instead of blind
+            # delays. Kept non-zero behaviour for backward compat with
+            # shell harness COMMAND_DELAY.
+            if i + 1 < total_count and self.config.command_delay > 0:
                 self.logger.waiting(self.config.command_delay)
                 time.sleep(self.config.command_delay)
         
@@ -157,24 +176,45 @@ class YieldFabricRunner:
         """
         command_type = command.type.lower()
         
-        # Route to appropriate executor
-        if command_type in ["deposit", "withdraw", "instant", "accept"]:
+        # Route to appropriate executor. Keep this table in sync with the
+        # shell harness `execute_commands.sh` dispatch so YAML files that
+        # work in one work in the other.
+        if command_type in ["deposit", "withdraw", "instant", "accept", "accept_all"]:
             return self.payment_executor.execute(command)
-        
+
         elif command_type in ["create_obligation", "accept_obligation",
                               "transfer_obligation", "cancel_obligation"]:
             return self.obligation_executor.execute(command)
-        
+
         elif command_type in ["balance", "obligations", "list_groups"]:
             return self.query_executor.execute(command)
-        
+
         elif command_type in ["create_swap", "create_obligation_swap",
                               "create_payment_swap", "complete_swap", "cancel_swap"]:
             return self.swap_executor.execute(command)
-        
+
         elif command_type in ["mint", "burn", "total_supply"]:
             return self.treasury_executor.execute(command)
-        
+
+        elif command_type in [
+            "add_owner", "remove_owner",
+            "add_account_member", "remove_account_member",
+            "get_account_owners", "get_account_members",
+        ]:
+            return self.group_admin_executor.execute(command)
+
+        elif command_type == "composed_operation":
+            return self.composed_executor.execute(command)
+
+        elif command_type in [
+            "wait_for_workflow",
+            "wait_for_swap",
+            "wait_for_message",
+            "wait_for_signatures_cleared",
+            "wait_for_accept_all",
+        ]:
+            return self.wait_executor.execute(command)
+
         else:
             self.logger.error(f"❌ Unknown command type: {command_type}")
             return CommandResponse.error_response(

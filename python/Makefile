@@ -1,107 +1,90 @@
-# YieldFabric Python Port Makefile
-# Common operations for development and testing
+# YieldFabric Python Port — Makefile
+# Common operations for development and testing.
 
-.PHONY: help install install-dev test clean format lint type-check example test-install
+.PHONY: help install install-dev test test-e2e test-coverage clean format lint type-check version
 
-# Default target
 help:
-	@echo "YieldFabric Python Port - Available Commands"
-	@echo "============================================="
+	@echo "YieldFabric Python — Available Commands"
+	@echo "========================================"
 	@echo ""
 	@echo "Development:"
 	@echo "  install        Install the package in development mode"
-	@echo "  install-dev    Install with development dependencies"
-	@echo "  install-enhanced Install with enhanced features"
+	@echo "  install-dev    Install with development dependencies (pytest, etc.)"
 	@echo ""
 	@echo "Testing:"
-	@echo "  test           Run all tests"
-	@echo "  test-install   Test installation and basic functionality"
-	@echo "  test-coverage  Run tests with coverage report"
+	@echo "  test           Run all tests (pytest; skips E2E if backend is down)"
+	@echo "  test-e2e       Run ONLY the localhost E2E flow tests"
+	@echo "  test-coverage  Run tests with coverage report (html + term)"
 	@echo ""
 	@echo "Code Quality:"
 	@echo "  format         Format code with black"
 	@echo "  lint           Lint code with flake8"
 	@echo "  type-check     Type check with mypy"
-	@echo "  check-all      Run all code quality checks"
+	@echo "  check-all      Run all code quality checks + tests"
 	@echo ""
-	@echo "Examples:"
-	@echo "  example        Run example usage script"
-	@echo "  example-help   Show help for the Python port"
+	@echo "Running:"
+	@echo "  setup          Run system bootstrap against scripts/setup.yaml"
+	@echo "                 (python -m yieldfabric.cli setup ../scripts/setup.yaml)"
+	@echo "  execute FILE=<path>  Execute a commands YAML file"
 	@echo ""
 	@echo "Utilities:"
-	@echo "  clean          Clean build artifacts"
-	@echo "  requirements   Update requirements.txt"
-	@echo "  help           Show this help message"
+	@echo "  clean          Clean build artifacts + pycache"
+	@echo "  version        Print version of yieldfabric, python, and key deps"
 
-# Installation targets
+# ---- Installation ----------------------------------------------------------
+
 install:
 	pip install -e .
 
 install-dev:
 	pip install -e .[dev]
 
-install-enhanced:
-	pip install -e .[enhanced]
+# ---- Testing ---------------------------------------------------------------
 
-# Testing targets
 test:
-	pytest
+	PYTHONPATH=. pytest
 
-test-install:
-	python test_installation.py
+test-e2e:
+	PYTHONPATH=. pytest tests/test_e2e/ -v
 
 test-coverage:
-	pytest --cov=yieldfabric --cov-report=html --cov-report=term
+	PYTHONPATH=. pytest --cov=yieldfabric --cov-report=html --cov-report=term
 
-# Code quality targets
+# ---- Code quality ----------------------------------------------------------
+
 format:
-	black yieldfabric/ *.py
+	black yieldfabric/ tests/
 
 lint:
-	flake8 yieldfabric/ *.py
+	flake8 yieldfabric/ tests/
 
 type-check:
-	mypy yieldfabric/ *.py
+	mypy yieldfabric/
 
 check-all: format lint type-check test
 
-# Example targets
-example:
-	python example_usage.py
+# ---- Runtime ---------------------------------------------------------------
 
-example-help:
-	python -m yieldfabric.main help
+# `make setup` bootstraps users, groups, tokens, and assets against the local
+# backend using the canonical scripts/setup.yaml. Assumes AUTH_SERVICE_URL and
+# PAY_SERVICE_URL are set (defaults: http://localhost:3000 / :3002).
+setup:
+	PYTHONPATH=. python -m yieldfabric.cli setup ../scripts/setup.yaml
 
-# Utility targets
+# `make execute FILE=../scripts/commands.yaml` runs an arbitrary command YAML.
+execute:
+	@test -n "$(FILE)" || (echo "usage: make execute FILE=<path-to-yaml>" && exit 1)
+	PYTHONPATH=. python -m yieldfabric.cli execute $(FILE)
+
+# ---- Utilities -------------------------------------------------------------
+
 clean:
-	rm -rf build/
-	rm -rf dist/
-	rm -rf *.egg-info/
-	rm -rf .pytest_cache/
-	rm -rf .coverage
-	rm -rf htmlcov/
-	find . -type d -name __pycache__ -exec rm -rf {} +
+	rm -rf build/ dist/ *.egg-info/ .pytest_cache/ .coverage htmlcov/
+	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	find . -type f -name "*.pyc" -delete
 
-requirements:
-	pip freeze > requirements.txt
-
-# Development workflow
-dev-setup: install-dev
-	@echo "Development environment set up successfully!"
-	@echo "Run 'make test-install' to verify installation"
-
-# Quick test without full test suite
-quick-test: test-install
-	@echo "Quick test completed!"
-
-# Full development check
-dev-check: check-all test-install
-	@echo "All development checks passed!"
-
-# Show version info
 version:
-	@python -c "import yieldfabric; print('YieldFabric Python Port')"
-	@python -c "import sys; print(f'Python {sys.version}')"
+	@python -c "import yieldfabric; print(f'yieldfabric {yieldfabric.__version__}')"
+	@python -c "import sys; print(f'Python {sys.version.split()[0]}')"
 	@python -c "import requests; print(f'requests {requests.__version__}')"
-	@python -c "import yaml; print(f'PyYAML available')"
+	@python -c "import yaml; print(f'PyYAML {yaml.__version__}')"

@@ -35,7 +35,7 @@ class GraphQLMutation:
     """
     
     INSTANT = """
-    mutation Instant($input: InstantInput!) {
+    mutation Instant($input: InstantSendInput!) {
         instant(input: $input) {
             success
             message
@@ -229,6 +229,55 @@ class GraphQLMutation:
         }
     }
     """
+
+    ACCEPT_ALL = """
+    mutation AcceptAll($input: AcceptAllInput!) {
+        acceptAll(input: $input) {
+            success
+            message
+            totalPayments
+            acceptedCount
+            failedCount
+            acceptedPayments {
+                paymentId
+                amount
+                messageId
+                transactionId
+            }
+            failedPayments {
+                paymentId
+                amount
+                error
+            }
+            timestamp
+        }
+    }
+    """
+
+    EXECUTE_COMPOSED_OPERATIONS = """
+    mutation ExecuteComposedOperations($input: ComposedOperationInput!) {
+        executeComposedOperations(input: $input) {
+            success
+            message
+            messageId
+            composedId
+            accountAddress
+            operationCount
+            operationResults {
+                operationType
+                success
+                message
+                paymentId
+                contractId
+                amount
+                idHash
+                destinationId
+                obligationId
+                swapId
+            }
+        }
+    }
+    """
     
     @staticmethod
     def get_mutation(mutation_name: str) -> Optional[str]:
@@ -249,6 +298,8 @@ class GraphQLMutation:
             'cancel_swap': GraphQLMutation.CANCEL_SWAP,
             'mint': GraphQLMutation.MINT,
             'burn': GraphQLMutation.BURN,
+            'accept_all': GraphQLMutation.ACCEPT_ALL,
+            'composed_operation': GraphQLMutation.EXECUTE_COMPOSED_OPERATIONS,
         }
         return mutations.get(mutation_name)
     

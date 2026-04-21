@@ -1,20 +1,17 @@
 """
-Setup script for YieldFabric Python Port
-Python port of YieldFabric bash scripts for executing GraphQL commands
+Setup script for YieldFabric Python Port v2.0 (Refactored)
 """
 
 from setuptools import setup, find_packages
 import os
 
-# Read the README file for long description
 def read_readme():
-    readme_path = os.path.join(os.path.dirname(__file__), 'README.md')
+    readme_path = os.path.join(os.path.dirname(__file__), 'README_v2.md')
     if os.path.exists(readme_path):
         with open(readme_path, 'r', encoding='utf-8') as f:
             return f.read()
-    return "YieldFabric Python Port - Execute GraphQL commands from YAML files"
+    return "YieldFabric Python Port v2.0 - Refactored architecture"
 
-# Read requirements from requirements.txt
 def read_requirements():
     requirements_path = os.path.join(os.path.dirname(__file__), 'requirements.txt')
     if os.path.exists(requirements_path):
@@ -26,15 +23,15 @@ def read_requirements():
     ]
 
 setup(
-    name="yieldfabric-python",
-    version="1.0.0",
+    name="yieldfabric",
+    version="2.0.0",
     author="YieldFabric Team",
     author_email="team@yieldfabric.io",
-    description="Python port of YieldFabric bash scripts for executing GraphQL commands",
+    description="YieldFabric Python Port v2.0 - Refactored architecture",
     long_description=read_readme(),
     long_description_content_type="text/markdown",
     url="https://github.com/yieldfabric/yieldfabric-docs",
-    packages=find_packages(),
+    packages=find_packages(include=['yieldfabric', 'yieldfabric.*']),
     classifiers=[
         "Development Status :: 4 - Beta",
         "Intended Audience :: Developers",
@@ -47,8 +44,6 @@ setup(
         "Programming Language :: Python :: 3.11",
         "Programming Language :: Python :: 3.12",
         "Topic :: Software Development :: Libraries :: Python Modules",
-        "Topic :: System :: Networking",
-        "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
     ],
     python_requires=">=3.8",
     install_requires=read_requirements(),
@@ -60,25 +55,18 @@ setup(
             "flake8>=6.0.0",
             "mypy>=1.5.0",
         ],
-        "enhanced": [
-            "ruamel.yaml>=0.17.32",
-            "gql>=3.4.0",
-            "httpx>=0.24.0",
-            "python-dotenv>=1.0.0",
-            "loguru>=0.7.0",
-        ],
     },
     entry_points={
         "console_scripts": [
-            "yieldfabric-python=yieldfabric.main:main",
+            "yieldfabric=yieldfabric.cli:main",
         ],
     },
     include_package_data=True,
     zip_safe=False,
-    keywords="yieldfabric, graphql, yaml, commands, execution, python, port",
+    keywords="yieldfabric, graphql, yaml, commands, payments, obligations",
     project_urls={
         "Bug Reports": "https://github.com/yieldfabric/yieldfabric-docs/issues",
         "Source": "https://github.com/yieldfabric/yieldfabric-docs",
-        "Documentation": "https://github.com/yieldfabric/yieldfabric-docs/blob/main/python/README.md",
     },
 )
+

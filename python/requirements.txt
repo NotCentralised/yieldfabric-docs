@@ -7,6 +7,13 @@ requests>=2.31.0
 # YAML parsing (replaces yq functionality)
 PyYAML>=6.0.1
 
+# Ethereum key generation + signing for external-key registration and
+# manual-signature flows (ported from loan_management). Optional at
+# import time: the crypto helpers raise a clear RuntimeError if this
+# isn't installed, so users who only run setup/execute without manual
+# signing won't pay for it.
+eth-account>=0.11.0
+
 # JSON handling (built-in, but explicit for clarity)
 # json - built-in module
 

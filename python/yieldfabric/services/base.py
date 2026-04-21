@@ -102,6 +102,56 @@ class BaseServiceClient:
             self.logger.api_response(getattr(e.response, 'status_code', 0), False)
             raise
     
+    def _post_json_safe(
+        self,
+        endpoint: str,
+        data: Dict[str, Any],
+        token: Optional[str] = None,
+        *,
+        description: str = "",
+    ) -> Dict[str, Any]:
+        """
+        Safe variant of `_post` used by idempotent / error-tolerant
+        callers (auth-service admin endpoints, setup-phase mutations).
+
+        Returns the JSON body on success. On HTTP / transport error
+        returns a uniform dict:
+
+            {"status": "error", "message": "<reason>"}
+
+        This avoids forcing every caller to wrap `_post` in its own
+        try/except + error dict.
+        """
+        try:
+            response = self._post(endpoint, data, token=token)
+            return response.json()
+        except Exception as e:
+            if description:
+                self.logger.error(f"    ❌ {description}: {e}")
+            return {"status": "error", "message": str(e)}
+
+    def _get_json_safe(
+        self,
+        endpoint: str,
+        params: Optional[Dict[str, Any]] = None,
+        token: Optional[str] = None,
+        *,
+        description: str = "",
+        default: Optional[Any] = None,
+    ) -> Any:
+        """
+        Safe variant of `_get`. Returns parsed JSON on success; on HTTP
+        error returns `default` (defaulting to None) and logs if a
+        `description` is supplied.
+        """
+        try:
+            response = self._get(endpoint, params=params, token=token)
+            return response.json()
+        except Exception as e:
+            if description:
+                self.logger.debug(f"{description} failed: {e}")
+            return default
+
     def check_health(self, timeout: Optional[int] = None) -> bool:
         """
         Check if service is healthy.

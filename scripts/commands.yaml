@@ -1,9 +1,29 @@
+# Canonical command walkthrough aligned with scripts/setup.yaml.
+#
+# Previous versions of this file referenced users that setup_system.sh
+# does not create (counterpart@, admin2@) and a group that does not exist
+# (Admin Group), plus used stale passwords (issuerpass456 → was never the
+# real password). Running it produced HTTP 401s at login.
+#
+# This version uses only entities declared in setup.yaml:
+#   Users:  issuer@yieldfabric.com / issuer_password     (SuperAdmin)
+#           investor@yieldfabric.com / investor_password (SuperAdmin)
+#   Groups: Issuer Group (created by issuer@)
+#
+# Canonical asset ids (backend transforms setup.yaml `AUD` → this):
+#   aud-token-asset
+#
+# Variable substitution (`$cmd.field`) still works — the payment_id from
+# `issuer_send_1` flows into `investor_accept_1`, etc.
+
 commands:
+  # ---- Plain user flow: issuer deposits, sends, investor accepts ----
+
   - name: issuer_deposit
     type: deposit
-    user: 
+    user:
       id: issuer@yieldfabric.com
-      password: issuerpass456
+      password: issuer_password
     parameters:
       asset_id: aud-token-asset
       amount: 75
@@ -11,379 +31,263 @@ commands:
 
   - name: issuer_balance_1
     type: balance
-    user: 
+    user:
       id: issuer@yieldfabric.com
-      password: issuerpass456
+      password: issuer_password
     parameters:
       denomination: aud-token-asset
 
-
-
   - name: issuer_send_1
     type: instant
-    user: 
+    user:
       id: issuer@yieldfabric.com
-      password: issuerpass456
+      password: issuer_password
     parameters:
       asset_id: aud-token-asset
       amount: 5
       idempotency_key: instant-1
-      destination_id: Admin Group
-      
+      destination_id: investor@yieldfabric.com
+
   - name: issuer_balance_2
     type: balance
-    user: 
+    user:
       id: issuer@yieldfabric.com
-      password: issuerpass456
+      password: issuer_password
     parameters:
       denomination: aud-token-asset
 
-
-
   - name: issuer_send_2
     type: instant
-    user: 
+    user:
       id: issuer@yieldfabric.com
-      password: issuerpass456
+      password: issuer_password
     parameters:
       asset_id: aud-token-asset
       amount: 5
       idempotency_key: instant-2
-      destination_id: Admin Group
+      destination_id: investor@yieldfabric.com
 
   - name: issuer_balance_3
     type: balance
-    user: 
+    user:
       id: issuer@yieldfabric.com
-      password: issuerpass456
+      password: issuer_password
     parameters:
       denomination: aud-token-asset
 
-
-      # - name: counterpart_accept
-      #   type: accept
-      #   user: 
-      #     id: counterpart@yieldfabric.com
-      #     password: counterpass789
-      #   parameters:
-      #     idempotency_key: accept-1
-      #     payment_id: $issuer_send_1.payment_id
-
-      # - name: counterpart_balance_1
-      #   type: balance
-      #   user: 
-      #     id: counterpart@yieldfabric.com
-      #     password: counterpass789
-      #   parameters:
-      #     denomination: aud-token-asset
-
-
-
-  - name: counterpart_accept_1
+  - name: investor_accept_1
     type: accept
-    user: 
-      id: counterpart@yieldfabric.com
-      password: counterpass789
-      group: Admin Group
+    user:
+      id: investor@yieldfabric.com
+      password: investor_password
     parameters:
-      idempotency_key: accept-2
+      idempotency_key: accept-1
       payment_id: $issuer_send_1.payment_id
 
-  - name: counterpart_balance_1
+  - name: investor_balance_1
     type: balance
-    user: 
-      id: counterpart@yieldfabric.com
-      password: counterpass789
-      group: Admin Group
+    user:
+      id: investor@yieldfabric.com
+      password: investor_password
     parameters:
       denomination: aud-token-asset
 
-
-
-  - name: admin2_accept_2
+  - name: investor_accept_2
     type: accept
-    user: 
-      id: admin2@yieldfabric.com
-      password: testpass123
-      group: Admin Group
+    user:
+      id: investor@yieldfabric.com
+      password: investor_password
     parameters:
-      idempotency_key: accept-3
+      idempotency_key: accept-2
       payment_id: $issuer_send_2.payment_id
 
-  - name: admin2_balance_2
+  - name: investor_balance_2
     type: balance
-    user: 
-      id: admin2@yieldfabric.com
-      password: testpass123
-      group: Admin Group
+    user:
+      id: investor@yieldfabric.com
+      password: investor_password
     parameters:
       denomination: aud-token-asset
 
+  # ---- Group-delegated flow: issuer (acting in Issuer Group) creates
+  #      obligations; investor accepts. This exercises the delegation JWT
+  #      path — without a group, the obligation would be owned by the
+  #      user's personal account, which is NOT what the original test
+  #      sequence was validating.
 
-
-  
-  - name: admin2_create_obligation_1
+  - name: issuer_group_create_obligation_1
     type: create_obligation
-    user: 
-      id: admin2@yieldfabric.com
-      password: testpass123
-      group: Admin Group
+    user:
+      id: issuer@yieldfabric.com
+      password: issuer_password
+      group: Issuer Group
     parameters:
       idempotency_key: create_obligation-1
-      counterpart: issuer@yieldfabric.com
+      counterpart: investor@yieldfabric.com
       denomination: aud-token-asset
-      notional: 10 
-      expiry: 2025-10-10
-      data: 
-        name: "Test Obligation"
-        description: "Test Obligation Description"
+      notional: 10
+      expiry: 2027-10-10
+      data:
+        name: "Test Obligation 1"
+        description: "First test obligation"
       initial_payments:
         amount: 10
         payments:
-
           - id: payment-1
-            owner: Admin Group #oracle_owner
-            payer: #sender
+            owner: Issuer Group
+            payer:
               key: "1"
               valueSecret: "1"
-            payee: #recipient
+            payee:
               key: "1"
               valueSecret: "2"
 
           - id: payment-2
-            owner: Admin Group #oracle_owner
-            payer: #sender
-              unlock: 2026-01-31 #unlock_sender
-            payee: #recipient
-              unlock: 2027-01-31 #unlock_receiver
-            
+            owner: Issuer Group
+            payer:
+              unlock: 2027-01-31
+            payee:
+              unlock: 2028-01-31
 
-  - name: issuer_accept_obligation_1
+  - name: investor_accept_obligation_1
     type: accept_obligation
-    user: 
-      id: issuer@yieldfabric.com
-      password: issuerpass456
-      # group: Admin Group
+    user:
+      id: investor@yieldfabric.com
+      password: investor_password
     parameters:
       idempotency_key: accept_obligation-1
-      contract_id: $admin2_create_obligation_1.contract_id
+      contract_id: $issuer_group_create_obligation_1.contract_id
 
-
-
-  
-  - name: admin2_create_obligation_2
+  - name: issuer_group_create_obligation_2
     type: create_obligation
-    user: 
-      id: admin2@yieldfabric.com
-      password: testpass123
-      group: Admin Group
+    user:
+      id: issuer@yieldfabric.com
+      password: issuer_password
+      group: Issuer Group
     parameters:
       idempotency_key: create_obligation-2
-      counterpart: issuer@yieldfabric.com
+      counterpart: investor@yieldfabric.com
       denomination: aud-token-asset
-      # obligor: "0x1ACcBD355245AbA93CE46D33ab1D0152CE33Fd00"
-      notional: 10 
-      expiry: 2025-10-10
-      data: 
-        name: "Test Obligation"
-        description: "Test Obligation Description"
+      notional: 10
+      expiry: 2027-10-10
+      data:
+        name: "Test Obligation 2"
+        description: "Second test obligation"
       initial_payments:
         amount: 10
         payments:
-
           - id: payment-1
-            owner: Admin Group #oracle_owner
-            payer: #sender
+            owner: Issuer Group
+            payer:
               key: "1"
               valueSecret: "1"
-            payee: #recipient
+            payee:
               key: "1"
               valueSecret: "2"
 
           - id: payment-2
-            owner: Admin Group #oracle_owner
-            payer: #sender
-              unlock: 2025-10-31 #unlock_sender
-            payee: #recipient
-              unlock: 2026-12-31 #unlock_receiver
-            
+            owner: Issuer Group
+            payer:
+              unlock: 2027-10-31
+            payee:
+              unlock: 2028-12-31
 
-  - name: issuer_accept_obligation_2
+  - name: investor_accept_obligation_2
     type: accept_obligation
-    user: 
-      id: issuer@yieldfabric.com
-      password: issuerpass456
-      # group: Admin Group
+    user:
+      id: investor@yieldfabric.com
+      password: investor_password
     parameters:
       idempotency_key: accept_obligation-2
-      contract_id: $admin2_create_obligation_2.contract_id
+      contract_id: $issuer_group_create_obligation_2.contract_id
 
+  # ---- Obligation with explicit obligor (obligation that represents a
+  #      debt owed BY the specified obligor, rather than by the creating
+  #      entity). Here the obligor is investor — i.e. Issuer Group creates
+  #      a claim on investor's balance. Investor still accepts the
+  #      contract; their acceptance authorizes the future payment.
 
-
-
-
-  - name: admin2_create_obligation_obligor_1
+  - name: issuer_group_create_obligation_obligor_1
     type: create_obligation
-    user: 
-      id: admin2@yieldfabric.com
-      password: testpass123
-      group: Admin Group
+    user:
+      id: issuer@yieldfabric.com
+      password: issuer_password
+      group: Issuer Group
     parameters:
       idempotency_key: create_obligation-obligor-1
-      counterpart: issuer@yieldfabric.com
+      counterpart: investor@yieldfabric.com
       denomination: aud-token-asset
-      obligor:  issuer@yieldfabric.com
-      notional: 5 
-      expiry: 2025-10-10
-      data: 
-        name: "Test Obligation"
-        description: "Test Obligation Description"
+      obligor: investor@yieldfabric.com
+      notional: 5
+      expiry: 2027-10-10
+      data:
+        name: "Test Obligation (obligor)"
+        description: "Obligation with explicit obligor"
       initial_payments:
         amount: 5
         payments:
-
           - id: payment-1
-            owner: Admin Group #oracle_owner
-            payer: #sender
+            owner: Issuer Group
+            payer:
               key: "1"
               valueSecret: "1"
-            payee: #recipient
+            payee:
               key: "1"
               valueSecret: "2"
 
           - id: payment-2
-            owner: Admin Group #oracle_owner
-            payer: #sender
-              unlock: 2025-11-31 #unlock_sender
-            payee: #recipient
-              unlock: 2026-12-31 #unlock_receiver
-            
-  # - name: issuer_cancel_obligation_obligor_1
-  #   type: cancel_obligation
-  #   user: 
-  #     id: issuer@yieldfabric.com
-  #     password: issuerpass456
-  #     # group: Admin Group
-  #   parameters:
-  #     idempotency_key: cancel_obligation-obligor-1
-  #     contract_id: $admin2_create_obligation_obligor_1.contract_id
+            owner: Issuer Group
+            payer:
+              unlock: 2027-11-30
+            payee:
+              unlock: 2028-12-31
 
-  - name: issuer_accept_obligation_obligor_1
+  - name: investor_accept_obligation_obligor_1
     type: accept_obligation
-    user: 
-      id: issuer@yieldfabric.com
-      password: issuerpass456
-      # group: Admin Group
+    user:
+      id: investor@yieldfabric.com
+      password: investor_password
     parameters:
       idempotency_key: accept_obligation-obligor-1
-      contract_id: $admin2_create_obligation_obligor_1.contract_id
+      contract_id: $issuer_group_create_obligation_obligor_1.contract_id
 
+  # ---- Post-state queries from the group's perspective ----
 
-  # - name: admin2_transfer_obligation_obligor_1
-  #   type: transfer_obligation
-  #   user: 
-  #     id: admin2@yieldfabric.com
-  #     password: testpass123
-  #     group: Admin Group
-  #   parameters:
-  #     idempotency_key: transfer_obligation-obligor-1
-  #     contract_id: $admin2_create_obligation_obligor_1.contract_id
-  #     destination_id: counterpart@yieldfabric.com
-
-
-
-  
-  - name: admin2_create_obligation_obligor_2
-    type: create_obligation
-    user: 
-      id: admin2@yieldfabric.com
-      password: testpass123
-      group: Admin Group
-    parameters:
-      idempotency_key: create_obligation-obligor-2
-      counterpart: issuer@yieldfabric.com
-      denomination: aud-token-asset
-      obligor:  issuer@yieldfabric.com
-      notional: 5 
-      expiry: 2025-10-10
-      data: 
-        name: "Test Obligation"
-        description: "Test Obligation Description"
-      initial_payments:
-        amount: 5
-        payments:
-
-          - id: payment-1
-            owner: Admin Group #oracle_owner
-            payer: #sender
-              key: "1"
-              valueSecret: "1"
-            payee: #recipient
-              key: "1"
-              valueSecret: "2"
-
-          - id: payment-2
-            owner: Admin Group #oracle_owner
-            payer: #sender
-              unlock: 2025-12-31 #unlock_sender
-            payee: #recipient
-              unlock: 2026-12-31 #unlock_receiver
-            
-
-  - name: issuer_accept_obligation_obligor_2
-    type: accept_obligation
-    user: 
+  - name: issuer_group_balance
+    type: balance
+    user:
       id: issuer@yieldfabric.com
-      password: issuerpass456
-      # group: Admin Group
-    parameters:
-      idempotency_key: accept_obligation-obligor-2
-      contract_id: $admin2_create_obligation_obligor_2.contract_id
-
-
-
-
-
-
-  
-  - name: admin2_balance_3
-    type: balance
-    user: 
-      id: admin2@yieldfabric.com
-      password: testpass123
-      group: Admin Group
+      password: issuer_password
+      group: Issuer Group
     parameters:
       denomination: aud-token-asset
 
-
-  - name: admin2_balance_4
+  - name: issuer_group_balance_by_obligor
     type: balance
-    user: 
-      id: admin2@yieldfabric.com
-      password: testpass123
-      group: Admin Group
+    user:
+      id: issuer@yieldfabric.com
+      password: issuer_password
+      group: Issuer Group
     parameters:
       denomination: aud-token-asset
-      obligor: issuer@yieldfabric.com
+      obligor: investor@yieldfabric.com
 
-  
-  
-  - name: admin2_obligations
+  - name: issuer_group_obligations
     type: obligations
-    user: 
-      id: admin2@yieldfabric.com
-      password: testpass123
-      group: Admin Group
+    user:
+      id: issuer@yieldfabric.com
+      password: issuer_password
+      group: Issuer Group
     parameters:
       denomination: aud-token-asset
 
-
+  # ---- Finally, issuer withdraws remaining balance ----
 
   - name: issuer_withdraw
     type: withdraw
-    user: 
+    user:
       id: issuer@yieldfabric.com
-      password: issuerpass456
+      password: issuer_password
     parameters:
       asset_id: aud-token-asset
       amount: 5
