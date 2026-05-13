@@ -1,10 +1,18 @@
 #!/bin/bash
 
-# Test script for the generic Composed Contract workflow API endpoint
-# This workflow supports parametric actions through workflow_config.actions array
-# Actions are executed in the order specified, making it completely flexible
+# Composed-contract issuance via the agents-side deal flow.
+#
+# The legacy REST endpoint `/api/composed_contract/workflow` (and its
+# sister routes) was removed in commit c3119db. This script runs the
+# replacement path: build a `DealPlan` containing a
+# `create_composed_contract` action (and optional `create_swap` follow-on),
+# then drive it through `proposeDeal` → counterparty `signDeal` →
+# proposer `activateDeal`, and poll `dealById` until terminal.
+#
+# Auth on port 3000, agents GraphQL on port 3001 (env-overridable).
 
-# Load environment variables from .env files (if present)
+set -e
+
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "${SCRIPT_DIR}/../.." && pwd)
 
@@ -17,862 +25,454 @@ for env_file in "${REPO_ROOT}/.env" "${REPO_ROOT}/.env.local" "${SCRIPT_DIR}/.en
     fi
 done
 
-# Configuration
-# To test locally, set: export PAY_SERVICE_URL=http://localhost:3002
-# To test locally, set: export AUTH_SERVICE_URL=http://localhost:3000
-PAY_SERVICE_URL="${PAY_SERVICE_URL:-https://pay.yieldfabric.com}"
-AUTH_SERVICE_URL="${AUTH_SERVICE_URL:-https://auth.yieldfabric.com}"
+AUTH_SERVICE_URL="${AUTH_SERVICE_URL:-http://localhost:3000}"
+AGENTS_SERVICE_URL="${AGENTS_SERVICE_URL:-${AGENTS_API_URL:-http://localhost:3001}}"
 
-# Colors for output (matching executor scripts)
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 PURPLE='\033[0;35m'
 CYAN='\033[0;36m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-echo_with_color() {
-    local color=$1
-    local message=$2
-    echo -e "${color}${message}${NC}"
-}
+echo_with_color() { echo -e "${1}${2}${NC}"; }
 
-check_service_running() {
-    local service_name=$1
-    local service_url=$2
-
-    echo_with_color $BLUE "  🔍 Checking if ${service_name} is running..."
-
-    if [[ "$service_url" =~ ^https?:// ]]; then
-        if curl -s -f -o /dev/null --max-time 5 "${service_url}/health" 2>/dev/null || \
-           curl -s -f -o /dev/null --max-time 5 "$service_url" 2>/dev/null; then
-            echo_with_color $GREEN "    ✅ ${service_name} is reachable"
-            return 0
-        else
-            echo_with_color $RED "    ❌ ${service_name} is not reachable at ${service_url}"
-            return 1
-        fi
-    else
-        local port=$service_url
-        if nc -z localhost $port 2>/dev/null; then
-            echo_with_color $GREEN "    ✅ ${service_name} is running on port ${port}"
-            return 0
-        else
-            echo_with_color $RED "    ❌ ${service_name} is not running on port ${port}"
-            return 1
-        fi
+check_service() {
+    local name=$1; local url=$2
+    echo_with_color "$BLUE" "  🔍 Checking ${name} (${url})..."
+    if curl -s -f -o /dev/null --max-time 5 "${url}/health" 2>/dev/null \
+       || curl -s -f -o /dev/null --max-time 5 "${url}" 2>/dev/null; then
+        echo_with_color "$GREEN" "    ✅ ${name} reachable"
+        return 0
     fi
-}
-
-login_user() {
-    local email="$1"
-    local password="$2"
-    local services_json='["vault", "payments"]'
-
-    echo_with_color $BLUE "  🔐 Logging in user: $email" >&2
-
-    local http_response
-    http_response=$(curl -s -X POST "${AUTH_SERVICE_URL}/auth/login/with-services" \
-        -H "Content-Type: application/json" \
-        -d "{\"email\": \"$email\", \"password\": \"$password\", \"services\": $services_json}")
-
-    echo_with_color $BLUE "    📡 Login response received" >&2
-
-    if [[ -n "$http_response" ]]; then
-        local token
-        token=$(echo "$http_response" | jq -r '.token // .access_token // .jwt // empty')
-        if [[ -n "$token" && "$token" != "null" ]]; then
-            echo_with_color $GREEN "    ✅ Login successful" >&2
-            echo "$token"
-            return 0
-        else
-            echo_with_color $RED "    ❌ No token in response" >&2
-            echo_with_color $YELLOW "    Response: $http_response" >&2
-            return 1
-        fi
-    else
-        echo_with_color $RED "    ❌ Login failed: no response" >&2
-        return 1
-    fi
-}
-
-composed_contract_workflow() {
-    local jwt_token=$1
-    local name=$2
-    local description=$3
-    local obligations_json=$4
-    local counterparty=$5
-    local payment_amount=$6
-    local payment_denomination=$7
-    local deadline=$8
-    local actions_json=$9
-    local transfer_destination_id=${10}
-    local transfer_destination_wallet_id=${11}
-
-    echo_with_color $CYAN "🏦 Starting generic composed contract workflow..." >&2
-
-    # Build request body with optional fields
-    local request_body
-    if [[ -n "$actions_json" && "$actions_json" != "null" && "$actions_json" != "[]" ]]; then
-        # Check if create_swap is in actions
-        local has_swap=false
-        if echo "$actions_json" | jq -e 'index("create_swap") != null' >/dev/null 2>&1; then
-            has_swap=true
-        fi
-        
-        # Check if create_transfer is in actions
-        local has_transfer=false
-        if echo "$actions_json" | jq -e 'index("create_transfer") != null' >/dev/null 2>&1; then
-            has_transfer=true
-        fi
-        
-        # Request with workflow_config.actions
-        if [[ "$has_swap" == "true" && -n "$counterparty" && "$counterparty" != "null" && -n "$payment_amount" && -n "$payment_denomination" ]]; then
-            # Has swap fields
-            if [[ -n "$deadline" && "$deadline" != "null" ]]; then
-                if [[ "$has_transfer" == "true" && -n "$transfer_destination_id" && "$transfer_destination_id" != "null" ]]; then
-                    # Has both swap and transfer
-                    request_body=$(jq -n \
-                        --arg name "$name" \
-                        --arg description "$description" \
-                        --argjson obligations "$obligations_json" \
-                        --arg counterparty "$counterparty" \
-                        --arg payment_amount "$payment_amount" \
-                        --arg payment_denomination "$payment_denomination" \
-                        --arg deadline "$deadline" \
-                        --arg transfer_destination_id "$transfer_destination_id" \
-                        --argjson actions "$actions_json" \
-                        '{
-                            name: $name,
-                            description: $description,
-                            obligations: $obligations,
-                            counterparty: $counterparty,
-                            payment_amount: $payment_amount,
-                            payment_denomination: $payment_denomination,
-                            deadline: $deadline,
-                            transfer_destination_id: $transfer_destination_id,
-                            workflow_config: {
-                                actions: $actions
-                            }
-                        }')
-                else
-                    # Has swap only
-                    request_body=$(jq -n \
-                        --arg name "$name" \
-                        --arg description "$description" \
-                        --argjson obligations "$obligations_json" \
-                        --arg counterparty "$counterparty" \
-                        --arg payment_amount "$payment_amount" \
-                        --arg payment_denomination "$payment_denomination" \
-                        --arg deadline "$deadline" \
-                        --argjson actions "$actions_json" \
-                        '{
-                            name: $name,
-                            description: $description,
-                            obligations: $obligations,
-                            counterparty: $counterparty,
-                            payment_amount: $payment_amount,
-                            payment_denomination: $payment_denomination,
-                            deadline: $deadline,
-                            workflow_config: {
-                                actions: $actions
-                            }
-                        }')
-                fi
-            else
-                if [[ "$has_transfer" == "true" && -n "$transfer_destination_id" && "$transfer_destination_id" != "null" ]]; then
-                    # Has both swap and transfer (no deadline)
-                    request_body=$(jq -n \
-                        --arg name "$name" \
-                        --arg description "$description" \
-                        --argjson obligations "$obligations_json" \
-                        --arg counterparty "$counterparty" \
-                        --arg payment_amount "$payment_amount" \
-                        --arg payment_denomination "$payment_denomination" \
-                        --arg transfer_destination_id "$transfer_destination_id" \
-                        --argjson actions "$actions_json" \
-                        '{
-                            name: $name,
-                            description: $description,
-                            obligations: $obligations,
-                            counterparty: $counterparty,
-                            payment_amount: $payment_amount,
-                            payment_denomination: $payment_denomination,
-                            transfer_destination_id: $transfer_destination_id,
-                            workflow_config: {
-                                actions: $actions
-                            }
-                        }')
-                else
-                    # Has swap only (no deadline)
-                    request_body=$(jq -n \
-                        --arg name "$name" \
-                        --arg description "$description" \
-                        --argjson obligations "$obligations_json" \
-                        --arg counterparty "$counterparty" \
-                        --arg payment_amount "$payment_amount" \
-                        --arg payment_denomination "$payment_denomination" \
-                        --argjson actions "$actions_json" \
-                        '{
-                            name: $name,
-                            description: $description,
-                            obligations: $obligations,
-                            counterparty: $counterparty,
-                            payment_amount: $payment_amount,
-                            payment_denomination: $payment_denomination,
-                            workflow_config: {
-                                actions: $actions
-                            }
-                        }')
-                fi
-            fi
-        elif [[ "$has_transfer" == "true" && -n "$transfer_destination_id" && "$transfer_destination_id" != "null" ]]; then
-            # Has transfer only (no swap)
-            request_body=$(jq -n \
-                --arg name "$name" \
-                --arg description "$description" \
-                --argjson obligations "$obligations_json" \
-                --arg transfer_destination_id "$transfer_destination_id" \
-                --argjson actions "$actions_json" \
-                '{
-                    name: $name,
-                    description: $description,
-                    obligations: $obligations,
-                    transfer_destination_id: $transfer_destination_id,
-                    workflow_config: {
-                        actions: $actions
-                    }
-                }')
-        else
-            # No swap or transfer fields
-            request_body=$(jq -n \
-                --arg name "$name" \
-                --arg description "$description" \
-                --argjson obligations "$obligations_json" \
-                --argjson actions "$actions_json" \
-                '{
-                    name: $name,
-                    description: $description,
-                    obligations: $obligations,
-                    workflow_config: {
-                        actions: $actions
-                    }
-                }')
-        fi
-    else
-        # Default actions (backward compatible - no workflow_config)
-        if [[ -n "$counterparty" && "$counterparty" != "null" && -n "$payment_amount" && -n "$payment_denomination" ]]; then
-            if [[ -n "$deadline" && "$deadline" != "null" ]]; then
-                request_body=$(jq -n \
-                    --arg name "$name" \
-                    --arg description "$description" \
-                    --argjson obligations "$obligations_json" \
-                    --arg counterparty "$counterparty" \
-                    --arg payment_amount "$payment_amount" \
-                    --arg payment_denomination "$payment_denomination" \
-                    --arg deadline "$deadline" \
-                    '{
-                        name: $name,
-                        description: $description,
-                        obligations: $obligations,
-                        counterparty: $counterparty,
-                        payment_amount: $payment_amount,
-                        payment_denomination: $payment_denomination,
-                        deadline: $deadline
-                    }')
-            else
-                request_body=$(jq -n \
-                    --arg name "$name" \
-                    --arg description "$description" \
-                    --argjson obligations "$obligations_json" \
-                    --arg counterparty "$counterparty" \
-                    --arg payment_amount "$payment_amount" \
-                    --arg payment_denomination "$payment_denomination" \
-                    '{
-                        name: $name,
-                        description: $description,
-                        obligations: $obligations,
-                        counterparty: $counterparty,
-                        payment_amount: $payment_amount,
-                        payment_denomination: $payment_denomination
-                    }')
-            fi
-        else
-            # No swap fields, no workflow_config (default actions)
-            request_body=$(jq -n \
-                --arg name "$name" \
-                --arg description "$description" \
-                --argjson obligations "$obligations_json" \
-                '{
-                    name: $name,
-                    description: $description,
-                    obligations: $obligations
-                }')
-        fi
-    fi
-
-    echo_with_color $BLUE "  📋 Request body:" >&2
-    echo "$request_body" | jq '.' | sed 's/^/    /' >&2
-
-    echo_with_color $BLUE "  🌐 Making REST API request to: ${PAY_SERVICE_URL}/api/composed_contract/workflow" >&2
-
-    local temp_file
-    temp_file=$(mktemp)
-    local http_code
-    http_code=$(curl -s -w "%{http_code}" -o "$temp_file" -X POST "${PAY_SERVICE_URL}/api/composed_contract/workflow" \
-        -H "Content-Type: application/json" \
-        -H "Authorization: Bearer ${jwt_token}" \
-        -d "$request_body")
-
-    local http_response
-    http_response=$(cat "$temp_file")
-    rm -f "$temp_file"
-
-    echo_with_color $BLUE "  📡 Response received (HTTP $http_code)" >&2
-
-    if [[ -z "$http_response" ]]; then
-        echo_with_color $YELLOW "  ⚠️  Warning: Empty response body" >&2
-    fi
-
-    # Log the full response for debugging (especially for 422 errors)
-    if [[ "$http_code" == "422" ]]; then
-        echo_with_color $YELLOW "  ⚠️  Validation error - full response:" >&2
-        echo "$http_response" | jq '.' 2>/dev/null | sed 's/^/    /' >&2 || echo "$http_response" | sed 's/^/    /' >&2
-    fi
-
-    echo "$http_response"
-}
-
-poll_workflow_status() {
-    local workflow_id=$1
-    local max_attempts=${2:-120}
-    local delay_seconds=${3:-1}
-
-    echo_with_color $CYAN "🔄 Polling workflow status for ID: ${workflow_id}" >&2
-
-    local attempt
-    for ((attempt=1; attempt<=max_attempts; attempt++)); do
-        # Use unified workflow status endpoint - works for all workflow types
-        local url="${PAY_SERVICE_URL}/api/workflows/${workflow_id}"
-        echo_with_color $BLUE "  📡 Attempt ${attempt}/${max_attempts}: GET ${url}" >&2
-
-        local response
-        response=$(curl -s "$url")
-
-        if [[ -z "$response" ]]; then
-            echo_with_color $YELLOW "  ⚠️  Empty response from status endpoint" >&2
-        else
-            local workflow_status
-            workflow_status=$(echo "$response" | jq -r '.workflow_status // empty' 2>/dev/null)
-            
-            local current_step
-            current_step=$(echo "$response" | jq -r '.current_step // empty' 2>/dev/null)
-            
-            local workflow_type
-            workflow_type=$(echo "$response" | jq -r '.workflow_type // empty' 2>/dev/null)
-
-            echo_with_color $BLUE "  🔎 Current workflow_status: ${workflow_status:-unknown}" >&2
-            if [[ -n "$workflow_type" && "$workflow_type" != "null" ]]; then
-                echo_with_color $CYAN "  📋 Workflow type: ${workflow_type}" >&2
-            fi
-            if [[ -n "$current_step" && "$current_step" != "unknown" ]]; then
-                echo_with_color $CYAN "  📍 Current step: ${current_step}" >&2
-            fi
-
-            if [[ "$workflow_status" == "completed" || "$workflow_status" == "failed" || "$workflow_status" == "cancelled" ]]; then
-                echo "$response"
-                return 0
-            fi
-        fi
-
-        if [[ $attempt -lt $max_attempts ]]; then
-            sleep "$delay_seconds"
-        fi
-    done
-
-    echo_with_color $RED "  ❌ Workflow did not complete within ${max_attempts} attempts" >&2
+    echo_with_color "$RED" "    ❌ ${name} not reachable"
     return 1
 }
 
-main() {
-    echo_with_color $CYAN "🚀 Starting Generic Composed Contract WorkFlow API Test"
-    echo ""
-
-    # Parse command-line arguments for username and password
-    # Usage: ./composed_contract_workflow.sh [username] [password] [action_mode]
-    # action_mode: "default" | "issue_only" | "issue_accept" | "issue_swap" | "all"
-    # If not provided, falls back to environment variables, then defaults
-    if [[ $# -ge 1 ]]; then
-        USER_EMAIL="$1"
-    elif [[ -n "${USER_EMAIL}" ]]; then
-        # Use environment variable if set
-        USER_EMAIL="${USER_EMAIL}"
-    else
-        # Default username
-        USER_EMAIL="issuer@yieldfabric.com"
+login_user() {
+    local email="$1"; local password="$2"
+    echo_with_color "$BLUE" "  🔐 Logging in: $email" >&2
+    local resp
+    resp=$(curl -s -X POST "${AUTH_SERVICE_URL}/auth/login/with-services" \
+        -H "Content-Type: application/json" \
+        -d "{\"email\": \"$email\", \"password\": \"$password\", \"services\": [\"vault\", \"payments\"]}")
+    local token
+    token=$(echo "$resp" | jq -r '.token // .access_token // .jwt // empty')
+    if [[ -z "$token" || "$token" == "null" ]]; then
+        echo_with_color "$RED" "    ❌ Login failed for $email — response: $resp" >&2
+        return 1
     fi
-
-    if [[ $# -ge 2 ]]; then
-        PASSWORD="$2"
-    elif [[ -n "${PASSWORD}" ]]; then
-        # Use environment variable if set
-        PASSWORD="${PASSWORD}"
-    else
-        # Default password
-        PASSWORD="issuer_password"
+    # The deal flow's caller-identity check compares JWT sub (user.id
+    # UUID) to the deal's counterparty_entity_id. Emails don't match,
+    # so we surface the canonical entity-id alongside the JWT.
+    local entity_id
+    entity_id=$(echo "$resp" | jq -r '.user.id // .user.entity_id // empty')
+    if [[ -z "$entity_id" || "$entity_id" == "null" ]]; then
+        echo_with_color "$RED" "    ❌ Login response missing user.id — response: $resp" >&2
+        return 1
     fi
+    jq -n --arg token "$token" --arg entity_id "$entity_id" '{token: $token, entity_id: $entity_id}'
+}
 
-    # Action mode: determines which actions to include
-    ACTION_MODE="${ACTION_MODE:-all}"
-    if [[ $# -ge 3 ]]; then
-        ACTION_MODE="$3"
-    fi
-    
-    # Transfer destination (optional - only needed if create_transfer is in actions)
-    TRANSFER_DESTINATION_ID="${TRANSFER_DESTINATION_ID:-investor@yieldfabric.com}"
+# Send a GraphQL operation against the agents service.
+# Args: JWT, query, variables-json. Echoes the raw response body.
+graphql_call() {
+    local jwt=$1; local query=$2; local variables=$3
+    curl -s -X POST "${AGENTS_SERVICE_URL}/graphql" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer ${jwt}" \
+        -d "$(jq -n --arg q "$query" --argjson v "$variables" '{query: $q, variables: $v}')"
+}
 
-    # Test parameters
-    DENOMINATION="${DENOMINATION:-aud-token-asset}"
-    COUNTERPART="${COUNTERPART:-investor@yieldfabric.com}"
-    END_DATE="${END_DATE:-2027-01-31}"
+# Construct the DealPlan envelope. One node ("compose") for the
+# composed-contract issuance; optional second node ("swap") wires
+# the obligations into a CreateSwap.
+build_plan() {
+    local contract_name=$1
+    local contract_description=$2
+    local counterparty=$3
+    local obligations_json=$4  # array of {denomination, notional, obligor, expiry, ...}
+    local payment_amount=$5    # empty → no swap
+    local payment_denomination=$6
+    local deadline=$7
 
-    # Obligation amounts
-    COUPON_AMOUNT="${COUPON_AMOUNT:-10000000000000000000000}"
-    OBLIGATION_1_NAME="${OBLIGATION_1_NAME:-Coupons}"
-    OBLIGATION_1_DESCRIPTION="${OBLIGATION_1_DESCRIPTION:-Coupon Strip}"
-    
-    OBLIGATION_2_NOTIONAL="${OBLIGATION_2_NOTIONAL:-100000000000000000000000}"
-    OBLIGATION_2_NAME="${OBLIGATION_2_NAME:-Redemption}"
-    OBLIGATION_2_DESCRIPTION="${OBLIGATION_2_DESCRIPTION:-Redemption Obligation}"
-
-    # Payment expected from counterparty (optional - only needed if create_swap is in actions)
-    PAYMENT_AMOUNT="${PAYMENT_AMOUNT:-12500000000000000000000}"
-    PAYMENT_DENOMINATION="${PAYMENT_DENOMINATION:-$DENOMINATION}"
-    DEADLINE="${DEADLINE:-${END_DATE}T23:59:59Z}"
-
-    # Composed contract details
-    COMPOSED_CONTRACT_NAME="${COMPOSED_CONTRACT_NAME:-Structured Loan}"
-    COMPOSED_CONTRACT_DESCRIPTION="${COMPOSED_CONTRACT_DESCRIPTION:-A generic composed contract with parametric actions}"
-
-    # Determine actions based on mode
-    local actions_json
-    local use_swap_fields=false
-    local use_transfer_fields=false
-    
-    case "$ACTION_MODE" in
-        "issue_only")
-            actions_json='["create_obligation"]'
-            use_swap_fields=false
-            use_transfer_fields=false
-            echo_with_color $PURPLE "📋 Action Mode: Issue Only (create_obligation)"
-            ;;
-        "issue_accept")
-            actions_json='["create_obligation", "accept_obligation", "wait_for_acceptance"]'
-            use_swap_fields=false
-            use_transfer_fields=false
-            echo_with_color $PURPLE "📋 Action Mode: Issue + Accept (create_obligation, accept_obligation, wait_for_acceptance)"
-            ;;
-        "issue_accept_transfer")
-            actions_json='["create_obligation", "accept_obligation", "wait_for_acceptance", "create_transfer"]'
-            use_swap_fields=false
-            use_transfer_fields=true
-            echo_with_color $PURPLE "📋 Action Mode: Issue + Accept + Transfer (create_obligation, accept_obligation, wait_for_acceptance, create_transfer)"
-            ;;
-        "issue_swap")
-            actions_json='["create_obligation", "create_swap"]'
-            use_swap_fields=true
-            use_transfer_fields=false
-            echo_with_color $PURPLE "📋 Action Mode: Issue + Swap (create_obligation, create_swap)"
-            ;;
-        "all"|*)
-            actions_json='["create_obligation", "accept_obligation", "wait_for_acceptance", "create_swap"]'
-            use_swap_fields=true
-            use_transfer_fields=false
-            echo_with_color $PURPLE "📋 Action Mode: All Actions (create_obligation, accept_obligation, wait_for_acceptance, create_swap)"
-            ;;
-    esac
-    echo ""
-
-    # Coupon dates for obligation 1
-    COUPON_DATES=(
-        "2027-12-01T00:00:00Z"
-        "2027-12-05T00:00:00Z"
-        "2027-12-10T00:00:00Z"
-        "2027-12-15T00:00:00Z"
-        "2027-12-20T00:00:00Z"
-    )
-
-    # Build coupon payments array JSON using jq
-    local coupon_payments_json
-    coupon_payments_json=$(printf '%s\n' "${COUPON_DATES[@]}" | jq -R '{oracleAddress: null, oracleOwner: null, oracleKeySender: null, oracleValueSenderSecret: null, oracleKeyRecipient: null, oracleValueRecipientSecret: null, unlockSender: ., unlockReceiver: ., linearVesting: null}' | jq -s '.')
-
-    # Build Obligation 1 JSON (Annuity stream with multiple payments)
-    # NOTE: counterpart = obligor = issuer so that issuer can auto-accept
-    local obligation_1_notional
-    obligation_1_notional=$(jq -n --arg coupon "$COUPON_AMOUNT" --arg count "${#COUPON_DATES[@]}" '($coupon | tonumber) * ($count | tonumber) | tostring')
-    
-    OBLIGATION_1_NOTIONAL="${OBLIGATION_1_NOTIONAL:-$obligation_1_notional}"
-    
-    local obligation_1_json
-    obligation_1_json=$(jq -n \
-        --arg counterpart "$USER_EMAIL" \
-        --arg denomination "$DENOMINATION" \
-        --arg obligor "$USER_EMAIL" \
-        --arg notional "$OBLIGATION_1_NOTIONAL" \
-        --arg end_date "${END_DATE}T23:59:59Z" \
-        --arg name "$OBLIGATION_1_NAME" \
-        --arg description "$OBLIGATION_1_DESCRIPTION" \
-        --arg coupon_amount "$COUPON_AMOUNT" \
-        --argjson payments "$coupon_payments_json" \
+    local compose_inputs
+    compose_inputs=$(jq -n \
+        --arg name "$contract_name" \
+        --arg desc "$contract_description" \
+        --arg cp "$counterparty" \
+        --argjson obs "$obligations_json" \
         '{
-            counterpart: $counterpart,
-            denomination: $denomination,
-            obligor: $obligor,
-            notional: $notional,
-            expiry: $end_date,
-            data: {
-                name: $name,
-                description: $description
-            },
-            initialPayments: {
-                amount: $coupon_amount,
-                denomination: $denomination,
-                payments: $payments
-            }
+            name: $name,
+            description: $desc,
+            counterpart: $cp,
+            obligations: $obs
         }')
 
-    # Build Obligation 2 JSON (Redemption with single payment)
-    local obligation_2_json
-    obligation_2_json=$(jq -n \
-        --arg counterpart "$USER_EMAIL" \
-        --arg denomination "$DENOMINATION" \
-        --arg obligor "$USER_EMAIL" \
-        --arg notional "$OBLIGATION_2_NOTIONAL" \
-        --arg end_date "${END_DATE}T23:59:59Z" \
-        --arg name "$OBLIGATION_2_NAME" \
-        --arg description "$OBLIGATION_2_DESCRIPTION" \
-        '{
-            counterpart: $counterpart,
-            denomination: $denomination,
-            obligor: $obligor,
-            notional: $notional,
-            expiry: $end_date,
-            data: {
-                name: $name,
-                description: $description
-            },
-            initialPayments: {
-                amount: $notional,
-                denomination: $denomination,
-                payments: [{
-                    oracleAddress: null,
-                    oracleOwner: null,
-                    oracleKeySender: null,
-                    oracleValueSenderSecret: null,
-                    oracleKeyRecipient: null,
-                    oracleValueRecipientSecret: null,
-                    unlockSender: $end_date,
-                    unlockReceiver: $end_date,
-                    linearVesting: null
-                }]
-            }
-        }')
+    local compose_node
+    compose_node=$(jq -n --argjson inp "$compose_inputs" '{
+        step_id: "compose",
+        task_name: "create_composed_contract",
+        inputs: $inp
+    }')
 
-    echo_with_color $BLUE "📋 Configuration:"
-    echo_with_color $BLUE "  API Base URL: ${PAY_SERVICE_URL}"
-    echo_with_color $BLUE "  Auth Service: ${AUTH_SERVICE_URL}"
-    echo_with_color $BLUE "  User (Initiator): ${USER_EMAIL}"
-    if [[ "$use_swap_fields" == "true" ]]; then
-        echo_with_color $BLUE "  Counterparty: ${COUNTERPART}"
-    fi
-    echo_with_color $BLUE "  Denomination: ${DENOMINATION}"
-    echo_with_color $BLUE "  End Date: ${END_DATE}"
-    echo ""
-    echo_with_color $PURPLE "📦 Composed Contract:"
-    echo_with_color $BLUE "    Name: ${COMPOSED_CONTRACT_NAME}"
-    echo_with_color $BLUE "    Description: ${COMPOSED_CONTRACT_DESCRIPTION}"
-    echo ""
-    echo_with_color $PURPLE "📄 Obligation 1 (${OBLIGATION_1_NAME}):"
-    echo_with_color $BLUE "    Coupon Amount (per payment): ${COUPON_AMOUNT}"
-    echo_with_color $BLUE "    Total Notional: ${OBLIGATION_1_NOTIONAL}"
-    echo_with_color $BLUE "    Payments: ${#COUPON_DATES[@]} coupon payments"
-    echo ""
-    echo_with_color $PURPLE "📄 Obligation 2 (${OBLIGATION_2_NAME}):"
-    echo_with_color $BLUE "    Notional: ${OBLIGATION_2_NOTIONAL}"
-    echo_with_color $BLUE "    Payments: 1 redemption payment"
-    echo ""
-    
-    if [[ "$use_swap_fields" == "true" ]]; then
-        echo_with_color $PURPLE "💱 Swap Terms:"
-        echo_with_color $BLUE "    Expected Payment from Counterparty: ${PAYMENT_AMOUNT} ${PAYMENT_DENOMINATION}"
-        echo_with_color $BLUE "    Deadline: ${DEADLINE}"
-        echo ""
-    fi
-    
-    if [[ "$use_transfer_fields" == "true" ]]; then
-        echo_with_color $PURPLE "🔄 Transfer Terms:"
-        echo_with_color $BLUE "    Transfer Destination: ${TRANSFER_DESTINATION_ID}"
-        echo ""
-    fi
-
-    if ! check_service_running "Auth Service" "$AUTH_SERVICE_URL"; then
-        echo_with_color $RED "❌ Auth service is not reachable at $AUTH_SERVICE_URL"
-        return 1
-    fi
-
-    if ! check_service_running "Payments Service" "$PAY_SERVICE_URL"; then
-        echo_with_color $RED "❌ Payments service is not reachable at $PAY_SERVICE_URL"
-        echo_with_color $YELLOW "Please start the payments service:"
-        echo "   Local: cd ../yieldfabric-payments && cargo run"
-        echo_with_color $BLUE "   REST API endpoint will be available at: $PAY_SERVICE_URL/api/composed_contract/workflow"
-        return 1
-    fi
-
-    # Check if the endpoint exists (basic check)
-    local endpoint_check
-    endpoint_check=$(curl -s -o /dev/null -w "%{http_code}" "${PAY_SERVICE_URL}/api/composed_contract/workflow" -X POST -H "Content-Type: application/json" -d '{}' 2>/dev/null || echo "000")
-    if [[ "$endpoint_check" == "404" ]]; then
-        echo_with_color $YELLOW "⚠️  Warning: Endpoint returned 404. The server may need to be restarted to pick up the new routes."
-        echo_with_color $YELLOW "   Make sure the server was built with the latest code including composed_contract workflow."
-        echo ""
-    fi
-
-    echo ""
-
-    echo_with_color $CYAN "🔐 Authenticating..."
-    local jwt_token
-    jwt_token=$(login_user "$USER_EMAIL" "$PASSWORD")
-    if [[ -z "$jwt_token" ]]; then
-        echo_with_color $RED "❌ Failed to get JWT token for user: $USER_EMAIL"
-        return 1
-    fi
-
-    echo_with_color $GREEN "  ✅ JWT token obtained (first 50 chars): ${jwt_token:0:50}..."
-    echo ""
-
-    echo_with_color $CYAN "📤 Calling generic composed contract workflow endpoint..."
-    echo ""
-
-    # Combine obligations into an array
-    local obligations_json
-    obligations_json=$(jq -n --argjson ob1 "$obligation_1_json" --argjson ob2 "$obligation_2_json" '[$ob1, $ob2]')
-
-    local start_response
-    if [[ "$use_swap_fields" == "true" ]]; then
-        if [[ "$use_transfer_fields" == "true" ]]; then
-            # Has both swap and transfer fields
-            start_response=$(composed_contract_workflow \
-                "$jwt_token" \
-                "$COMPOSED_CONTRACT_NAME" \
-                "$COMPOSED_CONTRACT_DESCRIPTION" \
-                "$obligations_json" \
-                "$COUNTERPART" \
-                "$PAYMENT_AMOUNT" \
-                "$PAYMENT_DENOMINATION" \
-                "$DEADLINE" \
-                "$actions_json" \
-                "$TRANSFER_DESTINATION_ID" \
-                "")
-        else
-            # Has swap fields only
-            start_response=$(composed_contract_workflow \
-                "$jwt_token" \
-                "$COMPOSED_CONTRACT_NAME" \
-                "$COMPOSED_CONTRACT_DESCRIPTION" \
-                "$obligations_json" \
-                "$COUNTERPART" \
-                "$PAYMENT_AMOUNT" \
-                "$PAYMENT_DENOMINATION" \
-                "$DEADLINE" \
-                "$actions_json" \
-                "" \
-                "")
-        fi
+    if [[ -n "$payment_amount" ]]; then
+        local swap_node
+        swap_node=$(jq -n \
+            --arg cp "$counterparty" \
+            --arg amount "$payment_amount" \
+            --arg denom "$payment_denomination" \
+            --arg deadline "$deadline" \
+            --arg name "${contract_name} swap" \
+            '{
+                step_id: "swap",
+                task_name: "create_swap",
+                inputs: {
+                    counterparty: $cp,
+                    initiator_obligations: "$step.compose.obligation_ids",
+                    counterparty_payment_amount: $amount,
+                    counterparty_payment_denomination: $denom,
+                    deadline: $deadline,
+                    name: $name
+                }
+            }')
+        jq -n --argjson c "$compose_node" --argjson s "$swap_node" '{
+            nodes: [$c, $s],
+            edges: [{ from: "compose", to: "swap" }],
+            entry_step_ids: ["compose"]
+        }'
     else
-        if [[ "$use_transfer_fields" == "true" ]]; then
-            # Has transfer fields only (no swap)
-            start_response=$(composed_contract_workflow \
-                "$jwt_token" \
-                "$COMPOSED_CONTRACT_NAME" \
-                "$COMPOSED_CONTRACT_DESCRIPTION" \
-                "$obligations_json" \
-                "" \
-                "" \
-                "" \
-                "" \
-                "$actions_json" \
-                "$TRANSFER_DESTINATION_ID" \
-                "")
-        else
-            # No swap or transfer fields
-            start_response=$(composed_contract_workflow \
-                "$jwt_token" \
-                "$COMPOSED_CONTRACT_NAME" \
-                "$COMPOSED_CONTRACT_DESCRIPTION" \
-                "$obligations_json" \
-                "" \
-                "" \
-                "" \
-                "" \
-                "$actions_json" \
-                "" \
-                "")
-        fi
-    fi
-
-    echo_with_color $BLUE "📡 Start API Response:"
-    echo "$start_response" | jq '.' 2>/dev/null | sed 's/^/  /' || {
-        echo_with_color $RED "  ⚠️  Start response is not valid JSON:"
-        echo "$start_response" | sed 's/^/  /'
-    }
-    echo ""
-
-    local workflow_id
-    workflow_id=$(echo "$start_response" | jq -r '.workflow_id // empty' 2>/dev/null)
-
-    if [[ -z "$workflow_id" || "$workflow_id" == "null" ]]; then
-        echo_with_color $RED "❌ No workflow_id returned from start endpoint"
-        
-        # Check if we got a 404 (route not found)
-        if echo "$start_response" | grep -qi "404\|not found" || [[ -z "$start_response" ]]; then
-            echo_with_color $YELLOW "    ⚠️  Received 404 or empty response - the endpoint may not be registered"
-            echo_with_color $YELLOW "    This usually means the server needs to be restarted with the latest code"
-            echo_with_color $BLUE "    Please ensure:"
-            echo_with_color $BLUE "      1. The server was built with: cd yieldfabric-payments && cargo build"
-            echo_with_color $BLUE "      2. The server was restarted after adding the composed_contract workflow"
-            echo_with_color $BLUE "      3. The route is registered at: /api/composed_contract/workflow"
-        else
-            local error_msg
-            error_msg=$(echo "$start_response" | jq -r '.error // .message // "Unknown error"' 2>/dev/null)
-            if [[ -z "$error_msg" || "$error_msg" == "null" ]]; then
-                echo_with_color $RED "    Error: Invalid request (HTTP 422 - Unprocessable Entity)"
-                echo_with_color $YELLOW "    Full response:"
-                echo "$start_response" | jq '.' 2>/dev/null | sed 's/^/      /' || echo "$start_response" | sed 's/^/      /'
-            else
-                echo_with_color $RED "    Error: ${error_msg}"
-            fi
-        fi
-        return 1
-    fi
-
-    echo_with_color $GREEN "  ✅ Workflow started with ID: ${workflow_id}"
-    echo ""
-
-    local final_response
-    if ! final_response=$(poll_workflow_status "$workflow_id"); then
-        echo_with_color $RED "❌ Workflow did not complete successfully"
-        return 1
-    fi
-
-    echo_with_color $BLUE "📡 Final Workflow Status Response:"
-    echo "$final_response" | jq '.' 2>/dev/null | sed 's/^/  /' || {
-        echo_with_color $RED "  ⚠️  Final response is not valid JSON:"
-        echo "$final_response" | sed 's/^/  /'
-    }
-    echo ""
-
-    local workflow_status
-    workflow_status=$(echo "$final_response" | jq -r '.workflow_status // empty' 2>/dev/null)
-
-    if [[ "$workflow_status" == "completed" ]]; then
-        echo_with_color $GREEN "    ✅ Generic composed contract workflow completed successfully!"
-        echo ""
-        echo_with_color $BLUE "  📋 Result Details:"
-        echo_with_color $BLUE "      Composed Contract ID: $(echo "$final_response" | jq -r '.result.composed_contract_id // "N/A"')"
-        
-        # Display obligation IDs from the array
-        local obligation_ids
-        obligation_ids=$(echo "$final_response" | jq -r '.result.obligation_ids // []' 2>/dev/null)
-        if [[ -n "$obligation_ids" && "$obligation_ids" != "[]" && "$obligation_ids" != "null" ]]; then
-            local obligation_count
-            obligation_count=$(echo "$obligation_ids" | jq 'length' 2>/dev/null || echo "0")
-            echo_with_color $BLUE "      Obligations ($obligation_count):"
-            echo "$obligation_ids" | jq -r '.[]' | while IFS= read -r obligation_id; do
-                echo_with_color $BLUE "        • $obligation_id"
-            done
-        else
-            echo_with_color $BLUE "      Obligations: N/A"
-        fi
-        
-        # Swap IDs are optional (only present if create_swap was in actions)
-        local swap_id
-        swap_id=$(echo "$final_response" | jq -r '.result.swap_id // empty' 2>/dev/null)
-        if [[ -n "$swap_id" && "$swap_id" != "null" ]]; then
-            echo_with_color $BLUE "      Swap ID: $swap_id"
-            echo_with_color $BLUE "      Swap Message ID: $(echo "$final_response" | jq -r '.result.swap_message_id // "N/A"')"
-        else
-            echo_with_color $BLUE "      Swap ID: N/A (create_swap not in actions)"
-        fi
-        
-        # Transfer IDs are optional (only present if create_transfer was in actions)
-        local transfer_message_id
-        transfer_message_id=$(echo "$final_response" | jq -r '.result.transfer_message_id // empty' 2>/dev/null)
-        if [[ -n "$transfer_message_id" && "$transfer_message_id" != "null" ]]; then
-            echo_with_color $BLUE "      Transfer Message ID: $transfer_message_id"
-            echo_with_color $BLUE "      Transfer Composed ID: $(echo "$final_response" | jq -r '.result.transfer_composed_id // "N/A"')"
-        else
-            echo_with_color $BLUE "      Transfer ID: N/A (create_transfer not in actions)"
-        fi
-        echo ""
-        echo_with_color $GREEN "🎉 Generic composed contract workflow test completed successfully! ✨"
-        echo ""
-        echo_with_color $CYAN "📝 Summary:"
-        echo_with_color $BLUE "   • Created composed contract: ${COMPOSED_CONTRACT_NAME}"
-        echo_with_color $BLUE "   • Created 2 obligations (${OBLIGATION_1_NAME} and ${OBLIGATION_2_NAME})"
-        if echo "$actions_json" | jq -e 'index("accept_obligation") != null' >/dev/null 2>&1; then
-            echo_with_color $BLUE "   • Accepted both obligations"
-        fi
-        if echo "$actions_json" | jq -e 'index("create_swap") != null' >/dev/null 2>&1; then
-            echo_with_color $BLUE "   • Created swap: both obligations vs ${PAYMENT_AMOUNT} ${PAYMENT_DENOMINATION} from ${COUNTERPART}"
-        fi
-        if echo "$actions_json" | jq -e 'index("create_transfer") != null' >/dev/null 2>&1; then
-            echo_with_color $BLUE "   • Transferred composed contract to: ${TRANSFER_DESTINATION_ID}"
-        fi
-        echo_with_color $BLUE "   • Actions executed: $(echo "$actions_json" | jq -r 'join(", ")')"
-        return 0
-    else
-        echo_with_color $RED "    ❌ Generic composed contract workflow ended in status: ${workflow_status}"
-        local error_msg
-        error_msg=$(echo "$final_response" | jq -r '.error // "Unknown error"' 2>/dev/null)
-        echo_with_color $RED "    Error: ${error_msg}"
-        echo_with_color $BLUE "    Full response:"
-        echo "$final_response" | sed 's/^/      /'
-        return 1
+        jq -n --argjson c "$compose_node" '{
+            nodes: [$c],
+            edges: [],
+            entry_step_ids: ["compose"]
+        }'
     fi
 }
 
-# Show usage if help is requested
-if [[ "$1" == "-h" || "$1" == "--help" ]]; then
-    echo "Usage: $0 [username] [password] [action_mode]"
+propose_deal() {
+    local jwt=$1; local plan_json=$2; local counterparty=$3
+    local query='mutation Propose($input: ProposeDealInput!) {
+        dealFlow {
+            proposeDeal(input: $input) {
+                success message deal { id status workflowId }
+            }
+        }
+    }'
+    local variables
+    variables=$(jq -n --argjson plan "$plan_json" --arg cp "$counterparty" \
+        '{ input: { counterpartyEntityId: $cp, plan: $plan } }')
+    graphql_call "$jwt" "$query" "$variables"
+}
+
+sign_deal() {
+    local jwt=$1; local deal_id=$2
+    local query='mutation Sign($input: SignDealInput!) {
+        dealFlow {
+            signDeal(input: $input) {
+                success message deal { id status }
+            }
+        }
+    }'
+    local variables
+    variables=$(jq -n --arg id "$deal_id" '{ input: { dealId: $id } }')
+    graphql_call "$jwt" "$query" "$variables"
+}
+
+activate_deal() {
+    local jwt=$1; local deal_id=$2
+    local query='mutation Activate($input: ActivateDealInput!) {
+        dealFlow {
+            activateDeal(input: $input) {
+                success message deal { id status workflowId }
+            }
+        }
+    }'
+    local variables
+    variables=$(jq -n --arg id "$deal_id" '{ input: { dealId: $id } }')
+    graphql_call "$jwt" "$query" "$variables"
+}
+
+poll_deal_until_terminal() {
+    local jwt=$1; local deal_id=$2
+    local max_attempts=${3:-120}; local delay=${4:-2}
+    # Pull the event payload too so the per-attempt log can show what
+    # the deal is actually doing — `step_ready (compose)` vs
+    # `step_completed (swap)` vs `workflow_completed` carries far more
+    # signal than a flat `ACTIVE` repeated 30 times. The payload field
+    # carries the canonical mirror shape (`{step_key, result, ...}`)
+    # and is JSONB on the wire, deserialised here with jq.
+    local query='query DealStatus($id: String!) {
+        dealFlow {
+            dealById(id: $id) {
+                id status workflowId
+                events { sequence eventType occurredAt payload }
+            }
+        }
+    }'
+    local variables
+    variables=$(jq -n --arg id "$deal_id" '{ id: $id }')
+
+    local last_seq=-1
+    for ((attempt=1; attempt<=max_attempts; attempt++)); do
+        local resp
+        resp=$(graphql_call "$jwt" "$query" "$variables")
+        local status
+        status=$(echo "$resp" | jq -r '.data.dealFlow.dealById.status // empty')
+
+        # Tail of the events array — most recent activity. Prefer the
+        # event's step_key (when present) so `step_completed` rows
+        # disambiguate between compose and swap; fall back to the
+        # bare event_type otherwise (proposed / signed / activated /
+        # workflow_completed / completed all carry no step).
+        local latest
+        latest=$(echo "$resp" | jq -r '
+            .data.dealFlow.dealById.events // []
+            | sort_by(.sequence)
+            | last
+            | if . == null then "—"
+              else
+                ((.payload.step_key // "") as $sk
+                  | if $sk == "" then .eventType
+                    else "\(.eventType) (\($sk))" end)
+              end
+        ')
+        local latest_seq
+        latest_seq=$(echo "$resp" | jq -r '
+            .data.dealFlow.dealById.events // []
+            | sort_by(.sequence)
+            | last
+            | if . == null then -1 else .sequence end
+        ')
+
+        # Only print the per-attempt line when something changed
+        # (status flip OR a new event landed). Reduces 30+ identical
+        # `status=ACTIVE` lines to one line per actual transition.
+        if [[ "$latest_seq" != "$last_seq" ]]; then
+            echo_with_color "$BLUE" "  📡 attempt ${attempt}/${max_attempts} — status=${status:-?} — latest=${latest}" >&2
+            last_seq="$latest_seq"
+        fi
+
+        case "$status" in
+            COMPLETED|CANCELLED|REJECTED|DEFAULTED|FAILED_AFTER_PARTIAL_EXECUTION)
+                echo "$resp"
+                return 0
+                ;;
+        esac
+        if [[ $attempt -lt $max_attempts ]]; then
+            sleep "$delay"
+        fi
+    done
+    echo_with_color "$RED" "  ❌ Deal did not reach a terminal status within ${max_attempts} attempts" >&2
+    return 1
+}
+
+print_usage() {
+    cat <<EOF
+Usage: $0 [proposer_email] [proposer_password] [counterparty_email] [counterparty_password] [mode]
+
+  mode: "compose_only"  — just create_composed_contract
+        "compose_swap"  — create_composed_contract + create_swap (default)
+
+Defaults read from env: USER_EMAIL, PASSWORD, COUNTERPARTY_EMAIL,
+COUNTERPARTY_PASSWORD, ACTION_MODE. Compose-time fixtures
+(DENOMINATION, COUPON_AMOUNT, …) carry over from the legacy script.
+
+Environment:
+  AUTH_SERVICE_URL    (default http://localhost:3000)
+  AGENTS_SERVICE_URL  (default http://localhost:3001 — DMS lives in agents)
+EOF
+}
+
+main() {
+    if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+        print_usage; exit 0
+    fi
+
+    local USER_EMAIL="${1:-${USER_EMAIL:-issuer@yieldfabric.com}}"
+    local PASSWORD="${2:-${PASSWORD:-issuer_password}}"
+    local COUNTERPARTY_EMAIL="${3:-${COUNTERPARTY_EMAIL:-investor@yieldfabric.com}}"
+    local COUNTERPARTY_PASSWORD="${4:-${COUNTERPARTY_PASSWORD:-investor_password}}"
+    local ACTION_MODE="${5:-${ACTION_MODE:-compose_swap}}"
+
+    local DENOMINATION="${DENOMINATION:-aud-token-asset}"
+    local END_DATE="${END_DATE:-2027-01-31}"
+    # Raw token-unit amounts (× 10^18 for 18-decimal tokens). The
+    # deal-flow bridge passes amounts through verbatim — same
+    # contract the wallet UX uses (it pre-scales client-side and
+    # payments accepts raw).
+    local COUPON_AMOUNT="${COUPON_AMOUNT:-10000000000000000000000}"
+    local OBLIGATION_2_NOTIONAL="${OBLIGATION_2_NOTIONAL:-100000000000000000000000}"
+    local PAYMENT_AMOUNT="${PAYMENT_AMOUNT:-12500000000000000000000}"
+    local PAYMENT_DENOMINATION="${PAYMENT_DENOMINATION:-$DENOMINATION}"
+    local DEADLINE="${DEADLINE:-${END_DATE}T23:59:59Z}"
+    local CONTRACT_NAME="${COMPOSED_CONTRACT_NAME:-Structured Loan}"
+    local CONTRACT_DESCRIPTION="${COMPOSED_CONTRACT_DESCRIPTION:-A composed contract issued via the deal flow}"
+
+    echo_with_color "$CYAN" "🚀 Composed Contract — deal-flow integration test"
+    echo_with_color "$BLUE" "  Auth:    $AUTH_SERVICE_URL"
+    echo_with_color "$BLUE" "  Agents:  $AGENTS_SERVICE_URL"
+    echo_with_color "$BLUE" "  Mode:    $ACTION_MODE"
+    echo_with_color "$BLUE" "  Proposer:     $USER_EMAIL"
+    echo_with_color "$BLUE" "  Counterparty: $COUNTERPARTY_EMAIL"
     echo ""
-    echo "Arguments:"
-    echo "  username    User email for authentication (default: issuer@yieldfabric.com)"
-    echo "  password    User password for authentication (default: issuer_password)"
-    echo "  action_mode Action configuration mode:"
-    echo "              - 'default' or omit: Uses default actions (backward compatible)"
-    echo "              - 'issue_only': Only create obligations [\"create_obligation\"]"
-    echo "              - 'issue_accept': Create and accept [\"create_obligation\", \"accept_obligation\", \"wait_for_acceptance\"]"
-    echo "              - 'issue_accept_transfer': Create, accept, and transfer [\"create_obligation\", \"accept_obligation\", \"wait_for_acceptance\", \"create_transfer\"]"
-    echo "              - 'issue_swap': Create and swap [\"create_obligation\", \"create_swap\"]"
-    echo "              - 'all': All actions [\"create_obligation\", \"accept_obligation\", \"wait_for_acceptance\", \"create_swap\"]"
+
+    check_service "Auth Service" "$AUTH_SERVICE_URL" || exit 1
+    check_service "Agents Service" "$AGENTS_SERVICE_URL" || exit 1
     echo ""
-    echo "Environment variables (used as fallback if arguments not provided):"
-    echo "  USER_EMAIL    User email for authentication"
-    echo "  PASSWORD      User password for authentication"
-    echo "  ACTION_MODE   Action configuration mode (see above)"
+
+    echo_with_color "$CYAN" "🔐 Authenticating proposer + counterparty..."
+    local proposer_login
+    proposer_login=$(login_user "$USER_EMAIL" "$PASSWORD") || exit 1
+    local counterparty_login
+    counterparty_login=$(login_user "$COUNTERPARTY_EMAIL" "$COUNTERPARTY_PASSWORD") || exit 1
+    local proposer_jwt
+    proposer_jwt=$(echo "$proposer_login" | jq -r '.token')
+    local proposer_entity_id
+    proposer_entity_id=$(echo "$proposer_login" | jq -r '.entity_id')
+    local counterparty_jwt
+    counterparty_jwt=$(echo "$counterparty_login" | jq -r '.token')
+    local counterparty_entity_id
+    counterparty_entity_id=$(echo "$counterparty_login" | jq -r '.entity_id')
+    echo_with_color "$BLUE" "  Proposer entity:     $proposer_entity_id"
+    echo_with_color "$BLUE" "  Counterparty entity: $counterparty_entity_id"
     echo ""
-    echo "Examples:"
-    echo "  $0                                    # Default actions (backward compatible)"
-    echo "  $0 user@example.com mypassword       # Default actions with custom credentials"
-    echo "  $0 user@example.com mypassword issue_only  # Only create obligations"
-    echo "  $0 user@example.com mypassword issue_accept  # Create and accept obligations"
-    echo "  $0 user@example.com mypassword issue_accept_transfer  # Create, accept, and transfer obligations"
-    echo "  $0 user@example.com mypassword issue_swap  # Create obligations and swap"
-    echo "  $0 user@example.com mypassword all   # All actions (default if action_mode specified)"
-    echo "  ACTION_MODE=issue_only $0            # Using environment variable"
-    exit 0
-fi
+
+    # Build obligations array — proposer is the obligor on each leg,
+    # counterparty is the holder. Use canonical entity ids (UUIDs);
+    # the deal-flow rejects email-shaped strings at signDeal time.
+    local coupon_dates
+    coupon_dates='["2027-12-01T00:00:00Z","2027-12-05T00:00:00Z","2027-12-10T00:00:00Z","2027-12-15T00:00:00Z","2027-12-20T00:00:00Z"]'
+    local coupon_count
+    coupon_count=$(echo "$coupon_dates" | jq 'length')
+    # Big-number math: jq treats numbers as f64 (53-bit mantissa), so
+    # `(COUPON_AMOUNT | tonumber) * coupon_count | tostring` would
+    # round 1e22 × 5 to f64 and emit "5e+22" — which the on-chain
+    # u128 amount parser then rejects ("Invalid initial payment
+    # amount: not a valid unsigned integer"). bc handles arbitrary
+    # precision, keeping the result as the literal "50000000000000000000000".
+    local coupon_total
+    coupon_total=$(echo "$COUPON_AMOUNT * $coupon_count" | bc)
+
+    local payments_array
+    payments_array=$(echo "$coupon_dates" | jq '[.[] | {
+        oracle_address: null, oracle_owner: null,
+        oracle_key_sender: null, oracle_value_sender_secret: null,
+        oracle_key_recipient: null, oracle_value_recipient_secret: null,
+        unlock_sender: ., unlock_receiver: ., linear_vesting: null
+    }]')
+
+    # Per-obligation `counterpart` = the HOLDER who initially
+    # receives the NFT. Setting counterpart=proposer means the
+    # issuer holds each obligation right after creation, which is
+    # what the swap needs (only the HOLDER can include an
+    # obligation in a swap). The swap then transfers them to the
+    # investor as the initiator's leg.
+    local obligation_1
+    obligation_1=$(jq -n \
+        --arg counterpart "$proposer_entity_id" \
+        --arg denomination "$DENOMINATION" \
+        --arg obligor "$proposer_entity_id" \
+        --arg notional "$coupon_total" \
+        --arg expiry "${END_DATE}T23:59:59Z" \
+        --argjson payments "$payments_array" \
+        '{
+            counterpart: $counterpart,
+            denomination: $denomination,
+            obligor: $obligor,
+            notional: $notional,
+            expiry: $expiry,
+            data: { name: "Coupons", description: "Coupon Strip" },
+            payments: $payments
+        }')
+
+    local obligation_2
+    obligation_2=$(jq -n \
+        --arg counterpart "$proposer_entity_id" \
+        --arg denomination "$DENOMINATION" \
+        --arg obligor "$proposer_entity_id" \
+        --arg notional "$OBLIGATION_2_NOTIONAL" \
+        --arg expiry "${END_DATE}T23:59:59Z" \
+        '{
+            counterpart: $counterpart,
+            denomination: $denomination,
+            obligor: $obligor,
+            notional: $notional,
+            expiry: $expiry,
+            data: { name: "Redemption", description: "Redemption Obligation" },
+            payments: [{
+                unlock_sender: $expiry, unlock_receiver: $expiry
+            }]
+        }')
+
+    local obligations_json
+    obligations_json=$(jq -n --argjson a "$obligation_1" --argjson b "$obligation_2" '[$a, $b]')
+
+    local plan_json
+    if [[ "$ACTION_MODE" == "compose_only" ]]; then
+        plan_json=$(build_plan "$CONTRACT_NAME" "$CONTRACT_DESCRIPTION" \
+            "$counterparty_entity_id" "$obligations_json" "" "" "")
+    else
+        plan_json=$(build_plan "$CONTRACT_NAME" "$CONTRACT_DESCRIPTION" \
+            "$counterparty_entity_id" "$obligations_json" \
+            "$PAYMENT_AMOUNT" "$PAYMENT_DENOMINATION" "$DEADLINE")
+    fi
+
+    echo_with_color "$PURPLE" "📦 DealPlan:"
+    echo "$plan_json" | jq '.' | sed 's/^/  /'
+    echo ""
+
+    echo_with_color "$CYAN" "📤 Proposing deal..."
+    local propose_resp
+    propose_resp=$(propose_deal "$proposer_jwt" "$plan_json" "$counterparty_entity_id")
+    echo "$propose_resp" | jq '.' | sed 's/^/  /'
+    local deal_id
+    deal_id=$(echo "$propose_resp" | jq -r '.data.dealFlow.proposeDeal.deal.id // empty')
+    if [[ -z "$deal_id" ]]; then
+        echo_with_color "$RED" "❌ proposeDeal did not return a deal id"; exit 1
+    fi
+    echo_with_color "$GREEN" "  ✅ Deal proposed: $deal_id"
+    echo ""
+
+    echo_with_color "$CYAN" "✍️  Counterparty signing..."
+    local sign_resp
+    sign_resp=$(sign_deal "$counterparty_jwt" "$deal_id")
+    echo "$sign_resp" | jq '.' | sed 's/^/  /'
+    local sign_status
+    sign_status=$(echo "$sign_resp" | jq -r '.data.dealFlow.signDeal.deal.status // empty')
+    if [[ "$sign_status" != "ACCEPTED" ]]; then
+        echo_with_color "$RED" "❌ signDeal did not move the deal to ACCEPTED (got: $sign_status)"; exit 1
+    fi
+    echo_with_color "$GREEN" "  ✅ Deal signed → ACCEPTED"
+    echo ""
+
+    echo_with_color "$CYAN" "🚀 Activating deal..."
+    local activate_resp
+    activate_resp=$(activate_deal "$proposer_jwt" "$deal_id")
+    echo "$activate_resp" | jq '.' | sed 's/^/  /'
+    local workflow_id
+    workflow_id=$(echo "$activate_resp" | jq -r '.data.dealFlow.activateDeal.deal.workflowId // empty')
+    if [[ -z "$workflow_id" ]]; then
+        echo_with_color "$YELLOW" "  ⚠️  activateDeal returned no workflowId — pipeline runtime may not have spawned a workflow"
+    else
+        echo_with_color "$GREEN" "  ✅ Workflow spawned: $workflow_id"
+    fi
+    echo ""
+
+    echo_with_color "$CYAN" "🔄 Polling deal status..."
+    local final_resp
+    final_resp=$(poll_deal_until_terminal "$proposer_jwt" "$deal_id") || exit 1
+    echo "$final_resp" | jq '.' | sed 's/^/  /'
+
+    local final_status
+    final_status=$(echo "$final_resp" | jq -r '.data.dealFlow.dealById.status')
+    if [[ "$final_status" == "COMPLETED" ]]; then
+        echo_with_color "$GREEN" "🎉 Deal completed: $deal_id"
+    else
+        echo_with_color "$RED" "❌ Deal terminal but not completed: $final_status"
+        exit 1
+    fi
+}
 
 main "$@"
-
