@@ -6,8 +6,10 @@
 # sister routes) was removed in commit c3119db. This script runs the
 # replacement path: build a `DealPlan` containing a
 # `create_composed_contract` action (and optional `create_swap` follow-on),
-# then drive it through `proposeDeal` → counterparty `signDeal` →
-# proposer `activateDeal`, and poll `dealById` until terminal.
+# then drive it through `proposeDeal` → counterparty `signDeal`
+# (auto-activates when no more signers remain; falls back to an
+# explicit `activateDeal` if it doesn't), and poll `dealById` until
+# terminal.
 #
 # Auth on port 3000, agents GraphQL on port 3001 (env-overridable).
 
@@ -160,18 +162,29 @@ propose_deal() {
             }
         }
     }'
+    # Multi-party deal model: `parties` is a list of counter-signing
+    # principals, each with an `entity_id` + authored `role` IRI. This
+    # script proposes a bilateral deal with one counterparty under the
+    # default `"counterparty"` role; multi-party scripts grow the list.
     local variables
     variables=$(jq -n --argjson plan "$plan_json" --arg cp "$counterparty" \
-        '{ input: { counterpartyEntityId: $cp, plan: $plan } }')
+        '{ input: { parties: [ { entityId: $cp, role: "counterparty" } ], plan: $plan } }')
     graphql_call "$jwt" "$query" "$variables"
 }
 
 sign_deal() {
     local jwt=$1; local deal_id=$2
+    # The deal-flow auto-activates when the counterparty's signature is
+    # the last one required (no remaining signers). In that case the
+    # returned deal carries `status=ACTIVE` and a populated `workflowId`
+    # — the proposer's separate `activateDeal` call becomes redundant.
+    # Include `workflowId` in the selection so the test can pick up the
+    # spawned workflow id from either path (auto-activate here OR the
+    # explicit `activateDeal` below).
     local query='mutation Sign($input: SignDealInput!) {
         dealFlow {
             signDeal(input: $input) {
-                success message deal { id status }
+                success message deal { id status workflowId }
             }
         }
     }'
@@ -192,6 +205,142 @@ activate_deal() {
     local variables
     variables=$(jq -n --arg id "$deal_id" '{ input: { dealId: $id } }')
     graphql_call "$jwt" "$query" "$variables"
+}
+
+pending_actions_for_deal() {
+    local jwt=$1; local deal_id=$2
+    # Inbox surface — every payment step the deal-flow workflow lands
+    # ready for an assignee materialises here. We poll the deal-scoped
+    # variant (vs `myPendingActions`) so the script's drain loop only
+    # races against THIS deal's steps.
+    local query='query DealInbox($dealId: String!) {
+        dealFlow {
+            pendingActionsForDeal(dealId: $dealId) {
+                id stepId descriptorName status assigneeEntityId
+            }
+        }
+    }'
+    local variables
+    variables=$(jq -n --arg id "$deal_id" '{ dealId: $id }')
+    graphql_call "$jwt" "$query" "$variables"
+}
+
+complete_party_action() {
+    local jwt=$1; local action_id=$2
+    # `outputs` is the user's confirmation payload; the descriptor's
+    # actual inputs are sealed in `pending_actions.descriptor_inputs`
+    # at row creation and never overridden from the caller. Sending
+    # an empty object is the canonical "confirm" payload.
+    local query='mutation Complete($input: CompletePartyActionInput!) {
+        dealFlow {
+            completePartyAction(input: $input) {
+                success message
+                action { id stepId status }
+            }
+        }
+    }'
+    local variables
+    variables=$(jq -n --arg id "$action_id" '{ input: { actionId: $id, outputs: {} } }')
+    graphql_call "$jwt" "$query" "$variables"
+}
+
+# Drive the proposer's inbox to completion. Per-step consent (see
+# `working_group/workflow.rs::auto_execute_payment_step`) means every
+# payment step in a bilateral deal lands in the assignee's inbox as a
+# pending_action — auto-exec doesn't fire under the activator's
+# stashed JWT. The proposer (assignee of `create_composed_contract`,
+# `create_swap`, etc. via `DefaultAssigneeRole::Proposer`) drives
+# each step explicitly via `completePartyAction`.
+#
+# Loop: list ASSIGNED actions for the deal → complete each → wait
+# briefly for the workflow to advance and surface the next batch →
+# repeat. Bails out when the deal reaches a terminal status or the
+# inbox stays empty across two polls (workflow stalled).
+drive_inbox_to_completion() {
+    local jwt=$1; local deal_id=$2
+    local max_rounds=${3:-30}; local delay=${4:-2}
+    local idle_polls=0
+
+    for ((round=1; round<=max_rounds; round++)); do
+        # Refresh status first — if the deal is already terminal,
+        # the loop has nothing more to do.
+        local status_resp
+        status_resp=$(graphql_call "$jwt" \
+            'query S($id: String!) { dealFlow { dealById(id: $id) { status } } }' \
+            "$(jq -n --arg id "$deal_id" '{ id: $id }')")
+        local cur_status
+        cur_status=$(echo "$status_resp" | jq -r '.data.dealFlow.dealById.status // empty')
+        case "$cur_status" in
+            COMPLETED|CANCELLED|REJECTED|DEFAULTED|FAILED_AFTER_PARTIAL_EXECUTION)
+                echo_with_color "$GREEN" "  📭 Inbox drained — deal terminal: $cur_status"
+                return 0
+                ;;
+        esac
+
+        local inbox_resp
+        inbox_resp=$(pending_actions_for_deal "$jwt" "$deal_id")
+        # PENDING = newly materialised, awaiting acquire+complete.
+        # IN_PROGRESS = a complete is mid-flight (acquire happened on
+        # the agents side; we let it finish before declaring the
+        # inbox idle).
+        local pending_ids in_progress_count
+        pending_ids=$(echo "$inbox_resp" | jq -r \
+            '.data.dealFlow.pendingActionsForDeal[]? | select(.status == "PENDING") | .id')
+        in_progress_count=$(echo "$inbox_resp" | jq -r \
+            '[.data.dealFlow.pendingActionsForDeal[]? | select(.status == "IN_PROGRESS")] | length')
+
+        if [[ -z "$pending_ids" ]]; then
+            # Nothing to acquire. If something's IN_PROGRESS we
+            # haven't truly stalled — give it time to land.
+            if (( in_progress_count > 0 )); then
+                echo_with_color "$BLUE" "  ⏳ round ${round}/${max_rounds} — ${in_progress_count} action(s) IN_PROGRESS; waiting"
+                idle_polls=0
+                sleep "$delay"
+                continue
+            fi
+            idle_polls=$((idle_polls + 1))
+            # The auto-execute loop is async (`tokio::spawn`) — it
+            # may take a few seconds after activation before the
+            # next `step_ready` lands and a pending_action is
+            # materialised. Wait `max_idle_polls` empty polls before
+            # declaring the workflow stalled.
+            local max_idle_polls=5
+            if (( idle_polls >= max_idle_polls )); then
+                echo_with_color "$YELLOW" "  ⚠️  Inbox empty across ${idle_polls} polls; workflow may be waiting on something off-script"
+                break
+            fi
+            echo_with_color "$BLUE" "  📭 round ${round}/${max_rounds} — inbox empty (status=${cur_status:-?}), idle ${idle_polls}/${max_idle_polls}"
+            sleep "$delay"
+            continue
+        fi
+
+        idle_polls=0
+        while IFS= read -r action_id; do
+            [[ -z "$action_id" ]] && continue
+            local step_id descriptor
+            step_id=$(echo "$inbox_resp" | jq -r --arg id "$action_id" \
+                '.data.dealFlow.pendingActionsForDeal[] | select(.id == $id) | .stepId')
+            descriptor=$(echo "$inbox_resp" | jq -r --arg id "$action_id" \
+                '.data.dealFlow.pendingActionsForDeal[] | select(.id == $id) | .descriptorName')
+            echo_with_color "$CYAN" "  ▶ round ${round}/${max_rounds} — completing $descriptor (step=$step_id, action=$action_id)"
+            local complete_resp
+            complete_resp=$(complete_party_action "$jwt" "$action_id")
+            local success
+            success=$(echo "$complete_resp" | jq -r '.data.dealFlow.completePartyAction.success // false')
+            if [[ "$success" != "true" ]]; then
+                local msg
+                msg=$(echo "$complete_resp" | jq -r '.data.dealFlow.completePartyAction.message // "<no message>"')
+                echo_with_color "$RED" "  ❌ completePartyAction failed (step=$step_id, action=$action_id): $msg"
+                echo "$complete_resp" | jq '.' | sed 's/^/    /' >&2
+                return 1
+            fi
+        done <<< "$pending_ids"
+
+        sleep "$delay"
+    done
+
+    echo_with_color "$RED" "  ❌ Inbox drive exhausted ${max_rounds} rounds without completion"
+    return 1
 }
 
 poll_deal_until_terminal() {
@@ -298,12 +447,20 @@ main() {
 
     local DENOMINATION="${DENOMINATION:-aud-token-asset}"
     local END_DATE="${END_DATE:-2027-01-31}"
-    # Raw token-unit amounts (× 10^18 for 18-decimal tokens). The
-    # deal-flow bridge passes amounts through verbatim — same
-    # contract the wallet UX uses (it pre-scales client-side and
-    # payments accepts raw).
-    local COUPON_AMOUNT="${COUPON_AMOUNT:-10000000000000000000000}"
-    local OBLIGATION_2_NOTIONAL="${OBLIGATION_2_NOTIONAL:-100000000000000000000000}"
+    # Obligation notional amounts — HUMAN-DECIMAL.
+    # The bridge's `scale_composed_obligation_amounts_if_needed`
+    # (payment_bridge.rs:362) scales these into wei per-obligation
+    # using the declared `denomination`'s decimals. Pre-scaling here
+    # would double-multiply, overflow u128 inside the bridge's
+    # `payments → initialPayments` translation, and silently drop
+    # every payment leg from the created obligation (chain sees
+    # `0 payments` under the contract).
+    local COUPON_AMOUNT="${COUPON_AMOUNT:-10000}"
+    local OBLIGATION_2_NOTIONAL="${OBLIGATION_2_NOTIONAL:-100000}"
+    # Swap payment amount — RAW WEI (× 10^18 for 18-decimal tokens).
+    # The `createSwap` bridge arm passes amounts verbatim — same
+    # contract the wallet UX uses, which pre-scales client-side.
+    # No bridge-side scaling on this arm.
     local PAYMENT_AMOUNT="${PAYMENT_AMOUNT:-12500000000000000000000}"
     local PAYMENT_DENOMINATION="${PAYMENT_DENOMINATION:-$DENOMINATION}"
     local DEADLINE="${DEADLINE:-${END_DATE}T23:59:59Z}"
@@ -441,23 +598,55 @@ main() {
     echo "$sign_resp" | jq '.' | sed 's/^/  /'
     local sign_status
     sign_status=$(echo "$sign_resp" | jq -r '.data.dealFlow.signDeal.deal.status // empty')
-    if [[ "$sign_status" != "ACCEPTED" ]]; then
-        echo_with_color "$RED" "❌ signDeal did not move the deal to ACCEPTED (got: $sign_status)"; exit 1
+    # Two acceptable post-signDeal states:
+    #   ACTIVE   — the new auto-activate path: when the counterparty's
+    #              signature is the last one required, signDeal compiles
+    #              the plan + spawns the workflow inline. The proposer's
+    #              separate `activateDeal` call is redundant in this path
+    #              and is skipped below.
+    #   ACCEPTED — the legacy two-step path (or the fallback when
+    #              auto-activate failed; the deal stays ACCEPTED so the
+    #              proposer can retry `activateDeal` explicitly).
+    if [[ "$sign_status" != "ACCEPTED" && "$sign_status" != "ACTIVE" ]]; then
+        echo_with_color "$RED" "❌ signDeal left the deal in an unexpected status (got: $sign_status — expected ACCEPTED or ACTIVE)"; exit 1
     fi
-    echo_with_color "$GREEN" "  ✅ Deal signed → ACCEPTED"
+    echo_with_color "$GREEN" "  ✅ Deal signed → $sign_status"
     echo ""
 
-    echo_with_color "$CYAN" "🚀 Activating deal..."
-    local activate_resp
-    activate_resp=$(activate_deal "$proposer_jwt" "$deal_id")
-    echo "$activate_resp" | jq '.' | sed 's/^/  /'
     local workflow_id
-    workflow_id=$(echo "$activate_resp" | jq -r '.data.dealFlow.activateDeal.deal.workflowId // empty')
-    if [[ -z "$workflow_id" ]]; then
-        echo_with_color "$YELLOW" "  ⚠️  activateDeal returned no workflowId — pipeline runtime may not have spawned a workflow"
+    if [[ "$sign_status" == "ACTIVE" ]]; then
+        # Auto-activate path: workflow already spawned inline. Pick up
+        # the workflowId from signDeal's response so the rest of the
+        # test (polling, etc.) sees it without an extra call.
+        workflow_id=$(echo "$sign_resp" | jq -r '.data.dealFlow.signDeal.deal.workflowId // empty')
+        if [[ -z "$workflow_id" ]]; then
+            echo_with_color "$YELLOW" "  ⚠️  signDeal auto-activated but returned no workflowId — pipeline runtime may not have spawned a workflow"
+        else
+            echo_with_color "$GREEN" "  ✅ Auto-activated · workflow spawned: $workflow_id"
+        fi
     else
-        echo_with_color "$GREEN" "  ✅ Workflow spawned: $workflow_id"
+        echo_with_color "$CYAN" "🚀 Activating deal..."
+        local activate_resp
+        activate_resp=$(activate_deal "$proposer_jwt" "$deal_id")
+        echo "$activate_resp" | jq '.' | sed 's/^/  /'
+        workflow_id=$(echo "$activate_resp" | jq -r '.data.dealFlow.activateDeal.deal.workflowId // empty')
+        if [[ -z "$workflow_id" ]]; then
+            echo_with_color "$YELLOW" "  ⚠️  activateDeal returned no workflowId — pipeline runtime may not have spawned a workflow"
+        else
+            echo_with_color "$GREEN" "  ✅ Workflow spawned: $workflow_id"
+        fi
     fi
+    echo ""
+
+    # Bilateral deals require per-step consent from the assignee
+    # (per `working_group/workflow.rs::auto_execute_payment_step` —
+    # payment steps with a named assignee defer to that party's
+    # inbox; the activator's stashed JWT does NOT fire them). The
+    # proposer is the assignee for `create_composed_contract` and
+    # `create_swap` (default_assignee_role: Proposer), so they
+    # drive both steps via `completePartyAction`.
+    echo_with_color "$CYAN" "📭 Draining proposer's inbox..."
+    drive_inbox_to_completion "$proposer_jwt" "$deal_id" || exit 1
     echo ""
 
     echo_with_color "$CYAN" "🔄 Polling deal status..."
