@@ -57,7 +57,45 @@ class AuthService(BaseServiceClient):
         except Exception as e:
             self.logger.error(f"    ❌ Login failed: {e}")
             return None
-    
+
+    def authenticate_api_key(self, api_key: str) -> Optional[str]:
+        """
+        Exchange a backend-service API key for a short-lived JWT.
+
+        POST /auth/api-key with {"api_key": "yf_api_…"}. The auth service
+        mints a service-scoped JWT carrying the key owner's permissions +
+        entity_scope (same AuthResponse shape as /auth/login), so the
+        returned token is usable for vault/payments/keys operations —
+        unlike the bare password JWT. Issue a key once via
+        POST /auth/api-key/generate (with a one-time user JWT).
+
+        Args:
+            api_key: The `yf_api_…` secret.
+
+        Returns:
+            JWT token or None if the key is invalid / the call fails.
+        """
+        self.logger.info("  🔑 Authenticating with API key")
+
+        try:
+            response = self._post("/auth/api-key", {"api_key": api_key})
+            data = response.json()
+
+            self.logger.debug(f"    📡 API-key auth response: {data}")
+
+            token = data.get('token') or data.get('access_token') or data.get('jwt')
+
+            if token:
+                self.logger.success("    ✅ API-key authentication successful")
+                return token
+            else:
+                self.logger.error("    ❌ No token in API-key auth response")
+                return None
+
+        except Exception as e:
+            self.logger.error(f"    ❌ API-key authentication failed: {e}")
+            return None
+
     def get_groups(self, token: str) -> List[dict]:
         """
         Get list of groups for user.

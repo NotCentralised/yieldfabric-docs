@@ -21,6 +21,16 @@ class YieldFabricConfig:
         default_factory=lambda: os.getenv('AUTH_SERVICE_URL', 'http://localhost:3000')
     )
 
+    # API key for backend-service authentication (preferred over
+    # email/password for non-interactive callers like setup). When set,
+    # the runner exchanges it for a short-lived JWT at boot via
+    # POST /auth/api-key. Issue one once with POST /auth/api-key/generate
+    # and store the returned `yf_api_…` value here / in API_KEY. Empty
+    # string means "not configured" — fall back to email/password.
+    api_key: str = field(
+        default_factory=lambda: os.getenv('API_KEY', '')
+    )
+
     # Execution settings — default is 0 (no blind sleep between
     # commands). Callers that need sequencing should set `wait: true`
     # on the individual command so the framework polls real state
@@ -67,16 +77,25 @@ class YieldFabricConfig:
     
     @classmethod
     def from_dict(cls, config_dict: dict) -> 'YieldFabricConfig':
-        """Create configuration from dictionary."""
+        """
+        Create configuration from a dictionary.
+
+        Keys absent from `config_dict` fall back to the field defaults
+        (which read env vars / built-in defaults), so a partial dict is
+        valid. The fields use `default_factory`, so they aren't class
+        attributes — build a default instance first and overlay.
+        """
+        defaults = cls()
         return cls(
-            pay_service_url=config_dict.get('pay_service_url', cls.pay_service_url),
-            auth_service_url=config_dict.get('auth_service_url', cls.auth_service_url),
-            command_delay=config_dict.get('command_delay', cls.command_delay),
-            debug=config_dict.get('debug', cls.debug),
-            request_timeout=config_dict.get('request_timeout', cls.request_timeout),
-            health_check_timeout=config_dict.get('health_check_timeout', cls.health_check_timeout),
-            jwt_expiry_seconds=config_dict.get('jwt_expiry_seconds', cls.jwt_expiry_seconds),
-            delegation_scopes=config_dict.get('delegation_scopes', cls.delegation_scopes),
+            pay_service_url=config_dict.get('pay_service_url', defaults.pay_service_url),
+            auth_service_url=config_dict.get('auth_service_url', defaults.auth_service_url),
+            api_key=config_dict.get('api_key', defaults.api_key),
+            command_delay=config_dict.get('command_delay', defaults.command_delay),
+            debug=config_dict.get('debug', defaults.debug),
+            request_timeout=config_dict.get('request_timeout', defaults.request_timeout),
+            health_check_timeout=config_dict.get('health_check_timeout', defaults.health_check_timeout),
+            jwt_expiry_seconds=config_dict.get('jwt_expiry_seconds', defaults.jwt_expiry_seconds),
+            delegation_scopes=config_dict.get('delegation_scopes', defaults.delegation_scopes),
         )
     
     def to_dict(self) -> dict:
@@ -84,6 +103,7 @@ class YieldFabricConfig:
         return {
             'pay_service_url': self.pay_service_url,
             'auth_service_url': self.auth_service_url,
+            'api_key': self.api_key,
             'command_delay': self.command_delay,
             'debug': self.debug,
             'request_timeout': self.request_timeout,

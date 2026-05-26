@@ -64,9 +64,64 @@ cd yieldfabric-docs/python
 pip install -e .
 ```
 
+### Deploy assets from a setup.yaml (port of `setup_system.sh`)
+
+The `setup` subcommand bootstraps users, groups (+ on-chain account
+deploy), tokens, assets, and fiat accounts from a `setup.yaml` — the same
+file shape `scripts/setup_system.sh` uses.
+
+Provide service URLs and an API key via a `.env` file (auto-loaded from
+the current directory). Copy `.env.example` to `.env` and fill in:
+
+```bash
+cp .env.example .env
+# edit .env → AUTH_SERVICE_URL, PAY_SERVICE_URL, API_KEY
+
+yieldfabric setup ./setup.yaml
+```
+
+`.env`:
+
+```bash
+AUTH_SERVICE_URL=https://auth.yieldfabric.io
+PAY_SERVICE_URL=https://pay.yieldfabric.io
+API_KEY=yf_api_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+The CLI exchanges `API_KEY` for a short-lived JWT at boot via
+`POST /auth/api-key`, then creates everything in `setup.yaml` under that
+identity. The key owner needs `SuperAdmin`/`Admin` so the
+create-token/asset/fiat mutations are permitted. Issue a key once with a
+one-time user JWT:
+
+```bash
+curl -X POST "$AUTH_SERVICE_URL/auth/api-key/generate" \
+     -H "Authorization: Bearer <one-time user JWT>" \
+     -H "Content-Type: application/json" \
+     -d '{"service_name":"asset-setup","description":"setup CLI"}'
+# → {"api_key":"yf_api_…", ...}  ← store as API_KEY
+```
+
+Everything can also be passed as flags (flags > env/.env):
+
+```bash
+yieldfabric --auth-service-url https://auth.yieldfabric.io \
+            --pay-service-url https://pay.yieldfabric.io \
+            --api-key yf_api_… \
+            --env-file ./prod.env \
+            setup ./setup.yaml
+```
+
+If `API_KEY` is unset, `setup` falls back to logging in the **first user**
+declared in `setup.yaml` (conventionally a `SuperAdmin`) with
+email/password — the original `setup_system.sh` behaviour.
+
 ### Usage
 
 ```bash
+# Bootstrap a system (users/groups/tokens/assets/fiat) from setup.yaml
+yieldfabric setup setup.yaml
+
 # Execute commands
 yieldfabric execute commands.yaml
 

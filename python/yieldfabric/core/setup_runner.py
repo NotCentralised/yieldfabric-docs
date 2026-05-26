@@ -189,10 +189,25 @@ class YieldFabricSetupRunner:
 
     def _acquire_admin_token(self, users: List[Dict[str, Any]]) -> Optional[str]:
         """
-        The first user in setup.yaml is conventionally a SuperAdmin and
-        owns enough permissions to create tokens/assets and add group
-        members. Log them in as our admin principal for later steps.
+        Acquire the admin JWT used for tokens/assets/fiat and group-member
+        operations. Preference order:
+
+          1. `config.api_key` (API_KEY env) — the canonical backend-service
+             auth path. Exchanged for a short-lived JWT via POST /auth/api-key.
+             The key owner must have enough permissions (SuperAdmin/Admin)
+             for the create-* mutations downstream.
+          2. The first user in setup.yaml (conventionally a SuperAdmin),
+             logged in with email/password.
         """
+        if self.config.api_key:
+            self.logger.info("  🔑 Using API key for admin token")
+            token = self.auth_service.authenticate_api_key(self.config.api_key)
+            if token:
+                return token
+            self.logger.warning(
+                "  ⚠️  API-key auth failed; falling back to first-user login"
+            )
+
         if not users:
             return None
         first = users[0]
@@ -216,16 +231,29 @@ class YieldFabricSetupRunner:
             creator_email = creator.get("id")
             creator_password = creator.get("password")
 
-            if not (name and creator_email and creator_password):
-                self.logger.error(f"  ❌ group missing name/user.id/user.password: {group}")
+            if not name:
+                self.logger.error(f"  ❌ group missing name: {group}")
                 ok = False
                 continue
 
-            creator_token = self.auth_service.login(creator_email, creator_password)
-            if not creator_token:
-                self.logger.error(f"  ❌ could not log in creator {creator_email} for group {name}")
-                ok = False
-                continue
+            # A group needs a creator identity. If `user` is declared, log
+            # in as that user (the group's initial owner). Otherwise fall
+            # back to the admin token — works when setup runs under an
+            # API key and the key owner is the intended group owner.
+            if creator_email and creator_password:
+                creator_token = self.auth_service.login(creator_email, creator_password)
+                if not creator_token:
+                    self.logger.error(
+                        f"  ❌ could not log in creator {creator_email} for group {name}"
+                    )
+                    ok = False
+                    continue
+            else:
+                self.logger.info(
+                    f"  ℹ️  group {name} has no user.id/user.password; "
+                    f"creating as admin principal"
+                )
+                creator_token = admin_token
 
             result = self.auth_service.create_group(
                 creator_token, name=name, description=description, group_type=group_type
@@ -315,13 +343,37 @@ class YieldFabricSetupRunner:
         self.logger.warning(f"  ⚠️  group {name} account status: {status!r}")
         return True
 
+    @staticmethod
+    def _normalize_eth_address(value: Any) -> str:
+        """
+        Coerce a YAML-parsed address back to canonical 0x + 40-hex.
+
+        PyYAML's safe_load parses an unquoted `0x03420F…` as a Python int
+        (it's a valid hex literal), so by the time we see it the `0x`
+        prefix and any leading zeros are gone and the value is an int.
+        Rebuild the 20-byte (40 hex char) representation. Strings are
+        passed through (lower-cased, 0x-prefixed) so a quoted YAML value
+        still works.
+        """
+        if value is None:
+            return ""
+        if isinstance(value, int):
+            # 20-byte address → 40 hex chars, zero-padded.
+            return "0x" + format(value, "040x")
+        s = str(value).strip()
+        if not s:
+            return ""
+        if s.lower().startswith("0x"):
+            return "0x" + s[2:]
+        return "0x" + s
+
     def _setup_tokens(self, tokens: List[Dict[str, Any]], admin_token: str) -> bool:
         ok = True
         for t in tokens:
             token_id = t.get("id")
             name = t.get("name")
             description = t.get("description") or ""
-            address = t.get("address")
+            address = self._normalize_eth_address(t.get("address"))
             chain_id = str(t.get("chain_id") or "")
             if not (token_id and name and address and chain_id):
                 self.logger.error(f"  ❌ token entry missing required fields: {t}")

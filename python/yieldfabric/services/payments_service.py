@@ -232,7 +232,15 @@ class PaymentsService(BaseServiceClient):
         currency: str,
         token_id: str,
     ) -> dict:
-        """GraphQL `assetFlow { createAsset(input: {...}) }`."""
+        """GraphQL `assetFlow { createAsset(input: {...}) }`.
+
+        The backend's asset-type validation is case-sensitive and expects
+        UPPERCASE (CASH, TOKEN, INVOICE, …). `setup_system.sh` uppercases
+        before sending (line `asset_type=$(echo … | tr '[:lower:]' '[:upper:]')`);
+        mirror that here so a YAML `type: Cash` doesn't fail with
+        "Invalid asset type provided".
+        """
+        asset_type = (asset_type or "").upper()
         mutation = """
         mutation CreateAsset($input: CreateAssetInput!) {
             assetFlow {

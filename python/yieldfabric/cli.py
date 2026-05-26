@@ -15,6 +15,7 @@ import os
 import sys
 
 from .config import YieldFabricConfig
+from .utils.env import load_dotenv
 from .core.key_manager import KeyManager
 from .core.runner import YieldFabricRunner
 from .core.setup_runner import YieldFabricSetupRunner
@@ -34,10 +35,13 @@ Examples:
   yieldfabric validate ../scripts/commands.yaml
   yieldfabric version
 
-Environment Variables:
+Environment Variables (also read from ./.env, or --env-file):
+  API_KEY             Backend-service API key (yf_api_…) for non-interactive
+                      auth. Preferred over email/password. Exchanged for a
+                      JWT via POST /auth/api-key at boot.
   PAY_SERVICE_URL     Payments service URL (default: http://localhost:3002)
   AUTH_SERVICE_URL    Auth service URL    (default: http://localhost:3000)
-  COMMAND_DELAY       Delay between commands in seconds (default: 3)
+  COMMAND_DELAY       Delay between commands in seconds (default: 0)
   DEBUG               Enable debug logging (default: false)
         """,
     )
@@ -58,6 +62,14 @@ Environment Variables:
     parser.add_argument("--debug", action="store_true", help="enable debug logging")
     parser.add_argument("--pay-service-url", help="override payments service URL")
     parser.add_argument("--auth-service-url", help="override auth service URL")
+    parser.add_argument(
+        "--api-key",
+        help="backend-service API key (yf_api_…); overrides API_KEY env",
+    )
+    parser.add_argument(
+        "--env-file",
+        help="path to a .env file to load (default: ./.env if present)",
+    )
     parser.add_argument(
         "--command-delay",
         type=int,
@@ -106,10 +118,19 @@ def _apply_overrides(config: YieldFabricConfig, args: argparse.Namespace):
         config.auth_service_url = args.auth_service_url
     if args.command_delay:
         config.command_delay = args.command_delay
+    if args.api_key:
+        config.api_key = args.api_key
 
 
 def main() -> int:
     args = _build_parser().parse_args()
+
+    # Load .env BEFORE reading config from the environment, so API_KEY /
+    # PAY_SERVICE_URL / AUTH_SERVICE_URL declared there are picked up by
+    # from_env(). An explicit --env-file is required to exist; the
+    # implicit ./.env is loaded only if present. Existing process env
+    # always wins over the file.
+    load_dotenv(args.env_file, override=False)
 
     config = YieldFabricConfig.from_env()
     _apply_overrides(config, args)
