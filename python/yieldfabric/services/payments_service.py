@@ -2,7 +2,7 @@
 Payments service client
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Union
 
 from .base import BaseServiceClient
 from ..config import YieldFabricConfig
@@ -10,6 +10,8 @@ from ..models.response import GraphQLResponse, RESTResponse
 from ..utils.graphql import GraphQLMutation
 from ..utils.polling import PollResult, poll_until
 from ..utils.validators import is_provided
+
+TokenLike = Union[str, Callable[[], Optional[str]]]
 
 
 class PaymentsService(BaseServiceClient):
@@ -23,8 +25,18 @@ class PaymentsService(BaseServiceClient):
             config: YieldFabric configuration
         """
         super().__init__(config.pay_service_url, config)
+        self.refresh_token_resolver: Optional[Callable[[str], Optional[str]]] = None
+
+    def _token_value(self, token: TokenLike) -> Optional[str]:
+        """Resolve a static token or a refresh-aware token supplier."""
+        return token() if callable(token) else token
     
-    def graphql_mutation(self, mutation: str, variables: Dict[str, Any], token: str) -> GraphQLResponse:
+    def graphql_mutation(
+        self,
+        mutation: str,
+        variables: Dict[str, Any],
+        token: str,
+    ) -> GraphQLResponse:
         """
         Execute GraphQL mutation.
         
@@ -42,7 +54,17 @@ class PaymentsService(BaseServiceClient):
         self.logger.debug(f"  📋 GraphQL variables: {variables}")
         
         try:
-            response = self._post("/graphql", payload, token=token)
+            refresh_token = (
+                self.refresh_token_resolver(token)
+                if self.refresh_token_resolver and token
+                else None
+            )
+            response = self._post(
+                "/graphql",
+                payload,
+                token=token,
+                refresh_token=refresh_token,
+            )
             data = response.json()
             
             self.logger.debug(f"  📡 Raw GraphQL response: {data}")
@@ -462,7 +484,7 @@ class PaymentsService(BaseServiceClient):
     def poll_workflow_status(
         self,
         workflow_id: str,
-        token: str,
+        token: TokenLike,
         *,
         interval: float = 1.0,
         timeout: float = 120.0,
@@ -479,7 +501,7 @@ class PaymentsService(BaseServiceClient):
         """
 
         def _probe() -> dict:
-            result = self.get_workflow_status(workflow_id, token)
+            result = self.get_workflow_status(workflow_id, self._token_value(token))
             return result or {}
 
         def _done(obs: dict) -> bool:
@@ -505,7 +527,7 @@ class PaymentsService(BaseServiceClient):
     def poll_swap_completion(
         self,
         swap_id: str,
-        token: str,
+        token: TokenLike,
         *,
         interval: float = 2.0,
         timeout: float = 120.0,
@@ -526,7 +548,7 @@ class PaymentsService(BaseServiceClient):
         """
 
         def _probe() -> Optional[str]:
-            return self.query_swap_status(swap_id, token)
+            return self.query_swap_status(swap_id, self._token_value(token))
 
         def _done(obs: Optional[str]) -> bool:
             return obs in self._SWAP_TERMINAL_STATES
@@ -550,41 +572,64 @@ class PaymentsService(BaseServiceClient):
         self,
         user_id: str,
         message_id: str,
-        token: str,
+        token: TokenLike,
         *,
         interval: float = 2.0,
         timeout: float = 300.0,
     ) -> PollResult[dict]:
         """
         Poll `/api/users/{user_id}/messages/{message_id}` until the
-        message's `executed` timestamp is populated (i.e. the MQ consumer
-        finished processing it). Returns the final message record.
+        message's chain execution and graph post-processing are complete.
+        Returns the final message record.
 
-        Use this when you need to know an MQ-submitted message has
-        actually materialized on-chain — not just been enqueued.
+        `executed` alone only means the on-chain transaction returned.
+        Dependent flows must wait until the backend reports graph
+        post-processing done, otherwise a fast follow-up command can race
+        newly-created swap/payment/contract rows.
         """
 
         def _probe() -> dict:
-            return self.get_user_message(user_id, message_id, token) or {}
+            return self.get_user_message(user_id, message_id, self._token_value(token)) or {}
 
         def _done(obs: dict) -> bool:
-            # `executed` is either a timestamp (populated → done) or
-            # None / absent (still running).
-            return bool(obs.get("executed"))
+            if not obs.get("executed"):
+                return False
+
+            response = obs.get("response")
+            if not isinstance(response, dict):
+                return True
+
+            status = str(response.get("status") or "").lower()
+            if status in {"failed", "error", "canceled"}:
+                return True
+            if response.get("success") is False or response.get("error"):
+                return True
+            if status == "post_processing":
+                return False
+
+            has_post_lifecycle = (
+                "post_processed_at" in response
+                or "post_processing_attempts" in response
+                or "post_processing_error_kind" in response
+            )
+            if not has_post_lifecycle:
+                return True
+
+            return bool(response.get("post_processed_at"))
 
         return poll_until(
             _probe,
             _done,
             interval=interval,
             timeout=timeout,
-            description=f"message {message_id} execution",
+            description=f"message {message_id} processing",
         )
 
     def poll_unsigned_transaction_ready(
         self,
         user_id: str,
         message_id: str,
-        token: str,
+        token: TokenLike,
         *,
         interval: float = 2.0,
         timeout: float = 120.0,
@@ -600,7 +645,11 @@ class PaymentsService(BaseServiceClient):
         """
 
         def _probe() -> Optional[dict]:
-            return self.get_unsigned_transaction(user_id, message_id, token)
+            return self.get_unsigned_transaction(
+                user_id,
+                message_id,
+                self._token_value(token),
+            )
 
         def _done(obs: Optional[dict]) -> bool:
             return obs is not None and bool(obs)
@@ -615,7 +664,7 @@ class PaymentsService(BaseServiceClient):
 
     def poll_accept_all_until_ready(
         self,
-        token: str,
+        token: TokenLike,
         *,
         denomination: str,
         idempotency_key: str,
@@ -659,7 +708,11 @@ class PaymentsService(BaseServiceClient):
         def _probe() -> dict:
             payload = {"query": mutation, "variables": variables}
             try:
-                response = self._post("/graphql", payload, token=token)
+                response = self._post(
+                    "/graphql",
+                    payload,
+                    token=self._token_value(token),
+                )
                 data = response.json()
             except Exception as e:
                 self.logger.debug(f"accept_all probe failed: {e}")
@@ -684,7 +737,7 @@ class PaymentsService(BaseServiceClient):
     def poll_signatures_cleared(
         self,
         user_id: str,
-        token: str,
+        token: TokenLike,
         *,
         interval: float = 2.0,
         timeout: float = 30.0,
@@ -700,7 +753,12 @@ class PaymentsService(BaseServiceClient):
         """
 
         def _probe() -> int:
-            return len(self.get_messages_awaiting_signature(user_id, token))
+            return len(
+                self.get_messages_awaiting_signature(
+                    user_id,
+                    self._token_value(token),
+                )
+            )
 
         def _done(obs: int) -> bool:
             return obs == 0
@@ -749,4 +807,3 @@ class PaymentsService(BaseServiceClient):
                 status_code=0,
                 errors=[str(e)]
             )
-

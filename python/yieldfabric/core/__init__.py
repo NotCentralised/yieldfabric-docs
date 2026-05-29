@@ -7,6 +7,7 @@ from .message_listener import MessageSignatureListener, SignerCallback
 from .output_store import OutputStore
 from .runner import YieldFabricRunner
 from .setup_runner import YieldFabricSetupRunner
+from .token_manager import TokenManager
 from .yaml_parser import YAMLParser
 
 __all__ = [
@@ -16,6 +17,7 @@ __all__ = [
     "MessageSignatureListener",
     "OutputStore",
     "SignerCallback",
+    "TokenManager",
     "YAMLParser",
     "YieldFabricRunner",
     "YieldFabricSetupRunner",

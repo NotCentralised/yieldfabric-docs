@@ -138,7 +138,7 @@ class GraphQLMutation:
             message
             swapId
             accountAddress
-            counterpartyAddress
+            counterparty
             swapResult
             messageId
             timestamp
@@ -153,7 +153,7 @@ class GraphQLMutation:
             message
             swapId
             accountAddress
-            counterpartyAddress
+            counterparty
             swapResult
             messageId
             timestamp
@@ -168,9 +168,11 @@ class GraphQLMutation:
             message
             swapId
             accountAddress
-            counterpartyAddress
+            counterparty
             swapResult
             messageId
+            transactionId
+            signature
             timestamp
         }
     }
@@ -322,4 +324,3 @@ class GraphQLQuery:
         if variables:
             payload['variables'] = variables
         return payload
-

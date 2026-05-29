@@ -20,16 +20,16 @@ class AuthService(BaseServiceClient):
         """
         super().__init__(config.auth_service_url, config)
     
-    def login(self, email: str, password: str) -> Optional[str]:
+    def login_session(self, email: str, password: str) -> Optional[dict]:
         """
-        Login user and get JWT token.
+        Login user and keep the full token bundle.
         
         Args:
             email: User email
             password: User password
             
         Returns:
-            JWT token or None if login fails
+            Normalized token bundle or None if login fails
         """
         self.logger.info(f"  🔐 Logging in user: {email}")
         
@@ -46,16 +46,75 @@ class AuthService(BaseServiceClient):
             self.logger.debug(f"    📡 Login response: {data}")
             
             token = data.get('token') or data.get('access_token') or data.get('jwt')
+            refresh_token = data.get('refresh_token') or data.get('refreshToken')
+            expires_in = data.get('expires_in') or data.get('expiresIn')
             
             if token:
                 self.logger.success("    ✅ Login successful")
-                return token
+                return {
+                    "access_token": token,
+                    "refresh_token": refresh_token,
+                    "expires_in": expires_in,
+                    "raw": data,
+                }
             else:
                 self.logger.error("    ❌ No token in response")
                 return None
         
         except Exception as e:
             self.logger.error(f"    ❌ Login failed: {e}")
+            return None
+
+    def login(self, email: str, password: str) -> Optional[str]:
+        """
+        Login user and get JWT token.
+
+        Compatibility wrapper for call sites that only need the access
+        token. YAML execution uses TokenManager.login_session so refresh
+        tokens are retained.
+        """
+        session = self.login_session(email, password)
+        return session.get("access_token") if session else None
+
+    def refresh_access_token(
+        self,
+        refresh_token: str,
+        *,
+        chain_id: str = "31337",
+    ) -> Optional[dict]:
+        """
+        Exchange a refresh token for a fresh access token.
+
+        The auth service rotates refresh tokens, so callers should keep
+        the returned refresh_token when present.
+        """
+        self.logger.debug("  🔁 Refreshing access token")
+
+        payload = {
+            "refresh_token": refresh_token,
+            "chain_id": chain_id,
+        }
+
+        try:
+            response = self._post("/auth/refresh", payload)
+            data = response.json()
+
+            self.logger.debug(f"    📡 Refresh response: {data}")
+
+            token = data.get('access_token') or data.get('token') or data.get('jwt')
+            if not token:
+                self.logger.error("    ❌ No access token in refresh response")
+                return None
+
+            return {
+                "access_token": token,
+                "refresh_token": data.get('refresh_token') or data.get('refreshToken'),
+                "expires_in": data.get('expires_in') or data.get('expiresIn'),
+                "raw": data,
+            }
+
+        except Exception as e:
+            self.logger.error(f"    ❌ Token refresh failed: {e}")
             return None
 
     def authenticate_api_key(self, api_key: str) -> Optional[str]:
@@ -670,4 +729,3 @@ class AuthService(BaseServiceClient):
         except Exception as e:
             self.logger.error(f"    ❌ deploy_group_account failed: {e}")
             return {"status": "error", "message": str(e)}
-

@@ -7,7 +7,7 @@ import re
 from typing import Any, Dict, Optional
 
 from ..utils.logger import get_logger
-from ..utils.shell import is_shell_command, extract_shell_command, evaluate_shell_command
+from ..utils.shell import extract_shell_command, evaluate_shell_command
 
 
 class OutputStore:
@@ -80,17 +80,9 @@ class OutputStore:
         if not isinstance(value, str):
             return value
         
-        # Handle shell command substitution
-        if is_shell_command(value):
-            shell_cmd = extract_shell_command(value)
-            if shell_cmd:
-                result = evaluate_shell_command(shell_cmd)
-                if result is not None:
-                    self.logger.substitution(value, result)
-                    return result
-                else:
-                    self.logger.warning(f"    ⚠️  Shell command failed: {value}")
-                    return value
+        # Handle shell command substitution, either as the entire value
+        # (`$(date +%s)`) or embedded in a string (`deposit-$(date +%s)`).
+        value = self._substitute_shell_commands(value)
         
         # Handle JSON array with variable references
         if value.startswith('[') and value.endswith(']') and '$' in value:
@@ -147,6 +139,22 @@ class OutputStore:
         if result != value:
             self.logger.substitution(value, result)
         return result
+
+    def _substitute_shell_commands(self, value: str) -> str:
+        """Expand simple `$(...)` command substitutions inside strings."""
+        pattern = r"\$\(([^()]*)\)"
+
+        def replace_shell(match):
+            original = match.group(0)
+            command = extract_shell_command(original) or match.group(1)
+            result = evaluate_shell_command(command)
+            if result is None:
+                self.logger.warning(f"    ⚠️  Shell command failed: {original}")
+                return original
+            self.logger.substitution(original, result)
+            return result
+
+        return re.sub(pattern, replace_shell, value)
     
     def _substitute_list(self, lst: list) -> list:
         """Recursively substitute variables in a list."""
@@ -205,4 +213,3 @@ def set_output_store(store: OutputStore):
     """Set global output store instance."""
     global _global_output_store
     _global_output_store = store
-

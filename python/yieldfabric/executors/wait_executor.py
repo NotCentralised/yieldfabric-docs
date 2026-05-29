@@ -108,7 +108,10 @@ class WaitExecutor(BaseExecutor):
 
         try:
             result = self.payments_service.poll_workflow_status(
-                workflow_id, token, interval=interval, timeout=timeout
+                workflow_id,
+                self._token_for_polling(command, token),
+                interval=interval,
+                timeout=timeout,
             )
         except TimeoutError as e:
             self.log_command_failure(command)
@@ -155,7 +158,10 @@ class WaitExecutor(BaseExecutor):
 
         try:
             result = self.payments_service.poll_swap_completion(
-                swap_id, token, interval=interval, timeout=timeout
+                swap_id,
+                self._token_for_polling(command, token),
+                interval=interval,
+                timeout=timeout,
             )
         except TimeoutError as e:
             self.log_command_failure(command)
@@ -183,9 +189,10 @@ class WaitExecutor(BaseExecutor):
 
     def _wait_for_message(self, command: Command) -> CommandResponse:
         """
-        Wait for `message_id` to have `executed` populated. Requires
-        `message_id` and either explicit `user_id` (the subject of the
-        message; defaults to the logged-in user's JWT sub if absent).
+        Wait for `message_id` to finish chain execution and graph
+        post-processing. Requires `message_id` and either explicit
+        `user_id` (the subject of the message; defaults to the logged-in
+        user's JWT sub if absent).
         """
         self.log_command_start(command)
 
@@ -216,7 +223,11 @@ class WaitExecutor(BaseExecutor):
 
         try:
             result = self.payments_service.poll_message_completion(
-                user_id, message_id, token, interval=interval, timeout=timeout
+                user_id,
+                message_id,
+                self._token_for_polling(command, token),
+                interval=interval,
+                timeout=timeout,
             )
         except TimeoutError as e:
             self.log_command_failure(command)
@@ -234,7 +245,7 @@ class WaitExecutor(BaseExecutor):
         }
         self.store_outputs(command.name, outputs)
         self.logger.success(
-            f"  ✅ message {message_id[:8]}... executed "
+            f"  ✅ message {message_id[:8]}... processed "
             f"in {result.attempts} attempt(s) / {result.elapsed:.1f}s"
         )
         self.log_command_success(command)
@@ -264,7 +275,10 @@ class WaitExecutor(BaseExecutor):
 
         try:
             result = self.payments_service.poll_signatures_cleared(
-                user_id, token, interval=interval, timeout=timeout
+                user_id,
+                self._token_for_polling(command, token),
+                interval=interval,
+                timeout=timeout,
             )
         except TimeoutError as e:
             self.log_command_failure(command)
@@ -322,7 +336,7 @@ class WaitExecutor(BaseExecutor):
 
         try:
             result = self.payments_service.poll_accept_all_until_ready(
-                token,
+                self._token_for_polling(command, token),
                 denomination=denomination,
                 idempotency_key=idempotency_key,
                 obligor=params.obligor or params.get("obligor"),
@@ -354,5 +368,3 @@ class WaitExecutor(BaseExecutor):
         )
         self.log_command_success(command)
         return CommandResponse.success_response(command.name, command.type, outputs)
-
-

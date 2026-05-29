@@ -2,7 +2,7 @@
 Base executor class
 """
 
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple, Union
 
 from ..config import YieldFabricConfig
 from ..models import Command, CommandResponse
@@ -18,7 +18,8 @@ class BaseExecutor:
     """Base class for command executors."""
     
     def __init__(self, auth_service: AuthService, payments_service: PaymentsService,
-                 output_store: OutputStore, config: YieldFabricConfig):
+                 output_store: OutputStore, config: YieldFabricConfig,
+                 token_manager=None):
         """
         Initialize executor.
         
@@ -27,11 +28,13 @@ class BaseExecutor:
             payments_service: Payments service client
             output_store: Output store for variable substitution
             config: YieldFabric configuration
+            token_manager: Optional shared token/session manager
         """
         self.auth_service = auth_service
         self.payments_service = payments_service
         self.output_store = output_store
         self.config = config
+        self.token_manager = token_manager
         self.logger = get_logger(debug=config.debug)
     
     def execute(self, command: Command) -> CommandResponse:
@@ -57,6 +60,14 @@ class BaseExecutor:
             JWT token or None if authentication fails
         """
         user = command.user
+
+        if self.token_manager:
+            return self.token_manager.get_token(
+                user.id,
+                user.password,
+                group_name=user.group,
+                use_delegation=True,
+            )
         
         if user.group:
             # Login with group delegation
@@ -64,6 +75,36 @@ class BaseExecutor:
         else:
             # Regular login
             return self.auth_service.login(user.id, user.password)
+
+    def _token_supplier(
+        self,
+        command: Command,
+        *,
+        use_delegation: bool = True,
+    ) -> Callable[[], Optional[str]]:
+        """Return a callable that refreshes the command token as needed."""
+        if self.token_manager:
+            return self.token_manager.token_supplier(
+                command.user.id,
+                command.user.password,
+                group_name=command.user.group,
+                use_delegation=use_delegation,
+            )
+        if use_delegation:
+            return lambda: self.get_token(command)
+        return lambda: self.auth_service.login(command.user.id, command.user.password)
+
+    def _token_for_polling(
+        self,
+        command: Command,
+        token: str,
+        *,
+        use_delegation: bool = True,
+    ) -> Union[str, Callable[[], Optional[str]]]:
+        """Use a refresh-aware supplier only when a manager is installed."""
+        if self.token_manager:
+            return self._token_supplier(command, use_delegation=use_delegation)
+        return token
     
     def store_outputs(self, command_name: str, data: dict):
         """
@@ -100,14 +141,14 @@ class BaseExecutor:
                 self.logger.parameter(key, str(value))
 
     # ------------------------------------------------------------------
-    # Per-command `wait: true` — event-based polling baked into every
-    # async command.
+    # Event-based polling baked into every async command.
     #
-    # The pattern: every MQ-backed mutation returns `message_id`. If the
-    # caller opts in with `parameters.wait: true`, we poll the message
-    # status endpoint until `executed` is populated before returning.
-    # This eliminates the need for a blanket `command_delay` between
-    # commands — callers that need sequencing just set `wait: true`.
+    # The pattern: every MQ-backed mutation returns `message_id`. By
+    # default, we poll the message-status endpoint until `executed` is
+    # populated before returning. That keeps YAML execution sequenced by
+    # real backend state instead of the shell harness's blanket
+    # `COMMAND_DELAY`. Callers can opt out with `parameters.wait: false`
+    # for fire-and-forget workloads.
     #
     # Executors call `_maybe_wait_for_execution` after a successful
     # submission and BEFORE storing final outputs. Downstream commands
@@ -119,13 +160,18 @@ class BaseExecutor:
     _DEFAULT_WAIT_INTERVAL_SEC = 2.0
 
     def _should_wait(self, command: Command) -> bool:
-        """True iff `parameters.wait` was set truthy in the YAML."""
+        """Wait by default; only an explicit falsey `wait` disables it."""
         value = command.parameters.get("wait")
-        if value is True:
+        if value is None:
             return True
+        if value is False:
+            return False
         if isinstance(value, str):
-            return value.strip().lower() in ("true", "1", "yes")
+            return value.strip().lower() not in ("false", "0", "no", "off")
         return bool(value)
+
+    def _wait_was_explicit(self, command: Command) -> bool:
+        return command.parameters.get("wait") is not None
 
     def _maybe_wait_for_execution(
         self,
@@ -133,11 +179,11 @@ class BaseExecutor:
         token: str,
         message_id: Optional[str],
         outputs: dict,
-    ) -> None:
+    ) -> Optional[str]:
         """
-        If `parameters.wait` is truthy, block until the MQ consumer has
-        executed `message_id`. Merge polling metadata into `outputs`
-        so downstream commands can reference it:
+        Unless `parameters.wait` is explicitly false, block until the MQ
+        consumer has executed `message_id`. Merge polling metadata into
+        `outputs` so downstream commands can reference it:
 
             <cmd>.executed_at         timestamp the message finished
             <cmd>.execution_response  full backend response (dict)
@@ -147,52 +193,79 @@ class BaseExecutor:
                                       the timeout (kept under the
                                       wait_timeout ceiling)
 
-        A missing / falsy `wait` is a no-op. A missing `message_id` is
-        logged as a warning but not an error — some mutations produce
-        no message_id (e.g. pure queries).
+        `wait: false` is a no-op. A missing `message_id` is logged as a
+        warning only when the YAML explicitly requested waiting — some
+        commands are pure reads or synchronous REST calls and naturally
+        produce no MQ message.
         """
         if not self._should_wait(command):
-            return
+            return None
         if not message_id:
-            self.logger.warning(
-                "  ⚠️  wait=true requested but the mutation did not return a "
-                "message_id; nothing to poll"
-            )
-            return
+            if self._wait_was_explicit(command):
+                self.logger.warning(
+                    "  ⚠️  wait requested but the command did not return a "
+                    "message_id; nothing to poll"
+                )
+            return None
 
         entity_id = command.parameters.get("user_id") or get_entity_id(token)
         if not entity_id:
-            self.logger.warning(
-                "  ⚠️  wait=true but could not derive entity_id from JWT; "
-                "skipping poll"
+            return (
+                "wait requested but could not derive entity_id from JWT; "
+                "cannot poll message completion"
             )
-            return
 
         timeout = self._float_param(command, "wait_timeout", self._DEFAULT_WAIT_TIMEOUT_SEC)
         interval = self._float_param(command, "wait_interval", self._DEFAULT_WAIT_INTERVAL_SEC)
 
         self.logger.info(
-            f"  ⏳ wait=true — polling message {message_id[:8]}... "
+            f"  ⏳ polling message {message_id[:8]}... "
             f"(interval={interval}s, timeout={timeout}s)"
         )
         try:
             result = self.payments_service.poll_message_completion(
-                entity_id, message_id, token, interval=interval, timeout=timeout
+                entity_id,
+                message_id,
+                self._token_for_polling(command, token),
+                interval=interval,
+                timeout=timeout,
             )
         except TimeoutError as e:
-            self.logger.error(f"  ❌ wait=true timed out: {e}")
+            self.logger.error(f"  ❌ message polling timed out: {e}")
             outputs["wait_timed_out"] = True
             outputs["wait_error"] = str(e)
-            return
+            return str(e)
 
         outputs["executed_at"] = result.observation.get("executed")
         outputs["execution_response"] = result.observation.get("response")
+        if isinstance(result.observation.get("response"), dict):
+            outputs["post_processed_at"] = result.observation["response"].get(
+                "post_processed_at"
+            )
         outputs["wait_attempts"] = result.attempts
         outputs["wait_elapsed"] = result.elapsed
         self.logger.success(
-            f"    ✅ message {message_id[:8]}... executed in "
+            f"    ✅ message {message_id[:8]}... processed in "
             f"{result.attempts} attempt(s) / {result.elapsed:.1f}s"
         )
+        return self._message_execution_error(result.observation)
+
+    def _message_execution_error(self, observation: dict) -> Optional[str]:
+        """Return an error message when the final MQ response is failed."""
+        response = observation.get("response")
+        if not isinstance(response, dict):
+            return None
+
+        status = str(response.get("status") or "").lower()
+        success = response.get("success")
+        if success is False or status in {"failed", "error"}:
+            return (
+                response.get("error")
+                or response.get("error_message")
+                or response.get("message")
+                or "message execution failed"
+            )
+        return None
 
     def _float_param(self, command: Command, name: str, default: float) -> float:
         raw = command.parameters.get(name)
@@ -237,6 +310,13 @@ class BaseExecutor:
         """
         if use_delegation:
             token = self.get_token(command)
+        elif self.token_manager:
+            token = self.token_manager.get_token(
+                command.user.id,
+                command.user.password,
+                group_name=command.user.group,
+                use_delegation=False,
+            )
         else:
             token = self.auth_service.login(command.user.id, command.user.password)
         if token:
@@ -251,7 +331,8 @@ class BaseExecutor:
     # (they're either noisy or duplicated elsewhere in the output).
     _OUTPUT_LOG_SKIP_KEYS = frozenset({
         # Wait-related metadata already surfaced by _maybe_wait_for_execution.
-        "executed_at", "execution_response", "wait_attempts", "wait_elapsed",
+        "executed_at", "post_processed_at", "execution_response",
+        "wait_attempts", "wait_elapsed",
         "wait_timed_out", "wait_error",
     })
 
@@ -266,7 +347,7 @@ class BaseExecutor:
         """
         Common tail for every successful async submission:
 
-            1. Poll for execution if `parameters.wait` is set.
+            1. Poll for execution unless `parameters.wait` is false.
             2. Store outputs for variable substitution.
             3. Log success + echo each non-None output field at info
                level so users running without DEBUG still see the
@@ -274,10 +355,21 @@ class BaseExecutor:
             4. log_command_success.
             5. Wrap in CommandResponse.success_response.
         """
-        self._maybe_wait_for_execution(
+        wait_error = self._maybe_wait_for_execution(
             command, token, outputs.get("message_id"), outputs
         )
         self.store_outputs(command.name, outputs)
+        if wait_error:
+            self.logger.error(f"    ❌ Message execution failed: {wait_error}")
+            self.log_command_failure(command)
+            return CommandResponse(
+                success=False,
+                command_name=command.name,
+                command_type=command.type,
+                message="Command execution failed",
+                data=outputs,
+                errors=[wait_error],
+            )
         self.logger.success(f"    ✅ {success_message}")
         for key, value in outputs.items():
             if key in self._OUTPUT_LOG_SKIP_KEYS:
@@ -333,4 +425,3 @@ class BaseExecutor:
         return CommandResponse.error_response(
             command.name, command.type, [message]
         )
-

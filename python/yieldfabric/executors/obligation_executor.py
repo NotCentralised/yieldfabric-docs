@@ -11,6 +11,7 @@ import time
 from .base import BaseExecutor
 from ..models import Command, CommandResponse
 from ..utils.graphql import GraphQLMutation
+from ..utils.graphql_input import normalize_initial_payments
 
 
 class ObligationExecutor(BaseExecutor):
@@ -67,7 +68,11 @@ class ObligationExecutor(BaseExecutor):
         if params.data:
             input_obj["data"] = params.data
         if params.initial_payments:
-            input_obj["initialPayments"] = params.initial_payments
+            input_obj["initialPayments"] = normalize_initial_payments(
+                params.initial_payments
+            )
+        if params.contract_id:
+            input_obj["contractId"] = params.contract_id
         if params.idempotency_key:
             input_obj["idempotencyKey"] = params.idempotency_key
 

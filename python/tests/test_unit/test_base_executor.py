@@ -152,7 +152,8 @@ def test_finalize_business_error_returns_supplied_message(executor):
 
 
 def test_finalize_success_stores_outputs_and_returns_success(executor, output_store):
-    cmd = _command(name="deposit_1")
+    params = CommandParameters(raw_params={"wait": False})
+    cmd = _command(name="deposit_1", params=params)
     outputs = {"message_id": "msg-1", "amount": "10", "empty_field": None}
     out = executor._finalize_success(
         cmd, token="tok", outputs=outputs, success_message="Deposit ok"
@@ -165,12 +166,34 @@ def test_finalize_success_stores_outputs_and_returns_success(executor, output_st
     assert output_store.get("deposit_1", "amount") == "10"
 
 
-def test_finalize_success_skips_wait_when_not_requested(
+def test_finalize_success_polls_by_default_when_message_id_present(
     executor, payments_service
 ):
-    # No `wait: true` on the command → poll_message_completion should
-    # NEVER be called.
-    cmd = _command(params=CommandParameters())
+    from yieldfabric.utils.polling import PollResult
+
+    payments_service.poll_message_completion.return_value = PollResult(
+        observation={"executed": "2026-04-21T10:00:00Z", "response": {"ok": True}},
+        attempts=2,
+        elapsed=2.0,
+    )
+
+    params = CommandParameters(raw_params={"user_id": "entity-1"})
+    cmd = _command(params=params)
+    out = executor._finalize_success(
+        cmd, token="tok",
+        outputs={"message_id": "msg-1"},
+        success_message="ok",
+    )
+
+    assert out.success is True
+    payments_service.poll_message_completion.assert_called_once()
+    assert out.data["wait_attempts"] == 2
+
+
+def test_finalize_success_skips_wait_when_explicitly_disabled(
+    executor, payments_service
+):
+    cmd = _command(params=CommandParameters(raw_params={"wait": False}))
     executor._finalize_success(
         cmd, token="tok",
         outputs={"message_id": "msg-1"},
@@ -220,13 +243,9 @@ def test_finalize_success_wait_noop_when_message_id_missing(
     payments_service.poll_message_completion.assert_not_called()
 
 
-def test_finalize_success_wait_surfaces_timeout_without_raising(
+def test_finalize_success_wait_timeout_fails_command(
     executor, payments_service
 ):
-    # If poll_message_completion raises TimeoutError, _finalize_success
-    # should still return a success CommandResponse (the mutation itself
-    # succeeded — wait is advisory). It must mark wait_timed_out in
-    # outputs so callers can detect it.
     payments_service.poll_message_completion.side_effect = TimeoutError(
         "message never executed"
     )
@@ -237,6 +256,7 @@ def test_finalize_success_wait_surfaces_timeout_without_raising(
         outputs={"message_id": "msg-1"},
         success_message="ok",
     )
-    assert out.success is True
+    assert out.success is False
+    assert out.errors == ["message never executed"]
     assert out.data.get("wait_timed_out") is True
     assert "never executed" in (out.data.get("wait_error") or "")

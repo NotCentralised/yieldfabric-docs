@@ -13,7 +13,29 @@ single source of truth here.
 
 import base64
 import json
-from typing import Any, Optional
+from typing import Any, Dict, Optional
+
+
+def decode_payload(token: str) -> Optional[Dict[str, Any]]:
+    """
+    Decode the JWT payload without verifying the signature.
+
+    Silent on failure: returns None for malformed tokens, base64/JSON
+    decode errors, or non-object payloads.
+    """
+    if not token:
+        return None
+    parts = token.split(".")
+    if len(parts) != 3:
+        return None
+    try:
+        padded = parts[1] + "=" * (-len(parts[1]) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
 
 
 def extract_claim(token: str, *claim_names: str) -> Optional[Any]:
@@ -28,23 +50,23 @@ def extract_claim(token: str, *claim_names: str) -> Optional[Any]:
         # prefer acting_as (delegation), fall back to sub
         entity_id = extract_claim(jwt, "acting_as", "sub")
     """
-    if not token:
-        return None
-    parts = token.split(".")
-    if len(parts) != 3:
-        return None
-    try:
-        padded = parts[1] + "=" * (-len(parts[1]) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(padded))
-    except Exception:
-        return None
-    if not isinstance(payload, dict):
+    payload = decode_payload(token)
+    if not payload:
         return None
     for name in claim_names:
         value = payload.get(name)
         if value:  # skip None / empty string / 0
             return value
     return None
+
+
+def get_exp(token: str) -> Optional[float]:
+    """Return the numeric `exp` claim as epoch seconds, if present."""
+    value = extract_claim(token, "exp")
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def get_entity_id(token: str) -> Optional[str]:

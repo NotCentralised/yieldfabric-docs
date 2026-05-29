@@ -113,7 +113,24 @@ class ComposedExecutor(BaseExecutor):
             )
 
         # Build backend-shaped operation list. Each entry is
-        # {operationType: <Enum>, operationData: "<json-string>"}.
+        # {operationType: <Enum>, operationData: <json-object>}.
+        #
+        # IMPORTANT: `operationData` is sent as a JSON object (dict), NOT a
+        # stringified JSON literal. The Rust resolver's
+        # `ComposedOperationItem.operation_data` field is `serde_json::Value`,
+        # which receives whichever GraphQL JSON shape the client sends. The
+        # downstream `serde_json::from_value::<*Data>(operation_data)` in
+        # each match arm of `composed_flow.rs::create_message_for_operation`
+        # expects the inner *Data struct shape (e.g. CompleteSwapData,
+        # CreateObligationData), NOT a `Value::String` containing a JSON
+        # blob. Wrapping with `json.dumps` here produces the latter and
+        # surfaces as `invalid type: string "...", expected struct *Data`
+        # at the resolver — historically seen on the
+        # `complete_origination_swap_1` composed step.
+        #
+        # The Rust resolver was updated to tolerate the legacy string form
+        # for backward compatibility (see composed_flow.rs:580), but the
+        # canonical form is the object, and we should always send it.
         backend_ops = []
         for i, op in enumerate(operations):
             op_type = op.get("operation_type")
@@ -132,7 +149,7 @@ class ComposedExecutor(BaseExecutor):
 
             backend_ops.append({
                 "operationType": enum_value,
-                "operationData": json.dumps(op_data),
+                "operationData": op_data,
             })
 
         self.log_parameters({

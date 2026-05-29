@@ -38,7 +38,7 @@ other pending signatures.
 from __future__ import annotations
 
 import threading
-from typing import Callable, Optional, Set
+from typing import Callable, Optional, Set, Union
 
 from ..services import PaymentsService
 from ..utils.logger import get_logger
@@ -46,6 +46,7 @@ from ..utils.logger import get_logger
 
 SignerCallback = Callable[[dict], str]
 """A callable that turns an unsigned-transaction dict into a hex-string signature."""
+TokenLike = Union[str, Callable[[], Optional[str]]]
 
 
 class MessageSignatureListener:
@@ -69,7 +70,7 @@ class MessageSignatureListener:
         self,
         payments_service: PaymentsService,
         user_id: str,
-        token: str,
+        token: TokenLike,
         *,
         sign_callback: SignerCallback,
         interval: float = 3.0,
@@ -144,7 +145,7 @@ class MessageSignatureListener:
         while not self._stop_event.is_set():
             try:
                 messages = self._payments.get_messages_awaiting_signature(
-                    self._user_id, self._token
+                    self._user_id, self._token_value()
                 )
             except Exception as e:
                 self.logger.error(
@@ -208,7 +209,7 @@ class MessageSignatureListener:
 
         try:
             result = self._payments.submit_signed_message(
-                self._user_id, message_id, signature_hex, self._token
+                self._user_id, message_id, signature_hex, self._token_value()
             )
         except Exception as e:
             self.logger.error(
@@ -228,3 +229,6 @@ class MessageSignatureListener:
             self.logger.success(
                 f"  ✍️  signed and submitted message {message_id[:8]}..."
             )
+
+    def _token_value(self) -> Optional[str]:
+        return self._token() if callable(self._token) else self._token

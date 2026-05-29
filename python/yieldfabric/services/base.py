@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional
 
 from ..config import YieldFabricConfig
 from ..utils.logger import get_logger
+from ..utils.serialization import json_safe
 
 
 class BaseServiceClient:
@@ -25,15 +26,28 @@ class BaseServiceClient:
         self.logger = get_logger(debug=config.debug)
         self.session = requests.Session()
     
-    def _get_headers(self, token: Optional[str] = None, content_type: str = "application/json") -> Dict[str, str]:
+    def _get_headers(
+        self,
+        token: Optional[str] = None,
+        content_type: str = "application/json",
+        refresh_token: Optional[str] = None,
+    ) -> Dict[str, str]:
         """Get HTTP headers for requests."""
         headers = {"Content-Type": content_type}
         if token:
             headers["Authorization"] = f"Bearer {token}"
+        if refresh_token:
+            headers["X-Refresh-Token"] = refresh_token
         return headers
     
-    def _post(self, endpoint: str, data: Dict[str, Any], token: Optional[str] = None, 
-              timeout: Optional[int] = None) -> requests.Response:
+    def _post(
+        self,
+        endpoint: str,
+        data: Dict[str, Any],
+        token: Optional[str] = None,
+        timeout: Optional[int] = None,
+        refresh_token: Optional[str] = None,
+    ) -> requests.Response:
         """
         Make POST request to service.
         
@@ -47,7 +61,7 @@ class BaseServiceClient:
             Response object
         """
         url = f"{self.base_url}{endpoint}"
-        headers = self._get_headers(token)
+        headers = self._get_headers(token, refresh_token=refresh_token)
         timeout = timeout or self.config.request_timeout
         
         self.logger.api_request("POST", url)
@@ -55,7 +69,7 @@ class BaseServiceClient:
         try:
             response = self.session.post(
                 url,
-                json=data,
+                json=json_safe(data),
                 headers=headers,
                 timeout=timeout
             )
@@ -126,9 +140,22 @@ class BaseServiceClient:
             response = self._post(endpoint, data, token=token)
             return response.json()
         except Exception as e:
+            response = getattr(e, "response", None)
+            status_code = getattr(response, "status_code", None)
+            if response is not None:
+                try:
+                    body = response.json()
+                except Exception:
+                    body = response.text
+                message = body if body else str(e)
+            else:
+                message = str(e)
             if description:
-                self.logger.error(f"    ❌ {description}: {e}")
-            return {"status": "error", "message": str(e)}
+                self.logger.error(f"    ❌ {description}: {message}")
+            error = {"status": "error", "message": str(message)}
+            if status_code is not None:
+                error["status_code"] = status_code
+            return error
 
     def _get_json_safe(
         self,
@@ -196,4 +223,3 @@ class BaseServiceClient:
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit."""
         self.close()
-

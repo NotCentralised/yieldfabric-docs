@@ -20,6 +20,7 @@ from ..executors import (
 )
 from ..validation import YAMLValidator, ServiceValidator
 from ..core.output_store import OutputStore
+from ..core.token_manager import TokenManager
 from ..core.yaml_parser import YAMLParser
 from ..utils.logger import get_logger
 
@@ -40,6 +41,7 @@ class YieldFabricRunner:
         # Initialize services
         self.auth_service = AuthService(self.config)
         self.payments_service = PaymentsService(self.config)
+        self.token_manager = TokenManager(self.auth_service, self.config)
         
         # Initialize core components
         self.output_store = OutputStore(debug=self.config.debug)
@@ -48,35 +50,35 @@ class YieldFabricRunner:
         # Initialize executors
         self.payment_executor = PaymentExecutor(
             self.auth_service, self.payments_service,
-            self.output_store, self.config
+            self.output_store, self.config, self.token_manager
         )
         self.obligation_executor = ObligationExecutor(
             self.auth_service, self.payments_service,
-            self.output_store, self.config
+            self.output_store, self.config, self.token_manager
         )
         self.query_executor = QueryExecutor(
             self.auth_service, self.payments_service,
-            self.output_store, self.config
+            self.output_store, self.config, self.token_manager
         )
         self.swap_executor = SwapExecutor(
             self.auth_service, self.payments_service,
-            self.output_store, self.config
+            self.output_store, self.config, self.token_manager
         )
         self.treasury_executor = TreasuryExecutor(
             self.auth_service, self.payments_service,
-            self.output_store, self.config
+            self.output_store, self.config, self.token_manager
         )
         self.group_admin_executor = GroupAdminExecutor(
             self.auth_service, self.payments_service,
-            self.output_store, self.config
+            self.output_store, self.config, self.token_manager
         )
         self.composed_executor = ComposedExecutor(
             self.auth_service, self.payments_service,
-            self.output_store, self.config
+            self.output_store, self.config, self.token_manager
         )
         self.wait_executor = WaitExecutor(
             self.auth_service, self.payments_service,
-            self.output_store, self.config
+            self.output_store, self.config, self.token_manager
         )
 
         # Initialize validators
@@ -271,4 +273,3 @@ class YieldFabricRunner:
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit."""
         self.close()
-

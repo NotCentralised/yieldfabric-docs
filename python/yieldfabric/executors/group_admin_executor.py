@@ -18,6 +18,7 @@ to resolve `group_id` by name. Acquiring a delegation JWT here would
 make the on-chain owner/member endpoints reject the call.
 """
 
+import time
 from typing import Optional
 
 from .base import BaseExecutor
@@ -26,6 +27,9 @@ from ..models import Command, CommandResponse
 
 class GroupAdminExecutor(BaseExecutor):
     """Executor for group ownership + account-member operations."""
+
+    _ACCOUNT_MEMBER_RESOLVE_MAX_RETRIES = 12
+    _ACCOUNT_MEMBER_RESOLVE_RETRY_SECONDS = 2.0
 
     def execute(self, command: Command) -> CommandResponse:
         command_type = command.type.lower()
@@ -188,14 +192,33 @@ class GroupAdminExecutor(BaseExecutor):
             "obligation_address": obligation_address or "(default)",
         })
 
-        if add:
-            result = self.auth_service.add_account_member(
-                token, group_id, obligation_id, obligation_address
+        result = None
+        for attempt in range(1, self._ACCOUNT_MEMBER_RESOLVE_MAX_RETRIES + 1):
+            if add:
+                result = self.auth_service.add_account_member(
+                    token, group_id, obligation_id, obligation_address
+                )
+            else:
+                result = self.auth_service.remove_account_member(
+                    token, group_id, obligation_id, obligation_address
+                )
+
+            if result.get("status") == "success":
+                break
+
+            message = str(result.get("message") or result.get("error") or "")
+            if (
+                attempt >= self._ACCOUNT_MEMBER_RESOLVE_MAX_RETRIES
+                or not self._is_transient_contract_resolution_error(result, message)
+            ):
+                break
+
+            self.logger.info(
+                f"    ⏳ obligation {obligation_id} not resolvable yet "
+                f"(attempt {attempt}/{self._ACCOUNT_MEMBER_RESOLVE_MAX_RETRIES}); "
+                f"retrying in {self._ACCOUNT_MEMBER_RESOLVE_RETRY_SECONDS}s"
             )
-        else:
-            result = self.auth_service.remove_account_member(
-                token, group_id, obligation_id, obligation_address
-            )
+            time.sleep(self._ACCOUNT_MEMBER_RESOLVE_RETRY_SECONDS)
 
         if result.get("status") != "success":
             return self._finalize_rest_error(
@@ -209,6 +232,19 @@ class GroupAdminExecutor(BaseExecutor):
                 "obligation_address": obligation_address,
             },
             success_message=f"{command.type} ok",
+        )
+
+    def _is_transient_contract_resolution_error(self, result: dict, message: str) -> bool:
+        """Auth can briefly outrun payments' contract-token persistence."""
+        msg = message.lower()
+        return (
+            result.get("status_code") in (400, 404)
+            or "400 client error" in msg
+            or "404 client error" in msg
+            or "cannot resolve custom contract_id" in msg
+            or "not found in payments" in msg
+            or "not have a token_id yet" in msg
+            or "contract may not have a token_id yet" in msg
         )
 
     # ------------------------------------------------------------------

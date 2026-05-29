@@ -8,9 +8,16 @@ The three create-variants hit the same backend shape
 share `_execute_create_swap_variant`.
 """
 
+from typing import Optional
+
 from .base import BaseExecutor
 from ..models import Command, CommandResponse
 from ..utils.graphql import GraphQLMutation
+from ..utils.graphql_input import (
+    camelize_keys,
+    normalize_initial_payments,
+    put_if_present,
+)
 
 
 # Per-swap-variant metadata: (mutation, response_root, op_name).
@@ -73,11 +80,7 @@ class SwapExecutor(BaseExecutor):
             return err
 
         params = command.parameters
-        input_obj = {"counterparty": params.counterpart}
-        if params.initiator:
-            input_obj["initiator"] = params.initiator
-        if params.counterparty:
-            input_obj["counterparty"] = params.counterparty
+        input_obj = self._build_create_swap_input(params)
         if params.idempotency_key:
             input_obj["idempotencyKey"] = params.idempotency_key
 
@@ -97,18 +100,135 @@ class SwapExecutor(BaseExecutor):
                 operation_name=operation_name,
             )
 
+        counterparty = data.get("counterparty")
         outputs = {
             "swap_id": data.get("swapId"),
             "account_address": data.get("accountAddress"),
-            "counterparty_address": data.get("counterpartyAddress"),
+            "counterparty": counterparty,
+            "counterparty_address": counterparty,
             "message": data.get("message"),
             "swap_result": data.get("swapResult"),
             "message_id": data.get("messageId"),
+            "transaction_id": data.get("transactionId"),
+            "signature": data.get("signature"),
             "timestamp": data.get("timestamp"),
         }
         return self._finalize_success(
             command, token, outputs,
             success_message=f"{operation_name} successful! swap_id={outputs.get('swap_id')}",
+        )
+
+    def _build_create_swap_input(self, params) -> dict:
+        """
+        Convert the YAML-friendly swap shape to CreateSwapInput.
+
+        YAML commands commonly use nested blocks:
+
+            initiator:
+              obligation_ids: [...]
+            counterparty:
+              id: someone@example.com
+              expected_payments: {...}
+
+        Payments GraphQL expects flat camelCase fields. This mirrors
+        the shell runner's flattening logic while preserving callers
+        that already provide the flat schema shape.
+        """
+        input_obj = {}
+        put_if_present(input_obj, "swapId", params.swap_id or params.get("swapId"))
+
+        counterparty = params.counterpart
+        if isinstance(params.counterparty, dict):
+            counterparty = params.counterparty.get("id") or counterparty
+        elif params.counterparty:
+            counterparty = params.counterparty
+        put_if_present(input_obj, "counterparty", counterparty)
+
+        put_if_present(input_obj, "deadline", params.get("deadline"))
+        put_if_present(input_obj, "expiry", params.get("expiry"))
+        put_if_present(input_obj, "walletId", params.get("wallet_id"))
+        put_if_present(input_obj, "counterpartyWalletId", params.get("counterparty_wallet_id"))
+        put_if_present(input_obj, "requireManualSignature", params.get("require_manual_signature"))
+        put_if_present(input_obj, "name", params.get("name"))
+        put_if_present(input_obj, "auctionBid", camelize_keys(params.get("auction_bid")))
+
+        self._flatten_swap_side(input_obj, "initiator", params.initiator)
+        counterparty_block = params.counterparty if isinstance(params.counterparty, dict) else None
+        self._flatten_swap_side(input_obj, "counterparty", counterparty_block)
+
+        # Also support callers that provide the canonical flat shape in
+        # snake_case at top level.
+        flat_fields = {
+            "initiator_obligation_ids": "initiatorObligationIds",
+            "initiator_contract_references": "initiatorContractReferences",
+            "initiator_expected_payments": "initiatorExpectedPayments",
+            "counterparty_obligation_ids": "counterpartyObligationIds",
+            "counterparty_contract_references": "counterpartyContractReferences",
+            "counterparty_expected_payments": "counterpartyExpectedPayments",
+            "initiator_collateral_obligation_ids": "initiatorCollateralObligationIds",
+            "initiator_collateral_contract_references": "initiatorCollateralContractReferences",
+            "initiator_collateral_payments": "initiatorCollateralPayments",
+            "counterparty_collateral_obligation_ids": "counterpartyCollateralObligationIds",
+            "counterparty_collateral_contract_references": "counterpartyCollateralContractReferences",
+            "counterparty_collateral_payments": "counterpartyCollateralPayments",
+            "initiator_repurchase_obligation_ids": "initiatorRepurchaseObligationIds",
+            "initiator_repurchase_contract_references": "initiatorRepurchaseContractReferences",
+            "initiator_repurchase_payments": "initiatorRepurchasePayments",
+            "counterparty_repurchase_obligation_ids": "counterpartyRepurchaseObligationIds",
+            "counterparty_repurchase_contract_references": "counterpartyRepurchaseContractReferences",
+            "counterparty_repurchase_payments": "counterpartyRepurchasePayments",
+        }
+        payment_fields = {
+            "initiator_expected_payments",
+            "counterparty_expected_payments",
+            "initiator_collateral_payments",
+            "counterparty_collateral_payments",
+            "initiator_repurchase_payments",
+            "counterparty_repurchase_payments",
+        }
+        for source, target in flat_fields.items():
+            value = params.get(source)
+            if source in payment_fields:
+                value = normalize_initial_payments(value)
+            else:
+                value = camelize_keys(value)
+            put_if_present(input_obj, target, value)
+
+        return input_obj
+
+    def _flatten_swap_side(self, input_obj: dict, side: str, block) -> None:
+        """Flatten one nested `initiator` or `counterparty` swap block."""
+        if not isinstance(block, dict):
+            return
+
+        prefix = side
+        title_prefix = "initiator" if prefix == "initiator" else "counterparty"
+        title_prefix = title_prefix[0].lower() + title_prefix[1:]
+
+        field_map = {
+            "obligation_ids": f"{title_prefix}ObligationIds",
+            "contract_references": f"{title_prefix}ContractReferences",
+            "collateral_obligation_ids": f"{title_prefix}CollateralObligationIds",
+            "collateral_contract_references": f"{title_prefix}CollateralContractReferences",
+            "collateral_payments": f"{title_prefix}CollateralPayments",
+            "repurchase_obligation_ids": f"{title_prefix}RepurchaseObligationIds",
+            "repurchase_contract_references": f"{title_prefix}RepurchaseContractReferences",
+            "repurchase_payments": f"{title_prefix}RepurchasePayments",
+        }
+
+        for source, target in field_map.items():
+            value = block.get(source)
+            if source.endswith("_payments"):
+                value = normalize_initial_payments(value)
+            else:
+                value = camelize_keys(value)
+            put_if_present(input_obj, target, value)
+
+        payments = block.get("expected_payments") or block.get("initial_payments")
+        put_if_present(
+            input_obj,
+            f"{title_prefix}ExpectedPayments",
+            normalize_initial_payments(payments),
         )
 
     def _execute_terminal_swap(
