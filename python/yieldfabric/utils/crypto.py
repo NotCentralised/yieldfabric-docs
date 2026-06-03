@@ -118,6 +118,44 @@ def sign_ownership_message(address: str, private_key_hex: str) -> Tuple[str, str
     return message_text, sig_hex
 
 
+def eip191_message_hash(message_hash_hex: str) -> str:
+    """
+    Compute the EIP-191 personal_sign digest of a raw 32-byte hash —
+    keccak256("\\x19Ethereum Signed Message:\\n32" || hash) — and return
+    it as BARE hex (no 0x prefix).
+
+    This is NOT a signature. It only PREPARES the value a server-held key
+    must sign, so the resulting signature recovers under the backend's
+    `recover_personal_sign_address_bytes` (EIP-191 personal_sign). The
+    signing itself is delegated to the auth REST API
+    (`POST /key-operations/vault/sign`, which signs the 32-byte digest it
+    is handed verbatim) — we never touch a private key here.
+
+    Mirrors the wallet-SDK's `wrapEip191Hash32` (core/eip191.ts), whose
+    output is also bare hex because the sign endpoint `hex::decode`s the
+    value and rejects a leading `0x`. Uses eth_account's message encoder
+    (already a dependency) — no hand-rolled crypto.
+    """
+    _require_eth_account()
+    msg_hex = (message_hash_hex or "").strip().removeprefix("0x").strip()
+    if not msg_hex:
+        raise ValueError("message_hash_hex is required")
+    hash_bytes = bytes.fromhex(msg_hex)
+    if len(hash_bytes) != 32:
+        raise ValueError(f"message_hash must be 32 bytes, got {len(hash_bytes)}")
+
+    # Prefer eth_account's own EIP-191 hasher (same encode_defunct used by
+    # sign_message_hash below, so the two paths stay byte-identical); fall
+    # back to eth_utils.keccak — both ship with eth-account.
+    try:
+        from eth_account.messages import _hash_eip191_message
+        digest = _hash_eip191_message(encode_defunct(primitive=hash_bytes))
+    except Exception:
+        from eth_utils import keccak
+        digest = keccak(b"\x19Ethereum Signed Message:\n32" + hash_bytes)
+    return digest.hex()
+
+
 def sign_message_hash(private_key_hex: str, message_hash_hex: str) -> str:
     """
     personal_sign a raw 32-byte hash.

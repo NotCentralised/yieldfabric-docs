@@ -36,6 +36,7 @@ class GroupAdminExecutor(BaseExecutor):
         dispatch = {
             "add_owner": self._execute_add_owner,
             "remove_owner": self._execute_remove_owner,
+            "add_member": self._execute_add_member,
             "add_account_member": lambda c: self._execute_account_member_mutation(c, add=True),
             "remove_account_member": lambda c: self._execute_account_member_mutation(c, add=False),
             "get_account_owners": self._execute_get_account_owners,
@@ -161,6 +162,43 @@ class GroupAdminExecutor(BaseExecutor):
             command,
             {"group_id": group_id, "old_owner": old_owner},
             success_message=f"remove_owner: {old_owner} removed from {command.user.group}",
+        )
+
+    # ------------------------------------------------------------------
+    # add_member — ROLE-based group membership (distinct from the NFT-based
+    # account-member mutations below). Used to provision a `policymember`:
+    # the restricted role that may EXECUTE a group's data policy but is not
+    # an on-chain owner and cannot approve. `member_user_id` is the target
+    # user's UUID (e.g. `$member_whoami.sub`); `role` defaults to member.
+    # ------------------------------------------------------------------
+
+    def _execute_add_member(self, command: Command) -> CommandResponse:
+        token, group_id, err = self._preflight(command)
+        if err:
+            return err
+
+        member_user_id = command.parameters.get("member_user_id") or command.parameters.get("user_id")
+        role = command.parameters.get("role", "member")
+        if not member_user_id:
+            self.log_command_failure(command)
+            return CommandResponse.error_response(
+                command.name, command.type,
+                ["add_member requires `member_user_id` (the target user's UUID)"],
+            )
+
+        self.log_parameters({
+            "group": command.user.group,
+            "member_user_id": member_user_id,
+            "role": role,
+        })
+
+        result = self.auth_service.add_group_member(token, group_id, member_user_id, role)
+        if result.get("status") not in ("added", "exists"):
+            return self._finalize_rest_error(command, result, fallback="add_member failed")
+        return self._finalize_rest_success(
+            command,
+            {"group_id": group_id, "member_user_id": member_user_id, "role": role},
+            success_message=f"add_member: {member_user_id} ({role}) → {command.user.group} [{result.get('status')}]",
         )
 
     # ------------------------------------------------------------------

@@ -43,7 +43,26 @@ groups:
     #     role: owner
     #   - id: collateral@yieldfabric.com # need to enable NFT owner
     #     role: owner
-    
+
+  # Per-party groups for the group-account lifecycle suite
+  # (swap_lifecycle_combinations_group_suite.yaml). Each is owned by a funded user
+  # so the owner can both fund it (deposit → instant-send → group accept) and act AS it.
+  - id: payer-group
+    name: Payer Group
+    description: Payer Group (lifecycle group suite)
+    group_type: project
+    user:
+      id: payer@yieldfabric.com
+      password: payer_password
+
+  - id: investor-group
+    name: Investor Group
+    description: Investor Group (lifecycle group suite)
+    group_type: project
+    user:
+      id: investor@yieldfabric.com
+      password: investor_password
+
 tokens:
   - id: AUD
     name: AUD Token

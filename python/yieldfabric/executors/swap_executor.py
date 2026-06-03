@@ -255,6 +255,12 @@ class SwapExecutor(BaseExecutor):
         variables = {"input": {"swapId": params.swap_id}}
         if params.idempotency_key:
             variables["input"]["idempotencyKey"] = params.idempotency_key
+        # cancel_swap requires key/value (CancelSwapInput key-value verification); complete_swap
+        # has neither and ignores them. Forward only when present so this stays shared.
+        if params.get("key") is not None:
+            variables["input"]["key"] = params.get("key")
+        if params.get("value") is not None:
+            variables["input"]["value"] = params.get("value")
 
         response = self.payments_service.graphql_mutation(mutation, variables, token)
         if not response.success:

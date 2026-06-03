@@ -525,9 +525,16 @@ class AuthService(BaseServiceClient):
     ) -> dict:
         """
         POST /auth/groups/{id}/members — add a user to a group with a
-        named role. Valid roles: owner, admin, member, viewer.
+        named role. Valid roles: owner, admin, member, viewer, policymember.
+
+        `policymember` is the RESTRICTED role: the auth service mints it a
+        delegation scoped to [PolicyExecution, CryptoOperations] only (capped
+        at 1h), and it is NOT an on-chain account owner — so it may EXECUTE a
+        group's data policy but cannot approve it or otherwise act for the
+        group. Mirrors `GroupMemberRole::PolicyMember`
+        (yieldfabric-auth/src/types.rs).
         """
-        if role not in ("owner", "admin", "member", "viewer"):
+        if role not in ("owner", "admin", "member", "viewer", "policymember"):
             return {"status": "error", "message": f"invalid role: {role}"}
 
         self.logger.info(f"  ➕ add_group_member group={group_id[:8]}... user={user_id[:8]}... role={role}")
@@ -569,6 +576,62 @@ class AuthService(BaseServiceClient):
         except Exception as e:
             self.logger.error(f"    ❌ group_account_status failed: {e}")
             return None
+
+    def group_account_info(self, token: str, group_id: str) -> dict:
+        """
+        GET /auth/groups/{id}/account-status — the full `account_status`
+        object (`status`, `account_address`, `chain_id`, ...). Used to
+        resolve a deployed group's on-chain account address when a JWT
+        claim is unavailable. Returns {} on any failure.
+        """
+        try:
+            response = self._get(
+                f"/auth/groups/{group_id}/account-status",
+                token=token,
+            )
+            data = response.json()
+            info = data.get("account_status")
+            return info if isinstance(info, dict) else {}
+        except Exception as e:
+            self.logger.debug(f"group_account_info failed: {e}")
+            return {}
+
+    def sign_vault(
+        self,
+        token: str,
+        *,
+        contact_id: str,
+        data: str,
+        data_format: str = "hex",
+    ) -> dict:
+        """
+        POST /key-operations/vault/sign — sign `data` with the entity's
+        server-custodied signing key (oldest active `Signing` keypair).
+
+        `contact_id` is the entity to sign FOR — a user/group UUID or an
+        on-chain account address. `data` is the value to sign verbatim; for
+        an EIP-191 personal_sign signature (what `approveDataPolicy` recovers)
+        pass the EIP-191 message-hash as bare hex with `data_format="hex"`
+        (see `yieldfabric.utils.crypto.eip191_message_hash`). The endpoint
+        signs the 32-byte digest it is handed — it does NOT apply the EIP-191
+        prefix itself, mirroring the wallet-SDK's server-held signing path.
+
+        Returns the raw JSON body: `{"success", "result": <0x-less hex sig>,
+        "result_format", ...}`. No client-side key material is involved.
+        """
+        payload = {
+            "contact_id": contact_id,
+            "data": data,
+            "data_format": data_format,
+        }
+        try:
+            response = self._post(
+                "/key-operations/vault/sign", payload, token=token
+            )
+            return response.json()
+        except Exception as e:
+            self.logger.error(f"    ❌ sign_vault failed: {e}")
+            return {"success": False, "message": str(e)}
 
     # ------------------------------------------------------------------
     # External-key management (loan_management parity).

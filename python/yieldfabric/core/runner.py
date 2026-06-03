@@ -9,11 +9,14 @@ from ..config import YieldFabricConfig
 from ..models import Command, CommandResponse
 from ..services import AuthService, PaymentsService
 from ..executors import (
+    AssertExecutor,
     ComposedExecutor,
     GroupAdminExecutor,
     ObligationExecutor,
     PaymentExecutor,
+    PolicyExecutor,
     QueryExecutor,
+    RepoExecutor,
     SwapExecutor,
     TreasuryExecutor,
     WaitExecutor,
@@ -80,6 +83,18 @@ class YieldFabricRunner:
             self.auth_service, self.payments_service,
             self.output_store, self.config, self.token_manager
         )
+        self.repo_executor = RepoExecutor(
+            self.auth_service, self.payments_service,
+            self.output_store, self.config, self.token_manager
+        )
+        self.assert_executor = AssertExecutor(
+            self.auth_service, self.payments_service,
+            self.output_store, self.config, self.token_manager
+        )
+        self.policy_executor = PolicyExecutor(
+            self.auth_service, self.payments_service,
+            self.output_store, self.config, self.token_manager
+        )
 
         # Initialize validators
         self.yaml_validator = YAMLValidator(debug=self.config.debug)
@@ -125,23 +140,64 @@ class YieldFabricRunner:
         
         # Execute commands
         success_count = 0
+        executed_count = 0
         total_count = len(commands)
-        
+        halted_command = None
+
         for i, command in enumerate(commands):
             self.logger.section(f"Command {i+1}/{total_count}: {command.name}")
-            
+
             # Substitute variables in parameters
             substituted_params = self.output_store.substitute_params(command.parameters.to_dict())
             command.parameters = type(command.parameters).from_dict(substituted_params)
-            
+
             # Execute command
             response = self.execute_command(command)
-            
-            if response.success:
+            executed_count += 1
+
+            # Negative-test support: a command with `expect_failure: true` PASSES when it
+            # fails/errors (optionally requiring `expect_error` as an error substring) and
+            # FAILS if it unexpectedly succeeds. A correctly-behaving negative test is NOT
+            # a break; an unexpected success / error-mismatch IS a break.
+            command_broke = False
+            if command.parameters.get("expect_failure"):
+                actual_err = "" if response.success else " ".join(response.errors or [])
+                expect_error = command.parameters.get("expect_error")
+                if response.success:
+                    self.logger.error(f"❌ {command.name}: expected failure but command SUCCEEDED")
+                    command_broke = True
+                elif expect_error and str(expect_error).lower() not in actual_err.lower():
+                    self.logger.error(
+                        f"❌ {command.name}: failed as expected but error mismatch — "
+                        f"wanted '{expect_error}', got '{actual_err[:160]}'"
+                    )
+                    command_broke = True
+                else:
+                    self.logger.success(
+                        f"✅ {command.name}: expected-failure satisfied ({actual_err[:120] or 'errored'})"
+                    )
+                    success_count += 1
+            elif response.success:
                 success_count += 1
-            
+            else:
+                command_broke = True
+
             self.logger.separator()
-            
+
+            # Stop-on-break (default): halt at the first UNEXPECTED failure so the operator
+            # can inspect on-chain / service state at the break point instead of cascading
+            # through dependent steps (which then fail for misleading downstream reasons).
+            # A correctly-behaving negative test does not trip this. Set
+            # `continue_on_error: true` on the runner config to run the whole suite anyway.
+            if command_broke and not getattr(self.config, "continue_on_error", False):
+                halted_command = f"{i+1}/{total_count} '{command.name}'"
+                self.logger.error(
+                    f"🛑 Halting at command {halted_command} — it failed. "
+                    f"({total_count - executed_count} later command(s) skipped; "
+                    f"set continue_on_error: true to run them all)"
+                )
+                break
+
             # Wait between commands only if explicitly configured to
             # > 0. Default is 0 — callers should use `wait: true` on
             # commands for event-based sequencing instead of blind
@@ -150,15 +206,21 @@ class YieldFabricRunner:
             if i + 1 < total_count and self.config.command_delay > 0:
                 self.logger.waiting(self.config.command_delay)
                 time.sleep(self.config.command_delay)
-        
+
         # Summary
         self.logger.section("Execution Summary")
         self.logger.info(f"Total commands: {total_count}")
+        self.logger.info(f"Executed: {executed_count}")
         self.logger.success(f"Successful: {success_count}")
-        
-        if success_count < total_count:
-            self.logger.error(f"Failed: {total_count - success_count}")
-        
+
+        if success_count < executed_count:
+            self.logger.error(f"Failed: {executed_count - success_count}")
+        if halted_command is not None:
+            self.logger.warning(
+                f"⏹  Halted early at command {halted_command}; "
+                f"{total_count - executed_count} command(s) not run"
+            )
+
         if success_count == total_count:
             self.logger.success("✅ All commands executed successfully!")
             return True
@@ -195,11 +257,18 @@ class YieldFabricRunner:
                               "create_payment_swap", "complete_swap", "cancel_swap"]:
             return self.swap_executor.execute(command)
 
+        elif command_type in ["repurchase_swap", "expire_collateral", "expire_swap",
+                              "cancel_roll", "initiate_roll", "complete_roll"]:
+            return self.repo_executor.execute(command)
+
+        elif command_type == "assert":
+            return self.assert_executor.execute(command)
+
         elif command_type in ["mint", "burn", "total_supply"]:
             return self.treasury_executor.execute(command)
 
         elif command_type in [
-            "add_owner", "remove_owner",
+            "add_owner", "remove_owner", "add_member",
             "add_account_member", "remove_account_member",
             "get_account_owners", "get_account_members",
         ]:
@@ -209,11 +278,25 @@ class YieldFabricRunner:
             return self.composed_executor.execute(command)
 
         elif command_type in [
+            "whoami",
+            "add_data_policy",
+            "approve_data_policy",
+            "execute_under_policy",
+            "commit_oracle_document",
+            "data_policies",
+            "data_policy_approval",
+        ]:
+            return self.policy_executor.execute(command)
+
+        elif command_type in [
             "wait_for_workflow",
             "wait_for_swap",
             "wait_for_message",
             "wait_for_signatures_cleared",
             "wait_for_accept_all",
+            "sleep",
+            "advance_chain_time",
+            "mine_block",
         ]:
             return self.wait_executor.execute(command)
 

@@ -41,6 +41,8 @@ Every wait populates downstream-usable outputs on success:
     <name>.attempts, <name>.elapsed, <name>.observation (raw probe result)
 """
 
+import time
+
 from .base import BaseExecutor
 from ..models import Command, CommandResponse
 from ..utils.jwt import get_sub
@@ -62,6 +64,12 @@ class WaitExecutor(BaseExecutor):
             return self._wait_for_signatures_cleared(command)
         if command_type == "wait_for_accept_all":
             return self._wait_for_accept_all(command)
+        if command_type == "sleep":
+            return self._sleep(command)
+        if command_type == "advance_chain_time":
+            return self._advance_chain_time(command)
+        if command_type == "mine_block":
+            return self._mine_block(command)
 
         return CommandResponse.error_response(
             command.name, command.type,
@@ -83,6 +91,150 @@ class WaitExecutor(BaseExecutor):
             return float(raw) if raw is not None else default
         except (TypeError, ValueError):
             return default
+
+    # ------------------------------------------------------------------
+    # sleep — blocking wall-clock delay
+    # ------------------------------------------------------------------
+
+    def _sleep(self, command: Command) -> CommandResponse:
+        """Blocking wall-clock sleep. Used to advance past a short collateral
+        `expiry` so a subsequent `expire_collateral` mines a block beyond it
+        (local nodes timestamp blocks with the current wall clock). Param
+        `seconds` (default 1)."""
+        self.log_command_start(command)
+        raw = command.parameters.get("seconds")
+        try:
+            seconds = float(raw) if raw is not None else 1.0
+        except (TypeError, ValueError):
+            seconds = 1.0
+        self.logger.info(f"  ⏳ sleeping {seconds:.0f}s ({command.name})")
+        time.sleep(seconds)
+        outputs = {"slept_seconds": seconds}
+        self.store_outputs(command.name, outputs)
+        self.log_command_success(command)
+        return CommandResponse.success_response(command.name, command.type, outputs)
+
+    def _advance_chain_time(self, command: Command) -> CommandResponse:
+        """Advance the TEST node's block timestamp by `seconds` (evm_increaseTime +
+        evm_mine) so a subsequent expire_collateral sees the collateral expiry passed —
+        deterministic, unlike a wall-clock sleep when the node clock is offset. TEST-NODE
+        ONLY (anvil / hardhat); a real chain requires a real wait. Node RPC from
+        `ETH_RPC_URL` (default the manifest's localhost:8545)."""
+        import os
+        import requests
+
+        self.log_command_start(command)
+        raw = command.parameters.get("seconds")
+        try:
+            seconds = int(float(raw)) if raw is not None else 1
+        except (TypeError, ValueError):
+            seconds = 1
+
+        rpc = os.environ.get("ETH_RPC_URL", "http://localhost:8545")
+        try:
+            for method, params in (("evm_increaseTime", [seconds]), ("evm_mine", [])):
+                resp = requests.post(
+                    rpc, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params}, timeout=15
+                ).json()
+                if "error" in resp:
+                    self.log_command_failure(command)
+                    return CommandResponse.error_response(
+                        command.name, command.type, [f"{method} failed: {resp['error']}"]
+                    )
+        except Exception as e:  # noqa: BLE001
+            self.log_command_failure(command)
+            return CommandResponse.error_response(
+                command.name, command.type, [f"advance_chain_time RPC to {rpc} failed: {e}"]
+            )
+
+        self.logger.success(f"  ⏩ advanced chain time by {seconds}s via {rpc} ({command.name})")
+        outputs = {"advanced_seconds": seconds}
+        self.store_outputs(command.name, outputs)
+        self.log_command_success(command)
+        return CommandResponse.success_response(command.name, command.type, outputs)
+
+    def _mine_block(self, command: Command) -> CommandResponse:
+        """Mine block(s) on a LOCAL test node (Hardhat / anvil). Such nodes do not
+        produce blocks on their own — `block.timestamp` only advances when a block is
+        mined — so sprinkle this into a flow to force the chain clock forward
+        (optionally by a time interval) before a timestamp-sensitive step.
+
+        NO-OP when ETH_RPC_URL is not localhost, so the SAME YAML runs unchanged
+        against a real deployment (where the network produces blocks itself).
+
+        Params (all optional):
+            blocks   — number of blocks to mine (default 1)
+            interval — seconds between consecutive blocks (default 0); with blocks>1
+                       this advances chain time by blocks*interval.
+        Node RPC from ETH_RPC_URL (default the manifest's localhost:8545)."""
+        import os
+        import requests
+        from urllib.parse import urlparse
+
+        self.log_command_start(command)
+
+        rpc = os.environ.get("ETH_RPC_URL", "http://localhost:8545")
+        host = (urlparse(rpc).hostname or "").lower()
+        is_local = host in ("localhost", "127.0.0.1", "0.0.0.0", "::1")
+
+        def _int_param(key: str, default: int) -> int:
+            raw = command.parameters.get(key)
+            try:
+                return int(float(raw)) if raw is not None else default
+            except (TypeError, ValueError):
+                return default
+
+        blocks = max(1, _int_param("blocks", 1))
+        interval = max(0, _int_param("interval", 0))
+
+        if not is_local:
+            # Real chain: the network mines blocks; nothing for us to do.
+            self.logger.info(
+                f"  ⛏️  mine_block is a no-op vs non-localhost RPC {rpc} ({command.name})"
+            )
+            outputs = {"mined": False, "blocks": 0, "rpc": rpc}
+            self.store_outputs(command.name, outputs)
+            self.log_command_success(command)
+            return CommandResponse.success_response(command.name, command.type, outputs)
+
+        def _rpc(method, params):
+            return requests.post(
+                rpc, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params}, timeout=15
+            ).json()
+
+        try:
+            # Hardhat: mine `blocks` blocks, each `interval` seconds apart, in one call.
+            resp = _rpc("hardhat_mine", [hex(blocks), hex(interval)])
+            if "error" in resp:
+                # Fallback for anvil / nodes without hardhat_mine: bump time once (if an
+                # interval was requested) then mine one block per requested block.
+                if interval > 0:
+                    bump = _rpc("evm_increaseTime", [blocks * interval])
+                    if "error" in bump:
+                        self.log_command_failure(command)
+                        return CommandResponse.error_response(
+                            command.name, command.type, [f"evm_increaseTime failed: {bump['error']}"]
+                        )
+                for _ in range(blocks):
+                    mined = _rpc("evm_mine", [])
+                    if "error" in mined:
+                        self.log_command_failure(command)
+                        return CommandResponse.error_response(
+                            command.name, command.type, [f"evm_mine failed: {mined['error']}"]
+                        )
+        except Exception as e:  # noqa: BLE001
+            self.log_command_failure(command)
+            return CommandResponse.error_response(
+                command.name, command.type, [f"mine_block RPC to {rpc} failed: {e}"]
+            )
+
+        self.logger.success(
+            f"  ⛏️  mined {blocks} block(s) (interval {interval}s) via {rpc} ({command.name})"
+        )
+        outputs = {"mined": True, "blocks": blocks, "interval": interval, "rpc": rpc}
+        self.store_outputs(command.name, outputs)
+        self.log_command_success(command)
+        return CommandResponse.success_response(command.name, command.type, outputs)
 
     # ------------------------------------------------------------------
     # wait_for_workflow

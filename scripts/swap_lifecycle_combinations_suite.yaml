@@ -1,0 +1,752 @@
+# ════════════════════════════════════════════════════════════════════════════
+#  SWAP LIFECYCLE COMBINATIONS — roll × repurchase × forfeit on nested repos
+# ════════════════════════════════════════════════════════════════════════════
+#  Exercises the THREE terminal/lifecycle operations together within the same
+#  rehypothecation chain (3 and 4 levels), in both happy and unhappy combinations:
+#    • REPURCHASE  — borrower buys collateral back; cash cascades up the chain,
+#                    only the OUTERMOST level's repurchase cash is freely claimable
+#                    (record PAY-REPURCHASE-{swap}-0; for a rolled repo, {new_swap_id}).
+#    • ROLL        — initiator/borrower extends to a new maturity + new lender
+#                    (initiate_roll by the borrower; complete_roll by the NEW lender).
+#                    Rolled repo is then repurchased/forfeited under its new_swap_id.
+#    • FORFEIT     — on default after the deadline (expire_collateral); collateral
+#                    forfeit-forwards up the chain to the end-lender.
+#
+#  PARTIES: only payer / investor / issuer are funded in the test env, so every
+#  chain reuses those three circularly (roll-in lenders and end-lenders reuse a
+#  funded party not already that swap's lender).
+#
+#  CHAIN-TIME RULE (cumulative — confirmed on run). advance_chain_time does
+#  evm_increaseTime + evm_mine; the offset STACKS for the whole run, so chain time
+#  = wall_clock + Σ(all advances so far). Two consequences per forfeit scenario:
+#    (a) CREATE rejects unless deadline_offset > Σ_before + 120s (else createSwap
+#        errors "deadline must be ≥120s in the future" — what broke U2 at Σ=13500).
+#    (b) expire_collateral fires only once Σ_after (= Σ_before + this advance) clears
+#        the swap's EXPIRY offset (NOT the deadline — what broke run-2's M3, whose
+#        expiry +9000S sat above its Σ=8000). So deadlines + expiries must GROW to
+#        stay ahead of the running Σ. Budget (Σ = cumulative advance after scenario):
+#       M2: Σ_before 0      deadline +2500S  expiry +3200S  advance +3500  → Σ 3500
+#       M3: Σ_before 3500   deadline +4500S  expiry +6000S  advance +10000 → Σ 13500
+#       U2: Σ_before 13500  deadline +16000S expiry +17000S advance +10000 → Σ 23500
+#  Repurchased/rolled levels use day-scale (+40d) expiries so the advances never
+#  reach them. Non-forfeit scenarios (M1, U1, U3-U6) never advance.
+#
+#  ASSERTIONS: repurchase-cash delivery is balance-asserted EXACTLY (claim
+#  PAY-REPURCHASE-{swap}-0 → recipient's confidential balance must rise by the precise
+#  repurchase amount via `minus:`+`equals:`; gt:0 would pass on a 1-wei regression).
+#  Forfeit cascade lands are proven by offering the underlying in a fresh create_swap
+#  (succeeds only if the offerer owns it — same pattern as the nested-advanced *_verify_*).
+#  NEGATIVES: U5/U6 pin `expect_error` to the RESOLVER reject string (fires off-chain,
+#  surfaces verbatim). U1/U3/U4/U2 deliberately OMIT `expect_error` — they fail via
+#  Solidity CUSTOM errors (CollateralNotExpired / AlreadyRepurchased / CollateralExpiryPassed)
+#  which the relay surfaces only as a 4-byte selector hex, NOT the name; a name substring
+#  would never match → false negative. Leave them expect_failure-only. (Do NOT "helpfully"
+#  add the error name.)
+# ════════════════════════════════════════════════════════════════════════════
+
+commands:
+
+  # ──── Fund confidential balances (deploy seeds public ERC20 to these 3 only; deposit → confidential).
+  - name: fund_payer_aud
+    type: deposit
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { asset_id: aud-token-asset, amount: 1000000000000000000000000, idempotency_key: lc-fund-payer-aud-$(date +%s) }
+  - name: fund_payer_usdc
+    type: deposit
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { asset_id: usdc-asset, amount: 1000000000000000000000000, idempotency_key: lc-fund-payer-usdc-$(date +%s) }
+  - name: fund_investor_aud
+    type: deposit
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: aud-token-asset, amount: 1000000000000000000000000, idempotency_key: lc-fund-inv-aud-$(date +%s) }
+  - name: fund_investor_usdc
+    type: deposit
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: usdc-asset, amount: 1000000000000000000000000, idempotency_key: lc-fund-inv-usdc-$(date +%s) }
+  - name: fund_issuer_aud
+    type: deposit
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { asset_id: aud-token-asset, amount: 1000000000000000000000000, idempotency_key: lc-fund-iss-aud-$(date +%s) }
+  - name: fund_issuer_usdc
+    type: deposit
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { asset_id: usdc-asset, amount: 1000000000000000000000000, idempotency_key: lc-fund-iss-usdc-$(date +%s) }
+
+  # ════════ M1 — ROLL THE OUTER, THEN FULL REPURCHASE-UNWIND (3 levels, happy) ════════
+  # repo_1 payer⇄investor → repo_2 investor⇄issuer → repo_3 issuer⇄payer.
+  # issuer rolls the OUTER repo_3 to a new lender (investor); then the whole chain
+  # unwinds by repurchase, outermost-in. Proves roll + repurchase compose: the
+  # rolled-outer's repurchase cash reaches its NEW lender, and the underlying
+  # round-trips back to payer. No forfeiture ⇒ long deadlines, no chain jump.
+  - name: m1_underlying
+    type: create_obligation
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { idempotency_key: m1-under-$(date +%s), counterpart: payer@yieldfabric.com, expiry: $(date -u -v+90d +%Y-%m-%dT%H:%M:%SZ), contract_id: na_m1_underlying, data: { name: "M1 underlying", description: "roll+repurchase unwind" } }
+
+  - name: m1_repo1_create
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "860001"
+      idempotency_key: m1-r1-create-$(date +%s)
+      deadline: $(date -u -v+40d +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+80d +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_obligation_ids: [na_m1_underlying]
+        repurchase_payments: { denomination: usdc-asset, amount: 1050000000000000000000, payments: [{ id: m1-r1-repurch-1 }] }
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: m1-r1-cash-1 }] }
+  - name: m1_repo1_complete
+    type: complete_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { swap_id: "860001", idempotency_key: m1-r1-complete-$(date +%s) }
+
+  - name: m1_repo2_create
+    type: create_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      swap_id: "860002"
+      idempotency_key: m1-r2-create-$(date +%s)
+      deadline: $(date -u -v+40d +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+80d +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_contract_references: [{ composed_contract_id: COMPOSED-CONTRACT-REPO-SWAP-860001 }]
+        repurchase_payments: { denomination: aud-token-asset, amount: 1020000000000000000000, payments: [{ id: m1-r2-repurch-1 }] }
+      counterparty:
+        id: issuer@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: m1-r2-cash-1 }] }
+  - name: m1_repo2_complete
+    type: complete_swap
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { swap_id: "860002", idempotency_key: m1-r2-complete-$(date +%s) }
+
+  - name: m1_repo3_create
+    type: create_swap
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      swap_id: "860003"
+      idempotency_key: m1-r3-create-$(date +%s)
+      deadline: $(date -u -v+40d +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+80d +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_contract_references: [{ composed_contract_id: COMPOSED-CONTRACT-REPO-SWAP-860002 }]
+        repurchase_payments: { denomination: aud-token-asset, amount: 1010000000000000000000, payments: [{ id: m1-r3-repurch-1 }] }
+      counterparty:
+        id: payer@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: m1-r3-cash-1 }] }
+  - name: m1_repo3_complete
+    type: complete_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { swap_id: "860003", idempotency_key: m1-r3-complete-$(date +%s) }
+
+  # ROLL the OUTER repo_3: issuer (borrower) initiates, investor becomes the new lender; payer (old
+  # lender) is bought out. Cont_2 migrates to the rolled swap 860013.
+  - name: m1_repo3_roll_initiate
+    type: initiate_roll
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      old_swap_id: "860003"
+      new_swap_id: "860013"
+      new_counterparty: investor@yieldfabric.com
+      new_deadline: $(date -u -v+40d +%Y-%m-%dT%H:%M:%SZ)
+      new_expiry:   $(date -u -v+80d +%Y-%m-%dT%H:%M:%SZ)
+      idempotency_key: m1-r3-roll-$(date +%s)
+  - name: m1_repo3_roll_complete
+    type: complete_roll
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { new_swap_id: "860013", idempotency_key: m1-r3-roll-complete-$(date +%s) }
+
+  # UNWIND outermost-in. (1) issuer repurchases the rolled outer 860013 → investor (NEW lender) is paid.
+  - name: m1_investor_aud_before
+    type: balance
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: aud-token-asset }
+  - name: m1_repo3_repurchase
+    type: repurchase_swap
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { swap_id: "860013", idempotency_key: m1-r3-repurch-$(date +%s) }
+
+  # #71 FIXED: repurchasing a ROLLED swap previously delivered no claimable cash to the new lender — it
+  # emits no "send" transaction contexts because the repurchase is PRE-FUNDED at roll-complete, so the
+  # post-processor minted PAY-REPURCHASE-860013-0 with the zero id_hash (unclaimable). The repurchase
+  # post-processor now falls back to the roll's stored prefund id_hashes (repurchase_swap_processor.rs
+  # → swap_record.repurchase_prefund_id_hashes) and writes the record with the REAL id_hash, so the new
+  # lender (investor) claims it and its balance rises. (Requires the rebuilt payments service.)
+  - name: m1_rolled_repurchase_claim
+    type: accept
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { payment_id: PAY-REPURCHASE-860013-0, idempotency_key: m1-r3-claim-$(date +%s) }
+  - name: m1_investor_aud_after
+    type: balance
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: aud-token-asset }
+  - name: m1_assert_rolled_repurchase_received
+    type: assert
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      # EXACT (#71 guard): the rolled outer 860013 inherits repo_3's repurchase terms = 1010 AUD.
+      # gt:0 would pass on 1 wei — a wrong-amount regression of the rolled-repurchase fix must fail here.
+      actual: "$m1_investor_aud_after.private_balance"
+      minus: "$m1_investor_aud_before.private_balance"
+      equals: "1010000000000000000000"
+
+  # (2) investor repurchases repo_2 → issuer paid;  (3) payer repurchases repo_1 → investor paid.
+  - name: m1_repo2_repurchase
+    type: repurchase_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { swap_id: "860002", idempotency_key: m1-r2-repurch-$(date +%s) }
+  - name: m1_repo1_repurchase
+    type: repurchase_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { swap_id: "860001", idempotency_key: m1-r1-repurch-$(date +%s) }
+
+  # PROOF: the underlying round-tripped back to payer (create_swap offering it succeeds only if owned).
+  - name: m1_verify_payer_owns
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "860099"
+      idempotency_key: m1-verify-$(date +%s)
+      initiator: { obligation_ids: [na_m1_underlying] }
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: m1-verify-want-1 }] }
+      deadline: $(date -u -v+30d +%Y-%m-%dT%H:%M:%SZ)
+
+
+  # ════════ U1 — FORFEIT BEFORE DEADLINE → REJECT (unhappy) ════════
+  # A standalone repo with a far-future deadline cannot be forfeited; expire_collateral must reject.
+  - name: u1_underlying
+    type: create_obligation
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { idempotency_key: u1-under-$(date +%s), counterpart: payer@yieldfabric.com, expiry: $(date -u -v+90d +%Y-%m-%dT%H:%M:%SZ), contract_id: na_u1_underlying, data: { name: "U1 underlying", description: "forfeit-before-deadline" } }
+  - name: u1_create
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "861001"
+      idempotency_key: u1-create-$(date +%s)
+      deadline: $(date -u -v+40d +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+80d +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_obligation_ids: [na_u1_underlying]
+        repurchase_payments: { denomination: usdc-asset, amount: 1050000000000000000000, payments: [{ id: u1-repurch-1 }] }
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: u1-cash-1 }] }
+  - name: u1_complete
+    type: complete_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { swap_id: "861001", idempotency_key: u1-complete-$(date +%s) }
+  - name: u1_forfeit_before_deadline_fails
+    type: expire_collateral
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { swap_id: "861001", idempotency_key: u1-forfeit-$(date +%s), expect_failure: true }
+
+
+  # ════════ U5 — ROLL BY THE WRONG PARTY (counterparty) → REJECT (unhappy) ════════
+  # Only the initiator/borrower may initiate a roll; the counterparty/lender attempting it must fail.
+  - name: u5_underlying
+    type: create_obligation
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { idempotency_key: u5-under-$(date +%s), counterpart: payer@yieldfabric.com, expiry: $(date -u -v+90d +%Y-%m-%dT%H:%M:%SZ), contract_id: na_u5_underlying, data: { name: "U5 underlying", description: "roll-by-counterparty" } }
+  - name: u5_create
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "861002"
+      idempotency_key: u5-create-$(date +%s)
+      deadline: $(date -u -v+40d +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+80d +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_obligation_ids: [na_u5_underlying]
+        repurchase_payments: { denomination: usdc-asset, amount: 1050000000000000000000, payments: [{ id: u5-repurch-1 }] }
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: u5-cash-1 }] }
+  - name: u5_complete
+    type: complete_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { swap_id: "861002", idempotency_key: u5-complete-$(date +%s) }
+  - name: u5_roll_by_counterparty_fails
+    type: initiate_roll
+    user: { id: investor@yieldfabric.com, password: investor_password }   # lender, not the borrower
+    parameters:
+      old_swap_id: "861002"
+      new_swap_id: "861012"
+      new_counterparty: issuer@yieldfabric.com
+      new_deadline: $(date -u -v+40d +%Y-%m-%dT%H:%M:%SZ)
+      new_expiry:   $(date -u -v+80d +%Y-%m-%dT%H:%M:%SZ)
+      idempotency_key: u5-roll-$(date +%s)
+      expect_failure: true
+      expect_error: "can initiate a roll"   # resolver string (repo.rs:243) — fires before the chain check
+
+
+  # ════════ U6 — COMPLETE_ROLL BY THE WRONG PARTY (initiator) → REJECT (unhappy) ════════
+  # Only the NEW counterparty/lender may complete a roll; the initiator attempting it must fail.
+  - name: u6_underlying
+    type: create_obligation
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { idempotency_key: u6-under-$(date +%s), counterpart: payer@yieldfabric.com, expiry: $(date -u -v+90d +%Y-%m-%dT%H:%M:%SZ), contract_id: na_u6_underlying, data: { name: "U6 underlying", description: "complete-roll-by-initiator" } }
+  - name: u6_create
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "861003"
+      idempotency_key: u6-create-$(date +%s)
+      deadline: $(date -u -v+40d +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+80d +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_obligation_ids: [na_u6_underlying]
+        repurchase_payments: { denomination: usdc-asset, amount: 1050000000000000000000, payments: [{ id: u6-repurch-1 }] }
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: u6-cash-1 }] }
+  - name: u6_complete
+    type: complete_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { swap_id: "861003", idempotency_key: u6-complete-$(date +%s) }
+  - name: u6_roll_initiate
+    type: initiate_roll
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      old_swap_id: "861003"
+      new_swap_id: "861013"
+      new_counterparty: issuer@yieldfabric.com
+      new_deadline: $(date -u -v+40d +%Y-%m-%dT%H:%M:%SZ)
+      new_expiry:   $(date -u -v+80d +%Y-%m-%dT%H:%M:%SZ)
+      idempotency_key: u6-roll-$(date +%s)
+  - name: u6_complete_roll_by_initiator_fails
+    type: complete_roll
+    user: { id: payer@yieldfabric.com, password: payer_password }   # initiator, not the NEW lender
+    # resolver string (repo.rs:397) — the caller isn't the new counterparty entity; fires before the chain check.
+    parameters: { new_swap_id: "861013", idempotency_key: u6-roll-complete-$(date +%s), expect_failure: true, expect_error: "Access denied: wallet" }
+
+
+  # ════════ U3 — ROLL AFTER REPURCHASE (terminal swap) → REJECT (unhappy) ════════
+  # Once a repo is repurchased (COMPLETED), it cannot be rolled.
+  - name: u3_underlying
+    type: create_obligation
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { idempotency_key: u3-under-$(date +%s), counterpart: payer@yieldfabric.com, expiry: $(date -u -v+90d +%Y-%m-%dT%H:%M:%SZ), contract_id: na_u3_underlying, data: { name: "U3 underlying", description: "roll-after-repurchase" } }
+  - name: u3_create
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "861004"
+      idempotency_key: u3-create-$(date +%s)
+      deadline: $(date -u -v+40d +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+80d +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_obligation_ids: [na_u3_underlying]
+        repurchase_payments: { denomination: usdc-asset, amount: 1050000000000000000000, payments: [{ id: u3-repurch-1 }] }
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: u3-cash-1 }] }
+  - name: u3_complete
+    type: complete_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { swap_id: "861004", idempotency_key: u3-complete-$(date +%s) }
+  - name: u3_repurchase
+    type: repurchase_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { swap_id: "861004", idempotency_key: u3-repurch-$(date +%s) }
+  - name: u3_roll_after_repurchase_fails
+    type: initiate_roll
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      old_swap_id: "861004"
+      new_swap_id: "861014"
+      new_counterparty: issuer@yieldfabric.com
+      new_deadline: $(date -u -v+40d +%Y-%m-%dT%H:%M:%SZ)
+      new_expiry:   $(date -u -v+80d +%Y-%m-%dT%H:%M:%SZ)
+      idempotency_key: u3-roll-$(date +%s)
+      expect_failure: true
+
+
+  # ════════ U4 — FORFEIT AFTER REPURCHASE (terminal swap) → REJECT (unhappy) ════════
+  # Once a repo is repurchased (COMPLETED), it cannot be forfeited — the collateral already returned.
+  - name: u4_underlying
+    type: create_obligation
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { idempotency_key: u4-under-$(date +%s), counterpart: payer@yieldfabric.com, expiry: $(date -u -v+90d +%Y-%m-%dT%H:%M:%SZ), contract_id: na_u4_underlying, data: { name: "U4 underlying", description: "forfeit-after-repurchase" } }
+  - name: u4_create
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "861005"
+      idempotency_key: u4-create-$(date +%s)
+      deadline: $(date -u -v+40d +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+80d +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_obligation_ids: [na_u4_underlying]
+        repurchase_payments: { denomination: usdc-asset, amount: 1050000000000000000000, payments: [{ id: u4-repurch-1 }] }
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: u4-cash-1 }] }
+  - name: u4_complete
+    type: complete_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { swap_id: "861005", idempotency_key: u4-complete-$(date +%s) }
+  - name: u4_repurchase
+    type: repurchase_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { swap_id: "861005", idempotency_key: u4-repurch-$(date +%s) }
+  - name: u4_forfeit_after_repurchase_fails
+    type: expire_collateral
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { swap_id: "861005", idempotency_key: u4-forfeit-$(date +%s), expect_failure: true }
+
+
+  # ════════ M2 — MIXED TERMINAL: REPURCHASE THE OUTER, FORFEIT THE INNER (3 levels) ════════
+  # repo_1 payer⇄investor → repo_2 investor⇄issuer → repo_3 issuer⇄payer.
+  # The OUTER repo_3 is repurchased cleanly (payer paid); then the inner two DEFAULT and are forfeited,
+  # cascading the underlying forfeit-forward to issuer (repo_2's lender, who receives Cont_1 then the
+  # underlying). Inner repos use short deadlines (+2500S/+3200S); the outer uses a day-scale deadline.
+  - name: m2_underlying
+    type: create_obligation
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { idempotency_key: m2-under-$(date +%s), counterpart: payer@yieldfabric.com, expiry: $(date -u -v+90d +%Y-%m-%dT%H:%M:%SZ), contract_id: na_m2_underlying, data: { name: "M2 underlying", description: "repurchase-outer forfeit-inner" } }
+
+  - name: m2_repo1_create
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "862001"
+      idempotency_key: m2-r1-create-$(date +%s)
+      deadline: $(date -u -v+2500S +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+3200S +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_obligation_ids: [na_m2_underlying]
+        repurchase_payments: { denomination: usdc-asset, amount: 1050000000000000000000, payments: [{ id: m2-r1-repurch-1 }] }
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: m2-r1-cash-1 }] }
+  - name: m2_repo1_complete
+    type: complete_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { swap_id: "862001", idempotency_key: m2-r1-complete-$(date +%s) }
+
+  - name: m2_repo2_create
+    type: create_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      swap_id: "862002"
+      idempotency_key: m2-r2-create-$(date +%s)
+      deadline: $(date -u -v+2500S +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+3200S +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_contract_references: [{ composed_contract_id: COMPOSED-CONTRACT-REPO-SWAP-862001 }]
+        repurchase_payments: { denomination: aud-token-asset, amount: 1020000000000000000000, payments: [{ id: m2-r2-repurch-1 }] }
+      counterparty:
+        id: issuer@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: m2-r2-cash-1 }] }
+  - name: m2_repo2_complete
+    type: complete_swap
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { swap_id: "862002", idempotency_key: m2-r2-complete-$(date +%s) }
+
+  - name: m2_repo3_create
+    type: create_swap
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      swap_id: "862003"
+      idempotency_key: m2-r3-create-$(date +%s)
+      deadline: $(date -u -v+40d +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+80d +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_contract_references: [{ composed_contract_id: COMPOSED-CONTRACT-REPO-SWAP-862002 }]
+        repurchase_payments: { denomination: aud-token-asset, amount: 1010000000000000000000, payments: [{ id: m2-r3-repurch-1 }] }
+      counterparty:
+        id: payer@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: m2-r3-cash-1 }] }
+  - name: m2_repo3_complete
+    type: complete_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { swap_id: "862003", idempotency_key: m2-r3-complete-$(date +%s) }
+
+  # OUTER repurchase (clean close): issuer repurchases repo_3 → payer (its lender) is paid.
+  - name: m2_payer_aud_before
+    type: balance
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { asset_id: aud-token-asset }
+  - name: m2_repo3_repurchase
+    type: repurchase_swap
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { swap_id: "862003", idempotency_key: m2-r3-repurch-$(date +%s) }
+  - name: m2_payer_claim_outer
+    type: accept
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { payment_id: PAY-REPURCHASE-862003-0, idempotency_key: m2-r3-claim-$(date +%s) }
+  - name: m2_payer_aud_after
+    type: balance
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { asset_id: aud-token-asset }
+  - name: m2_assert_outer_repurchase_paid
+    type: assert
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      # EXACT: repo_3 (862003) repurchase = 1010 AUD; payer (its lender) claims exactly that.
+      actual: "$m2_payer_aud_after.private_balance"
+      minus: "$m2_payer_aud_before.private_balance"
+      equals: "1010000000000000000000"
+
+  # INNER default: advance +3500 (cumulative Σ→3500, clears the +3200S expiry), then forfeit repo_2
+  # (Cont_1 → issuer) and repo_1 (underlying forfeit-forwards → issuer).
+  - name: m2_advance
+    type: advance_chain_time
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { seconds: 3500 }
+  # Both forfeits are called by ISSUER — the inner cascade's end-lender. After repo_2 forfeits, repo_1's
+  # position has already cascaded to issuer, so issuer (the current holder) must call repo_1's forfeit;
+  # investor (repo_1's original lender) no longer holds it → CallerHasNoAccess. Matches J1/F4's
+  # "end-lender calls all forfeits" pattern.
+  - name: m2_repo2_forfeit
+    type: expire_collateral
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { swap_id: "862002", idempotency_key: m2-r2-forfeit-$(date +%s) }
+  - name: m2_repo1_forfeit
+    type: expire_collateral
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { swap_id: "862001", idempotency_key: m2-r1-forfeit-$(date +%s) }
+
+  # PROOF: the forfeited underlying cascaded to issuer (forfeit-forward end-lender of the inner default).
+  - name: m2_verify_issuer_owns
+    type: create_swap
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      swap_id: "862099"
+      idempotency_key: m2-verify-$(date +%s)
+      initiator: { obligation_ids: [na_m2_underlying] }
+      counterparty:
+        id: payer@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: m2-verify-want-1 }] }
+      deadline: $(date -u -v+30d +%Y-%m-%dT%H:%M:%SZ)
+
+
+  # ════════ M3 — 4-LEVEL CHAIN, A DIFFERENT TERMINAL OP PER LEVEL (outermost-in) ════════
+  # repo_1 payer⇄investor → repo_2 investor⇄issuer → repo_3 issuer⇄payer → repo_4 payer⇄investor.
+  # Each level is resolved as it becomes the outermost, exercising all three ops in one chain:
+  #   repo_4 REPURCHASE → repo_3 ROLL → repo_3' REPURCHASE → repo_2 FORFEIT → repo_1 FORFEIT.
+  # repo_3/repo_4 use day-scale expiries (repurchased/rolled); repo_1/repo_2 use +4500S deadline /
+  # +6000S expiry, forfeited after the +10000 advance below (cumulative Σ→13500, past the expiry).
+  - name: m3_underlying
+    type: create_obligation
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { idempotency_key: m3-under-$(date +%s), counterpart: payer@yieldfabric.com, expiry: $(date -u -v+120d +%Y-%m-%dT%H:%M:%SZ), contract_id: na_m3_underlying, data: { name: "M3 underlying", description: "4-level mixed terminal" } }
+
+  - name: m3_repo1_create
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "863001"
+      idempotency_key: m3-r1-create-$(date +%s)
+      deadline: $(date -u -v+4500S +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+6000S +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_obligation_ids: [na_m3_underlying]
+        repurchase_payments: { denomination: usdc-asset, amount: 1050000000000000000000, payments: [{ id: m3-r1-repurch-1 }] }
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: m3-r1-cash-1 }] }
+  - name: m3_repo1_complete
+    type: complete_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { swap_id: "863001", idempotency_key: m3-r1-complete-$(date +%s) }
+
+  - name: m3_repo2_create
+    type: create_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      swap_id: "863002"
+      idempotency_key: m3-r2-create-$(date +%s)
+      deadline: $(date -u -v+4500S +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+6000S +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_contract_references: [{ composed_contract_id: COMPOSED-CONTRACT-REPO-SWAP-863001 }]
+        repurchase_payments: { denomination: aud-token-asset, amount: 1020000000000000000000, payments: [{ id: m3-r2-repurch-1 }] }
+      counterparty:
+        id: issuer@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: m3-r2-cash-1 }] }
+  - name: m3_repo2_complete
+    type: complete_swap
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { swap_id: "863002", idempotency_key: m3-r2-complete-$(date +%s) }
+
+  - name: m3_repo3_create
+    type: create_swap
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      swap_id: "863003"
+      idempotency_key: m3-r3-create-$(date +%s)
+      deadline: $(date -u -v+40d +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+80d +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_contract_references: [{ composed_contract_id: COMPOSED-CONTRACT-REPO-SWAP-863002 }]
+        repurchase_payments: { denomination: aud-token-asset, amount: 1015000000000000000000, payments: [{ id: m3-r3-repurch-1 }] }
+      counterparty:
+        id: payer@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: m3-r3-cash-1 }] }
+  - name: m3_repo3_complete
+    type: complete_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { swap_id: "863003", idempotency_key: m3-r3-complete-$(date +%s) }
+
+  - name: m3_repo4_create
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "863004"
+      idempotency_key: m3-r4-create-$(date +%s)
+      deadline: $(date -u -v+40d +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+80d +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_contract_references: [{ composed_contract_id: COMPOSED-CONTRACT-REPO-SWAP-863003 }]
+        repurchase_payments: { denomination: aud-token-asset, amount: 1012000000000000000000, payments: [{ id: m3-r4-repurch-1 }] }
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: m3-r4-cash-1 }] }
+  - name: m3_repo4_complete
+    type: complete_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { swap_id: "863004", idempotency_key: m3-r4-complete-$(date +%s) }
+
+  # (1) REPURCHASE the outermost repo_4: payer buys back → investor (its lender) is paid.
+  - name: m3_investor_aud_before_r4
+    type: balance
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: aud-token-asset }
+  - name: m3_repo4_repurchase
+    type: repurchase_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { swap_id: "863004", idempotency_key: m3-r4-repurch-$(date +%s) }
+  - name: m3_investor_claim_r4
+    type: accept
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { payment_id: PAY-REPURCHASE-863004-0, idempotency_key: m3-r4-claim-$(date +%s) }
+  - name: m3_investor_aud_after_r4
+    type: balance
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: aud-token-asset }
+  - name: m3_assert_r4_paid
+    type: assert
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      # EXACT: repo_4 (863004) repurchase = 1012 AUD; investor (its lender) claims exactly that.
+      actual: "$m3_investor_aud_after_r4.private_balance"
+      minus: "$m3_investor_aud_before_r4.private_balance"
+      equals: "1012000000000000000000"
+
+  # (2) ROLL repo_3 (now outermost): issuer rolls to a new lender (investor); then (3) issuer
+  # repurchases the rolled 863013 → investor (new lender) is paid.
+  - name: m3_repo3_roll_initiate
+    type: initiate_roll
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      old_swap_id: "863003"
+      new_swap_id: "863013"
+      new_counterparty: investor@yieldfabric.com
+      new_deadline: $(date -u -v+40d +%Y-%m-%dT%H:%M:%SZ)
+      new_expiry:   $(date -u -v+80d +%Y-%m-%dT%H:%M:%SZ)
+      idempotency_key: m3-r3-roll-$(date +%s)
+  - name: m3_repo3_roll_complete
+    type: complete_roll
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { new_swap_id: "863013", idempotency_key: m3-r3-roll-complete-$(date +%s) }
+  - name: m3_investor_aud_before_r3
+    type: balance
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: aud-token-asset }
+  - name: m3_repo3_repurchase
+    type: repurchase_swap
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { swap_id: "863013", idempotency_key: m3-r3-repurch-$(date +%s) }
+  # #71 FIXED (see the M1 note): the rolled swap's repurchase now delivers a claimable record to the new
+  # lender via the roll's stored prefund id_hashes, so investor claims it and its balance rises.
+  - name: m3_rolled_repurchase_claim
+    type: accept
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { payment_id: PAY-REPURCHASE-863013-0, idempotency_key: m3-r3-claim-$(date +%s) }
+  - name: m3_investor_aud_after_r3
+    type: balance
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: aud-token-asset }
+  - name: m3_assert_r3_rolled_received
+    type: assert
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      # EXACT (#71 guard): the rolled 863013 inherits repo_3's (863003) repurchase terms = 1015 AUD.
+      actual: "$m3_investor_aud_after_r3.private_balance"
+      minus: "$m3_investor_aud_before_r3.private_balance"
+      equals: "1015000000000000000000"
+
+  # (4)+(5) FORFEIT the inner two: advance +10000 (cumulative Σ→13500, past the +6000S expiry), forfeit repo_2 then repo_1.
+  - name: m3_advance
+    type: advance_chain_time
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { seconds: 10000 }   # must EXCEED the +4500S forfeit deadline (advance>deadline rule)
+  # Both forfeits called by ISSUER (inner cascade end-lender) — see the M2 forfeit note: after repo_2
+  # forfeits, repo_1's position is held by issuer, so issuer must call repo_1's forfeit (investor → CallerHasNoAccess).
+  - name: m3_repo2_forfeit
+    type: expire_collateral
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { swap_id: "863002", idempotency_key: m3-r2-forfeit-$(date +%s) }
+  - name: m3_repo1_forfeit
+    type: expire_collateral
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { swap_id: "863001", idempotency_key: m3-r1-forfeit-$(date +%s) }
+
+  # PROOF: inner-default underlying cascaded to issuer (repo_2 lender / forfeit-forward end-lender).
+  - name: m3_verify_issuer_owns
+    type: create_swap
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      swap_id: "863099"
+      idempotency_key: m3-verify-$(date +%s)
+      initiator: { obligation_ids: [na_m3_underlying] }
+      counterparty:
+        id: payer@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: m3-verify-want-1 }] }
+      deadline: $(date -u -v+30d +%Y-%m-%dT%H:%M:%SZ)
+
+
+  # ════════ U2 — REPURCHASE AFTER FORFEIT (terminal swap) → REJECT (unhappy) ════════
+  # Once a repo is forfeited (collateral seized on default), the borrower cannot repurchase it.
+  # Standalone repo; deadline +16000S / expiry +17000S must clear the ~13500 cumulative Σ from M2+M3
+  # (else createSwap rejects the past deadline). advance +10000 (Σ→23500) clears the expiry → forfeit,
+  # then the repurchase attempt must reject.
+  - name: u2_underlying
+    type: create_obligation
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { idempotency_key: u2-under-$(date +%s), counterpart: payer@yieldfabric.com, expiry: $(date -u -v+120d +%Y-%m-%dT%H:%M:%SZ), contract_id: na_u2_underlying, data: { name: "U2 underlying", description: "repurchase-after-forfeit" } }
+  - name: u2_create
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "864001"
+      idempotency_key: u2-create-$(date +%s)
+      deadline: $(date -u -v+16000S +%Y-%m-%dT%H:%M:%SZ)   # must clear the ~13500 cumulative Σ from M2+M3 (chain = wall + Σ)
+      expiry:   $(date -u -v+17000S +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_obligation_ids: [na_u2_underlying]
+        repurchase_payments: { denomination: usdc-asset, amount: 1050000000000000000000, payments: [{ id: u2-repurch-1 }] }
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: u2-cash-1 }] }
+  - name: u2_complete
+    type: complete_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { swap_id: "864001", idempotency_key: u2-complete-$(date +%s) }
+  - name: u2_advance
+    type: advance_chain_time
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { seconds: 10000 }   # must EXCEED the +4500S deadline (advance>deadline rule)
+  - name: u2_forfeit
+    type: expire_collateral
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { swap_id: "864001", idempotency_key: u2-forfeit-$(date +%s) }
+  - name: u2_repurchase_after_forfeit_fails
+    type: repurchase_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { swap_id: "864001", idempotency_key: u2-repurch-$(date +%s), expect_failure: true }

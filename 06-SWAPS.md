@@ -107,6 +107,7 @@ mutation CreateSwap($input: CreateSwapInput!) {
 4. **Contract Locking**: Initiator's obligations are locked after blockchain confirmation
 5. **Payment Creation**: Initiator's expected payments are created during swap creation
 6. **Collateral Locking**: Initiator's collateral is locked during `createSwap()`
+7. **Ownership**: The initiator can only offer obligations/collateral its swap wallet HOLDs. An explicitly-named reference (a `*ContractReferences` entry with `contractId`, or a legacy `*ObligationIds` / `*CollateralObligationIds` entry) it does not hold is rejected synchronously with `"Initiator does not hold … contract <id>"` — no silent under-collateralization. A `composedContractId` reference instead silently drops un-held *nested* legs (rehypothecation), pledging only the held leg.
 
 **Example - Atomic Swap:**
 ```graphql
@@ -1023,6 +1024,9 @@ Swaps progress through the following statuses:
 
 5. **Expiry Invalid**: Expiry not > deadline for repo swaps
    - **Solution**: Set expiry > deadline when providing collateral
+
+6. **Not the Holder**: Offering an explicitly-named obligation/collateral the initiator's wallet doesn't hold (`"Initiator does not hold … contract <id>"`)
+   - **Solution**: Only offer assets your swap wallet HOLDs; if the asset is on another wallet, pass that `walletId`. (A `composedContractId` reference instead silently drops un-held nested legs.)
 
 ---
 

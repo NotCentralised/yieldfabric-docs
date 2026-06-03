@@ -51,6 +51,10 @@ Atomic exchange mechanisms enabling simultaneous trading of contracts and paymen
 
 Collateralized lending built on swap infrastructure with repurchase options and automatic forfeiture. Two time windows: deadline (swap completion) and expiry (repurchase). Bilateral collateral; each party can repurchase their own collateral before expiry. Automatic forfeiture after expiry. **Repo rolling** enables moving collateral to a new counterparty with new terms via a two-step atomic flow (initiate roll → complete roll).
 
+**The lender holds a contingent instrument.** Once a repo completes, the lender's position is a composed contract that pays out **either** the repurchase amount (if the borrower repurchases before `expiry`) **or** the collateral itself (if they don't, and anyone triggers `expireCollateral` after `expiry`). On default the lender is *out* the upfront cash it advanced and receives the collateral in its place; the borrower keeps the cash and loses the collateral. Forfeiture is **deterministic and permissionless to trigger** — anyone can call it after expiry, but the recipient is fixed by the contract (the current collateral counterparty), never by who calls.
+
+**Ownership is enforced at creation.** A party can only pledge collateral, or offer obligations, that its swap wallet is the on-chain HOLDER of. An explicitly-named asset it does not hold is rejected up front rather than silently dropped — so a repo can never be created silently under-collateralized. (Pledging a whole *position* — a composed contract — instead resolves to the leg you actually hold; see Rehypothecation below.)
+
 **Use Cases:** Short-term funding, securities lending, liquidity management, secured financing, margin lending, refinancing via repo rolling.
 
 ### 4. Payments
@@ -537,6 +541,27 @@ This enables refinancing, counterparty substitution, and term extension without 
 
 Create hierarchical payment structures with different risk/return profiles. Each payment stream represents a tranche with prioritized payment claims (senior, mezzanine, equity).
 
+### Pattern 6: Rehypothecation & Collateral Chains
+
+A repo lender's contingent position (Pattern 4) is itself a first-class composed contract, so it can be **re-pledged as collateral in a further repo** — building collateral chains of arbitrary depth. This is the matched-book / back-to-back repo that underpins prime-brokerage leverage: the lender funds a borrower, then borrows against its own lending position, putting up only the net difference in capital and earning the spread differential.
+
+**How it works:** pledge the position by passing its **composed-contract id** as a collateral reference. The expansion resolves to the legs you actually hold (your lending position); the still-locked underlying beneath it (held by the inner swap) is not yours to pledge and is left in place. The underlying stays continuously encumbered — only the contract structure around it grows.
+
+**Confirmed chain semantics (rely on these):**
+- **Forfeit-forward.** On default, collateral forfeits to the *current holder* of the repurchase obligation and cascades up the chain to the end-lender — whoever is most senior at default ends up with the underlying.
+- **Repurchase-cash cascade.** Cash paid to repurchase an *inner* repo is locked as collateral one level up; only the **outermost** level's repurchase cash is freely claimable. The chain unwinds inner-most first, each level's payout substituting as the next level's collateral.
+- **Risk is anchored at the obligor.** Every link traces back to the original obligor at the root, so the full chain of exposure stays visible end-to-end — no link obscures who is ultimately on the hook.
+
+**Operator discipline:** set each outer repo's `expiry` **≤** the inner repo's `expiry`. An outer claim that outlives its underlying lock has nothing substantive behind it once the inner repo is repurchased. This timing constraint is client-side discipline, not platform-enforced.
+
+**Use Cases:** Prime-brokerage leverage, securities-lending chains, matched-book repo desks, collateral transformation, layered secured financing.
+
+### Pattern 7: Trading a Repo Position (Position Transfer)
+
+A lender's contingent position can be **transferred outright** to a new holder (`transferObligation` on the repo's composed contract) — a secondary-market sale of the lending position without unwinding the repo. Transfer moves **both ownership and the payment payee atomically**: after it, the repurchase cash routes to the new holder and the original lender can no longer claim it. Repurchase and forfeiture both follow the **current** holder, not the party who originally opened the swap.
+
+**Use Cases:** Secondary trading of repo / loan positions, loan-book sales, syndication, lender exit before maturity, position novation, distressed-debt transfer.
+
 ---
 
 ## Advanced Techniques
@@ -579,6 +604,13 @@ Create hierarchical payment structures with different risk/return profiles. Each
 - Contracts: All payment streams created together, atomic acceptance
 - Swaps: Both sides execute simultaneously or nothing happens
 - Eliminates counterparty risk and ensures structure integrity
+
+**Collateral & Repo Guarantees (rely on these when structuring):**
+- **Exact conservation** — every leg (upfront, repurchase, forfeit, plain swap) credits the right party by the exact amount, or the whole transaction fails. No rounding, no leakage.
+- **Pull-based upfront** — at completion the lender's cash lands in the borrower's incoming balance; the borrower must `accept` it. Model funding as a claim, not an automatic credit.
+- **Deterministic, permissionless forfeiture** — after `expiry` anyone may trigger the forfeit, but the recipient is fixed by the contract (the collateral counterparty / current holder), never the caller.
+- **Forfeit-forward & transfer-follows-holder** — collateral and repurchase cash always route to the *current* holder of the position, through outright transfers and up rehypothecation chains.
+- **Ownership-enforced offering** — a party can only pledge or offer assets its wallet holds; an explicitly-named asset it doesn't hold is rejected up front, never silently dropped (a composed *position* resolves to the leg you actually hold).
 
 **Acceptance Windows:**
 - Contract expiry defines acceptance window (separate from payment unlock dates)

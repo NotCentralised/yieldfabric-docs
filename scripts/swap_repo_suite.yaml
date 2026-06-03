@@ -1,0 +1,1183 @@
+# ════════════════════════════════════════════════════════════════════════════
+#  SWAP / REPO / REHYPOTHECATION FUNCTIONAL SUITE — pre-deployment gate
+# ════════════════════════════════════════════════════════════════════════════
+#
+#  Runs against the LIVE runtime (Rust + circom + Solidity) via the Python
+#  harness:  python -m yieldfabric.cli execute scripts/swap_repo_suite.yaml
+#  Assumes a FRESH deploy + `setup.yaml` seeded (users/groups/assets).
+#
+#  Every semantic here is anchored in the Rust resolvers
+#  (yieldfabric-obligations/src/resolvers/swap_flow/repo.rs, create.rs):
+#   - repo  = collateral present AND expiry > deadline
+#   - repurchase: only the collateral provider; payments auto-derive from the
+#                 stored swap (repo.rs:174) — caller passes only swap_id
+#   - expire_collateral: after expiry only; forfeits to the protected party
+#   - initiate_roll: initiator (collateral provider) only (repo.rs:241)
+#   - complete_roll: new counterparty only (repo.rs:367)
+#   - rehypothecation: pledge the lender's contingent token
+#                 COMPOSED-CONTRACT-REPO-SWAP-{swap_id} as collateral
+#                 (COMPOSED_CONTINGENT_PREFIX, composed_contract_record_manager.rs:25)
+#
+#  `expect_failure: true` marks negative tests (the run treats a failed command
+#  as PASS, and a success as FAIL). `expect_error` optionally substring-matches.
+#
+#  Parties (seeded SuperAdmins): payer / investor / issuer / collateral / originator
+#  Assets: aud-token-asset, usdc-asset
+#
+#  Coverage:
+#   A  Atomic swap            happy + unhappy (wrong completer, double complete)
+#   B  Repo, NFT collateral (initiator)     complete → repurchase  + unhappy
+#   C  Repo, PAYMENT collateral (initiator) complete → FORFEIT     + unhappy
+#   D  Repo, collateral on COUNTERPARTY     complete → repurchase
+#   E  Roll                  initiate → complete → repurchase + unhappy
+#   F  Rehypothecation       repo A → pledge Cont_A into repo B → unwind
+#   G  Nested collateral     NFT + payment on BOTH sides, complete → repurchase
+# ════════════════════════════════════════════════════════════════════════════
+
+commands:
+
+  # ───────────────────────────── FUNDING ─────────────────────────────
+  - name: fund_payer_usdc
+    type: deposit
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { asset_id: usdc-asset, amount: 1000000000000000000000000, idempotency_key: fund-payer-usdc-$(date +%s) }
+  - name: fund_payer_aud
+    type: deposit
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { asset_id: aud-token-asset, amount: 1000000000000000000000000, idempotency_key: fund-payer-aud-$(date +%s) }
+  - name: fund_investor_aud
+    type: deposit
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: aud-token-asset, amount: 1000000000000000000000000, idempotency_key: fund-inv-aud-$(date +%s) }
+  - name: fund_investor_usdc
+    type: deposit
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: usdc-asset, amount: 1000000000000000000000000, idempotency_key: fund-inv-usdc-$(date +%s) }
+  - name: fund_issuer_aud
+    type: deposit
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { asset_id: aud-token-asset, amount: 1000000000000000000000000, idempotency_key: fund-iss-aud-$(date +%s) }
+  - name: fund_issuer_usdc
+    type: deposit
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { asset_id: usdc-asset, amount: 1000000000000000000000000, idempotency_key: fund-iss-usdc-$(date +%s) }
+
+
+  # ════════════════ SCENARIO A — ATOMIC SWAP (happy + unhappy) ════════════════
+  # payer offers an NFT asset for 1000 AUD from investor; no expiry ⇒ atomic.
+
+  - name: a_asset
+    type: create_obligation
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      idempotency_key: a-asset-$(date +%s)
+      counterpart: payer@yieldfabric.com
+      expiry: $(date -u -v+30d +%Y-%m-%dT%H:%M:%SZ)
+      contract_id: suite_a_asset
+      data: { name: "A Asset", description: "atomic swap asset" }
+
+  - name: a_create
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "710001"
+      idempotency_key: a-create-$(date +%s)
+      initiator:
+        obligation_ids: [suite_a_asset]
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments:
+          denomination: aud-token-asset
+          amount: 1000000000000000000000
+          payments: [{ id: a-pay-1 }]
+      deadline: $(date -u -v+1H +%Y-%m-%dT%H:%M:%SZ)
+
+  # unhappy: the INITIATOR cannot complete its own swap (only counterparty)
+  - name: a_complete_by_initiator_fails
+    type: complete_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "710001"
+      idempotency_key: a-complete-bad-$(date +%s)
+      expect_failure: true
+
+  - name: a_complete
+    type: complete_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      swap_id: "710001"
+      idempotency_key: a-complete-$(date +%s)
+
+  # unhappy: a completed swap cannot be completed again
+  - name: a_double_complete_fails
+    type: complete_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      swap_id: "710001"
+      idempotency_key: a-recomplete-$(date +%s)
+      expect_failure: true
+
+
+  # ════════ SCENARIO B — REPO, NFT COLLATERAL (initiator), REPURCHASE ════════
+  # payer (borrower) posts an NFT as collateral, gets 1000 AUD upfront from
+  # investor (lender), promises 1050 USDC repurchase. expiry far ⇒ repurchase path.
+
+  - name: b_collateral
+    type: create_obligation
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      idempotency_key: b-collat-$(date +%s)
+      counterpart: payer@yieldfabric.com
+      expiry: $(date -u -v+30d +%Y-%m-%dT%H:%M:%SZ)
+      contract_id: suite_b_collateral
+      data: { name: "B Collateral", description: "repo NFT collateral" }
+
+  - name: b_create
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "720001"
+      idempotency_key: b-create-$(date +%s)
+      deadline: $(date -u -v+1H +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+30d +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_obligation_ids: [suite_b_collateral]
+        repurchase_payments:
+          denomination: usdc-asset
+          amount: 1050000000000000000000
+          payments: [{ id: b-repurchase-1 }]
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments:
+          denomination: aud-token-asset
+          amount: 1000000000000000000000
+          payments: [{ id: b-cash-1 }]
+
+  - name: b_complete
+    type: complete_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      swap_id: "720001"
+      idempotency_key: b-complete-$(date +%s)
+
+  # unhappy: a NON-PARTY cannot repurchase
+  - name: b_repurchase_by_nonparty_fails
+    type: repurchase_swap
+    user: { id: collateral@yieldfabric.com, password: collateral_password }
+    parameters:
+      swap_id: "720001"
+      idempotency_key: b-repurchase-bad-$(date +%s)
+      expect_failure: true
+
+  # unhappy: cannot expire collateral before expiry
+  - name: b_expire_before_expiry_fails
+    type: expire_collateral
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      swap_id: "720001"
+      idempotency_key: b-expire-bad-$(date +%s)
+      expect_failure: true
+
+  # happy: the collateral provider repurchases ⇒ NFT collateral returns
+  - name: b_repurchase
+    type: repurchase_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "720001"
+      idempotency_key: b-repurchase-$(date +%s)
+
+  # OUTCOME PROOF: the NFT collateral actually RETURNED. Re-pledging it as the offered asset in a
+  # new swap escrows it at create, which reverts on-chain unless payer owns it again — so this
+  # create succeeding proves the repurchase returned it (no balance noise, unlike payment legs).
+  - name: b_verify_repledge
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "790001"
+      idempotency_key: b-repledge-$(date +%s)
+      initiator:
+        obligation_ids: [suite_b_collateral]
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments:
+          denomination: aud-token-asset
+          amount: 1000000000000000000000
+          payments: [{ id: b-repledge-want-1 }]
+      deadline: $(date -u -v+24H +%Y-%m-%dT%H:%M:%SZ)
+
+
+  # ════════ SCENARIO C — REPO, PAYMENT COLLATERAL (initiator), FORFEITURE ════════
+  # Short expiry: payer posts 500 USDC as payment collateral; never repurchases;
+  # after expiry the counterparty (investor) seizes via expire_collateral.
+
+  - name: c_create
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "730001"
+      idempotency_key: c-create-$(date +%s)
+      # deadline must be >=120s ahead of CHAIN time (the node clock can run ahead of wall),
+      # so keep it well ahead; the window stays short-ish and we jump the chain past expiry below.
+      deadline: $(date -u -v+600S +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+660S +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_payments:
+          denomination: usdc-asset
+          amount: 500000000000000000000
+          payments: [{ id: c-collat-1 }]
+        repurchase_payments:
+          denomination: usdc-asset
+          amount: 1050000000000000000000
+          payments: [{ id: c-repurchase-1 }]
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments:
+          denomination: aud-token-asset
+          amount: 1000000000000000000000
+          payments: [{ id: c-cash-1 }]
+
+  - name: c_complete
+    type: complete_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      swap_id: "730001"
+      idempotency_key: c-complete-$(date +%s)
+
+  # deterministically jump the chain past the 660s expiry so the collateral is forfeitable
+  # (test-node only — evm_increaseTime+evm_mine; a real chain would require a real wait).
+  - name: c_wait_expiry
+    type: advance_chain_time
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { seconds: 1200 }
+
+  # happy: after expiry, the protected counterparty seizes the forfeited collateral
+  - name: c_forfeit
+    type: expire_collateral
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      swap_id: "730001"
+      idempotency_key: c-forfeit-$(date +%s)
+
+  # unhappy: cannot repurchase a forfeited/expired repo
+  - name: c_repurchase_after_forfeit_fails
+    type: repurchase_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "730001"
+      idempotency_key: c-repurchase-bad-$(date +%s)
+      expect_failure: true
+
+
+  # ════════ SCENARIO D — REPO, COLLATERAL ON COUNTERPARTY SIDE, REPURCHASE ════════
+  # Reverse repo: investor (initiator/lender) pays 1000 AUD upfront; payer
+  # (counterparty/borrower) posts an NFT as collateral + 1050 USDC repurchase.
+
+  - name: d_collateral
+    type: create_obligation
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      idempotency_key: d-collat-$(date +%s)
+      counterpart: payer@yieldfabric.com
+      expiry: $(date -u -v+30d +%Y-%m-%dT%H:%M:%SZ)
+      contract_id: suite_d_collateral
+      data: { name: "D Collateral", description: "counterparty-side repo collateral" }
+
+  - name: d_create
+    type: create_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      swap_id: "740001"
+      idempotency_key: d-create-$(date +%s)
+      deadline: $(date -u -v+1H +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+30d +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        initial_payments:
+          denomination: aud-token-asset
+          amount: 1000000000000000000000
+          payments: [{ id: d-cash-1 }]
+      counterparty:
+        id: payer@yieldfabric.com
+        collateral_obligation_ids: [suite_d_collateral]
+        repurchase_payments:
+          denomination: usdc-asset
+          amount: 1050000000000000000000
+          payments: [{ id: d-repurchase-1 }]
+
+  - name: d_complete
+    type: complete_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "740001"
+      idempotency_key: d-complete-$(date +%s)
+
+  # happy: the collateral provider (the counterparty, payer) repurchases
+  - name: d_repurchase
+    type: repurchase_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "740001"
+      idempotency_key: d-repurchase-$(date +%s)
+
+  # OUTCOME PROOF: counterparty-side NFT collateral returned (distinct config: collateral was on
+  # the counterparty). Re-pledge ⇒ create reverts unless payer owns suite_d_collateral again.
+  - name: d_verify_repledge
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "790002"
+      idempotency_key: d-repledge-$(date +%s)
+      initiator:
+        obligation_ids: [suite_d_collateral]
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments:
+          denomination: aud-token-asset
+          amount: 1000000000000000000000
+          payments: [{ id: d-repledge-want-1 }]
+      deadline: $(date -u -v+24H +%Y-%m-%dT%H:%M:%SZ)
+
+
+  # ════════════════ SCENARIO E — ROLL (initiate → complete → repurchase) ════════════════
+  # payer's repo with investor is rolled to a NEW counterparty (issuer) before
+  # repurchase; collateral migrates; payer then repurchases the new repo.
+
+  - name: e_collateral
+    type: create_obligation
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      idempotency_key: e-collat-$(date +%s)
+      counterpart: payer@yieldfabric.com
+      expiry: $(date -u -v+60d +%Y-%m-%dT%H:%M:%SZ)
+      contract_id: suite_e_collateral
+      data: { name: "E Collateral", description: "roll repo collateral" }
+
+  - name: e_create
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "750001"
+      idempotency_key: e-create-$(date +%s)
+      deadline: $(date -u -v+1H +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+30d +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_obligation_ids: [suite_e_collateral]
+        repurchase_payments:
+          denomination: usdc-asset
+          amount: 1050000000000000000000
+          payments: [{ id: e-repurchase-1 }]
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments:
+          denomination: aud-token-asset
+          amount: 1000000000000000000000
+          payments: [{ id: e-cash-1 }]
+
+  - name: e_complete
+    type: complete_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      swap_id: "750001"
+      idempotency_key: e-complete-$(date +%s)
+
+  # unhappy: only the initiator (collateral provider) can initiate a roll
+  - name: e_roll_by_counterparty_fails
+    type: initiate_roll
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      old_swap_id: "750001"
+      new_swap_id: "750002"
+      new_counterparty: issuer@yieldfabric.com
+      new_deadline: $(date -u -v+1H +%Y-%m-%dT%H:%M:%SZ)
+      new_expiry:   $(date -u -v+30d +%Y-%m-%dT%H:%M:%SZ)
+      idempotency_key: e-roll-bad-$(date +%s)
+      expect_failure: true
+
+  - name: e_roll_initiate
+    type: initiate_roll
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      old_swap_id: "750001"
+      new_swap_id: "750002"
+      new_counterparty: issuer@yieldfabric.com
+      new_deadline: $(date -u -v+1H +%Y-%m-%dT%H:%M:%SZ)
+      new_expiry:   $(date -u -v+30d +%Y-%m-%dT%H:%M:%SZ)
+      idempotency_key: e-roll-$(date +%s)
+
+  # unhappy: only the NEW counterparty can complete the roll
+  - name: e_roll_complete_by_initiator_fails
+    type: complete_roll
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      new_swap_id: "750002"
+      idempotency_key: e-roll-complete-bad-$(date +%s)
+      expect_failure: true
+
+  - name: e_roll_complete
+    type: complete_roll
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      new_swap_id: "750002"
+      idempotency_key: e-roll-complete-$(date +%s)
+
+  # happy: payer repurchases the NEW (rolled) repo ⇒ collateral returns
+  - name: e_repurchase_new
+    type: repurchase_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "750002"
+      idempotency_key: e-repurchase-new-$(date +%s)
+
+  # OUTCOME PROOF: post-roll NFT collateral returned (distinct config: the NFT migrated through a
+  # roll before being repurchased). Re-pledge ⇒ create reverts unless payer owns suite_e_collateral.
+  - name: e_verify_repledge
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "790003"
+      idempotency_key: e-repledge-$(date +%s)
+      initiator:
+        obligation_ids: [suite_e_collateral]
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments:
+          denomination: aud-token-asset
+          amount: 1000000000000000000000
+          payments: [{ id: e-repledge-want-1 }]
+      deadline: $(date -u -v+24H +%Y-%m-%dT%H:%M:%SZ)
+
+
+  # ════════════════ SCENARIO F — REHYPOTHECATION (repo A → repo B → unwind) ════════════════
+  # payer pledges an NFT to investor (lender A) in repo A. investor receives the
+  # contingent token Cont_A and re-pledges it as collateral to issuer (lender B)
+  # in repo B. Then unwind: payer repurchases A, investor repurchases B.
+
+  - name: f_collateral
+    type: create_obligation
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      idempotency_key: f-collat-$(date +%s)
+      counterpart: payer@yieldfabric.com
+      expiry: $(date -u -v+60d +%Y-%m-%dT%H:%M:%SZ)
+      contract_id: suite_f_collateral
+      data: { name: "F Collateral", description: "rehypothecation underlying collateral" }
+
+  # repo A: payer (borrower) ⇄ investor (lender A)
+  - name: f_repo_a_create
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "760001"
+      idempotency_key: f-a-create-$(date +%s)
+      deadline: $(date -u -v+1H +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+30d +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_obligation_ids: [suite_f_collateral]
+        repurchase_payments:
+          denomination: usdc-asset
+          amount: 1050000000000000000000
+          payments: [{ id: f-a-repurchase-1 }]
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments:
+          denomination: aud-token-asset
+          amount: 1000000000000000000000
+          payments: [{ id: f-a-cash-1 }]
+
+  - name: f_repo_a_complete
+    type: complete_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      swap_id: "760001"
+      idempotency_key: f-a-complete-$(date +%s)
+
+  # repo B: investor (lender A, now borrower) re-pledges Cont_A ⇄ issuer (lender B).
+  # Cont_A's contingent id is deterministic: COMPOSED-CONTRACT-REPO-SWAP-{A swap_id}.
+  - name: f_repo_b_create
+    type: create_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      swap_id: "760002"
+      idempotency_key: f-b-create-$(date +%s)
+      deadline: $(date -u -v+1H +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+25d +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_contract_references:
+          - composed_contract_id: COMPOSED-CONTRACT-REPO-SWAP-760001
+        repurchase_payments:
+          denomination: aud-token-asset
+          amount: 1020000000000000000000
+          payments: [{ id: f-b-repurchase-1 }]
+      counterparty:
+        id: issuer@yieldfabric.com
+        expected_payments:
+          denomination: aud-token-asset
+          amount: 1000000000000000000000
+          payments: [{ id: f-b-cash-1 }]
+
+  - name: f_repo_b_complete
+    type: complete_swap
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      swap_id: "760002"
+      idempotency_key: f-b-complete-$(date +%s)
+
+  # unwind: payer repurchases the underlying repo A (R1 cash flows to repo B's collateral)
+  - name: f_repo_a_repurchase
+    type: repurchase_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "760001"
+      idempotency_key: f-a-repurchase-$(date +%s)
+
+  # unwind: investor (lender A) repurchases repo B ⇒ Cont_A returns to investor
+  - name: f_repo_b_repurchase
+    type: repurchase_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      swap_id: "760002"
+      idempotency_key: f-b-repurchase-$(date +%s)
+
+
+  # ════════ SCENARIO G — NESTED COLLATERAL: NFT + PAYMENT on BOTH sides ════════
+  # A repo where the initiator posts an NFT AND a USDC payment as collateral,
+  # and the counterparty also posts an NFT collateral; complete → both repurchase.
+
+  - name: g_init_collateral_nft
+    type: create_obligation
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      idempotency_key: g-init-nft-$(date +%s)
+      counterpart: payer@yieldfabric.com
+      expiry: $(date -u -v+30d +%Y-%m-%dT%H:%M:%SZ)
+      contract_id: suite_g_init_collateral
+      data: { name: "G Init Collateral", description: "initiator NFT collateral" }
+
+  - name: g_cp_collateral_nft
+    type: create_obligation
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      idempotency_key: g-cp-nft-$(date +%s)
+      counterpart: investor@yieldfabric.com
+      expiry: $(date -u -v+30d +%Y-%m-%dT%H:%M:%SZ)
+      contract_id: suite_g_cp_collateral
+      data: { name: "G CP Collateral", description: "counterparty NFT collateral" }
+
+  - name: g_create
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "770001"
+      idempotency_key: g-create-$(date +%s)
+      deadline: $(date -u -v+1H +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+30d +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_obligation_ids: [suite_g_init_collateral]
+        collateral_payments:
+          denomination: usdc-asset
+          amount: 500000000000000000000
+          payments: [{ id: g-init-collat-pay-1 }]
+        repurchase_payments:
+          denomination: usdc-asset
+          amount: 1050000000000000000000
+          payments: [{ id: g-init-repurchase-1 }]
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments:
+          denomination: aud-token-asset
+          amount: 1000000000000000000000
+          payments: [{ id: g-cash-1 }]
+        collateral_obligation_ids: [suite_g_cp_collateral]
+        repurchase_payments:
+          denomination: aud-token-asset
+          amount: 200000000000000000000
+          payments: [{ id: g-cp-repurchase-1 }]
+
+  - name: g_complete
+    type: complete_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      swap_id: "770001"
+      idempotency_key: g-complete-$(date +%s)
+
+  # both collateral providers repurchase their own side
+  - name: g_repurchase_initiator
+    type: repurchase_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "770001"
+      idempotency_key: g-repurchase-init-$(date +%s)
+
+  - name: g_repurchase_counterparty
+    type: repurchase_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      swap_id: "770001"
+      idempotency_key: g-repurchase-cp-$(date +%s)
+
+  # OUTCOME PROOF: initiator NFT collateral returned in the both-sides-collateral config. (G's
+  # initiator ALSO posted payment collateral; its pull-based return is the same accept mechanism
+  # H/K already verify in the forfeit direction, so it's not re-balance-checked here.)
+  - name: g_verify_repledge
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "790004"
+      idempotency_key: g-repledge-$(date +%s)
+      initiator:
+        obligation_ids: [suite_g_init_collateral]
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments:
+          denomination: aud-token-asset
+          amount: 1000000000000000000000
+          payments: [{ id: g-repledge-want-1 }]
+      deadline: $(date -u -v+24H +%Y-%m-%dT%H:%M:%SZ)
+
+
+  # ════════════════════════════════════════════════════════════════════════════
+  #  TIER 1 — OUTCOME VERIFICATION
+  #  Status-only checks miss "wrong party still settles" bugs. These assert the
+  #  ACTUAL outcome: whose confidential balance moved / who owns the collateral.
+  #  NOTE ON CHAIN TIME: `advance_chain_time` is CUMULATIVE (chain runs ahead of
+  #  wall-clock for the rest of the run). Forfeit/expire scenarios below therefore
+  #  use deadlines large enough to clear the accumulated drift; non-expiry swaps
+  #  use +24H (always ahead).
+  # ════════════════════════════════════════════════════════════════════════════
+
+  # ─── H — payment-collateral FORFEITURE delivers to the counterparty (balance proof) ───
+  # payer posts 500 USDC collateral, issuer (lender/counterparty) pays 1000 AUD,
+  # never repurchased; after expiry issuer seizes ⇒ issuer's USDC must increase.
+  - name: h_issuer_usdc_before
+    type: balance
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { asset_id: usdc-asset }
+
+  - name: h_create
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "780001"
+      idempotency_key: h-create-$(date +%s)
+      deadline: $(date -u -v+2400S +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+3000S +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_payments:
+          denomination: usdc-asset
+          amount: 500000000000000000000
+          payments: [{ id: h-collat-1 }]
+        repurchase_payments:
+          denomination: usdc-asset
+          amount: 1050000000000000000000
+          payments: [{ id: h-repurchase-1 }]
+      counterparty:
+        id: issuer@yieldfabric.com
+        expected_payments:
+          denomination: aud-token-asset
+          amount: 1000000000000000000000
+          payments: [{ id: h-cash-1 }]
+
+  - name: h_complete
+    type: complete_swap
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      swap_id: "780001"
+      idempotency_key: h-complete-$(date +%s)
+
+  - name: h_wait_expiry
+    type: advance_chain_time
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { seconds: 5000 }
+
+  - name: h_forfeit
+    type: expire_collateral
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      swap_id: "780001"
+      idempotency_key: h-forfeit-$(date +%s)
+
+  # Payment-collateral delivery is PULL-based: expireCollateral marks the swap forfeitable on-chain
+  # (and moves NFTs), but the confidential PAYMENT is claimed by the counterparty ACCEPTING it
+  # (Vault.checkAccept permits the counterparty post-expiry). The forfeit post-processor creates a
+  # deterministically-named receivable PAY-COLLATERAL-<role>-<swap_id>, so accept it DIRECTLY — this
+  # isolates the balance delta to exactly the forfeited collateral (no accept_all sweep noise), and
+  # the single accept auto-waits for settlement. (If THIS reverts/404s, it's a real claim gap, not noise.)
+  - name: h_accept_forfeited
+    type: accept
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { payment_id: PAY-COLLATERAL-INITIATOR-780001, idempotency_key: h-accept-$(date +%s) }
+
+  - name: h_issuer_usdc_after
+    type: balance
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { asset_id: usdc-asset }
+
+  # between before and after, the only USDC inflow to issuer is the forfeited collateral it claimed
+  - name: h_assert_forfeit_delivered
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      actual: "$h_issuer_usdc_after.private_balance"
+      gt: "$h_issuer_usdc_before.private_balance"
+
+
+  # ─── I — NFT collateral RETURNS on repurchase (round-trip reuse proof) ───
+  # repurchase returns the NFT; re-pledging the SAME NFT in a 2nd swap only
+  # succeeds if it truly returned to the provider.
+  - name: i_collateral
+    type: create_obligation
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      idempotency_key: i-collat-$(date +%s)
+      counterpart: payer@yieldfabric.com
+      expiry: $(date -u -v+60d +%Y-%m-%dT%H:%M:%SZ)
+      contract_id: suite_i_collateral
+      data: { name: "I Collateral", description: "round-trip reuse collateral" }
+
+  - name: i_create_1
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "781001"
+      idempotency_key: i-create1-$(date +%s)
+      deadline: $(date -u -v+24H +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+30d +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_obligation_ids: [suite_i_collateral]
+        repurchase_payments:
+          denomination: usdc-asset
+          amount: 1050000000000000000000
+          payments: [{ id: i-repurchase1-1 }]
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments:
+          denomination: aud-token-asset
+          amount: 1000000000000000000000
+          payments: [{ id: i-cash1-1 }]
+
+  - name: i_complete_1
+    type: complete_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      swap_id: "781001"
+      idempotency_key: i-complete1-$(date +%s)
+
+  - name: i_repurchase_1
+    type: repurchase_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "781001"
+      idempotency_key: i-repurchase1-$(date +%s)
+
+  # OUTCOME PROOF (functional, not a value assert): the obligations query keys
+  # rows by on-chain token_id/owner, NOT the suite contract_id — so there's no
+  # stable string to assert `contains` on. Instead, re-pledging the SAME NFT in a
+  # 2nd swap is the proof: the on-chain escrow at create reverts unless payer
+  # actually owns suite_i_collateral again, so i_reuse_create succeeding ⇒ the
+  # repurchase returned the NFT.
+  - name: i_reuse_create
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "781002"
+      idempotency_key: i-create2-$(date +%s)
+      deadline: $(date -u -v+24H +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+30d +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_obligation_ids: [suite_i_collateral]
+        repurchase_payments:
+          denomination: usdc-asset
+          amount: 1050000000000000000000
+          payments: [{ id: i-repurchase2-1 }]
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments:
+          denomination: aud-token-asset
+          amount: 1000000000000000000000
+          payments: [{ id: i-cash2-1 }]
+
+  - name: i_reuse_complete
+    type: complete_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      swap_id: "781002"
+      idempotency_key: i-complete2-$(date +%s)
+
+  - name: i_reuse_repurchase
+    type: repurchase_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "781002"
+      idempotency_key: i-repurchase2-$(date +%s)
+
+
+  # ─── K — FORFEIT AFTER ROLL goes to the CURRENT (new) counterparty ───
+  # The transferable-repo crux: payer's repo with investor is rolled to issuer
+  # (new counterparty); after the rolled repo expires, the forfeited PAYMENT
+  # collateral must land with ISSUER (current cp), not investor (original).
+  - name: k_create
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "782001"
+      idempotency_key: k-create-$(date +%s)
+      deadline: $(date -u -v+9000S +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+30d +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_payments:
+          denomination: usdc-asset
+          amount: 500000000000000000000
+          payments: [{ id: k-collat-1 }]
+        repurchase_payments:
+          denomination: usdc-asset
+          amount: 1050000000000000000000
+          payments: [{ id: k-repurchase-1 }]
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments:
+          denomination: aud-token-asset
+          amount: 1000000000000000000000
+          payments: [{ id: k-cash-1 }]
+
+  - name: k_complete
+    type: complete_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      swap_id: "782001"
+      idempotency_key: k-complete-$(date +%s)
+
+  - name: k_roll_initiate
+    type: initiate_roll
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      old_swap_id: "782001"
+      new_swap_id: "782002"
+      new_counterparty: issuer@yieldfabric.com
+      new_deadline: $(date -u -v+9600S +%Y-%m-%dT%H:%M:%SZ)
+      new_expiry:   $(date -u -v+12000S +%Y-%m-%dT%H:%M:%SZ)
+      idempotency_key: k-roll-$(date +%s)
+
+  - name: k_roll_complete
+    type: complete_roll
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      new_swap_id: "782002"
+      idempotency_key: k-roll-complete-$(date +%s)
+
+  - name: k_wait_expiry
+    type: advance_chain_time
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { seconds: 7000 }
+
+  # baseline AFTER the roll coverage (issuer already paid investor) — so only the
+  # forfeit moves issuer's USDC between here and k_issuer_usdc_after
+  - name: k_issuer_usdc_before
+    type: balance
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { asset_id: usdc-asset }
+
+  - name: k_forfeit
+    type: expire_collateral
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      swap_id: "782002"
+      idempotency_key: k-forfeit-$(date +%s)
+
+  # the NEW counterparty (issuer) claims the forfeited collateral DIRECTLY by its deterministic
+  # receivable id (gated by Vault.checkAccept post-expiry) — proves it routed to the CURRENT
+  # counterparty after the roll, not the original (investor). Direct accept isolates the delta + auto-waits.
+  # The rolled repo keeps the initiator-collateral role, so the id is PAY-COLLATERAL-INITIATOR-<new_swap_id>.
+  - name: k_accept_forfeited
+    type: accept
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { payment_id: PAY-COLLATERAL-INITIATOR-782002, idempotency_key: k-accept-$(date +%s) }
+
+  - name: k_issuer_usdc_after
+    type: balance
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { asset_id: usdc-asset }
+
+  - name: k_assert_forfeit_to_new_cp
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      actual: "$k_issuer_usdc_after.private_balance"
+      gt: "$k_issuer_usdc_before.private_balance"
+
+
+  # ════════════════════════════════════════════════════════════════════════════
+  #  TIER 2 — NEGATIVE GUARDS (the missing ones; the suite already covers
+  #  wrong-completer, double-complete, non-party-repurchase, expire-before-expiry,
+  #  roll-by-counterparty, roll-complete-by-initiator, repurchase-after-forfeit).
+  # ════════════════════════════════════════════════════════════════════════════
+
+  # ─── double-repurchase same side + roll-an-already-repurchased-repo ───
+  - name: t2a_create
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "783001"
+      idempotency_key: t2a-create-$(date +%s)
+      deadline: $(date -u -v+24H +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+30d +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_payments:
+          denomination: usdc-asset
+          amount: 500000000000000000000
+          payments: [{ id: t2a-collat-1 }]
+        repurchase_payments:
+          denomination: usdc-asset
+          amount: 1050000000000000000000
+          payments: [{ id: t2a-repurchase-1 }]
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments:
+          denomination: aud-token-asset
+          amount: 1000000000000000000000
+          payments: [{ id: t2a-cash-1 }]
+
+  - name: t2a_complete
+    type: complete_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      swap_id: "783001"
+      idempotency_key: t2a-complete-$(date +%s)
+
+  - name: t2a_repurchase
+    type: repurchase_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "783001"
+      idempotency_key: t2a-repurchase-$(date +%s)
+
+  # unhappy: repurchasing the same side twice must fail (AlreadyRepurchased)
+  - name: t2a_double_repurchase_fails
+    type: repurchase_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "783001"
+      idempotency_key: t2a-repurchase-again-$(date +%s)
+      expect_failure: true
+
+  # unhappy: rolling an already-repurchased repo must fail (_validateOldSwapForRoll guard)
+  - name: t2b_roll_repurchased_fails
+    type: initiate_roll
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      old_swap_id: "783001"
+      new_swap_id: "783009"
+      new_counterparty: issuer@yieldfabric.com
+      new_deadline: $(date -u -v+24H +%Y-%m-%dT%H:%M:%SZ)
+      new_expiry:   $(date -u -v+30d +%Y-%m-%dT%H:%M:%SZ)
+      idempotency_key: t2b-roll-bad-$(date +%s)
+      expect_failure: true
+
+  # ─── expireSwap before deadline must fail ───
+  - name: t2c_asset
+    type: create_obligation
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      idempotency_key: t2c-asset-$(date +%s)
+      counterpart: payer@yieldfabric.com
+      expiry: $(date -u -v+30d +%Y-%m-%dT%H:%M:%SZ)
+      contract_id: suite_t2c_asset
+      data: { name: "T2C Asset", description: "expire-before-deadline test asset" }
+
+  - name: t2c_create
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "783002"
+      idempotency_key: t2c-create-$(date +%s)
+      initiator:
+        obligation_ids: [suite_t2c_asset]
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments:
+          denomination: aud-token-asset
+          amount: 1000000000000000000000
+          payments: [{ id: t2c-want-1 }]
+      deadline: $(date -u -v+24H +%Y-%m-%dT%H:%M:%SZ)
+
+  # unhappy: expireSwap before the deadline must fail (deadline not yet passed)
+  - name: t2c_expire_before_deadline_fails
+    type: expire_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "783002"
+      idempotency_key: t2c-expire-bad-$(date +%s)
+      expect_failure: true
+
+
+  # ════════════════════════════════════════════════════════════════════════════
+  #  TIER 3 — UNWIND MUTATIONS (cancelSwap + the new expireSwap / cancelRoll)
+  # ════════════════════════════════════════════════════════════════════════════
+
+  # ─── cancelSwap: a cancelled swap cannot be completed ───
+  - name: t3a_asset
+    type: create_obligation
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      idempotency_key: t3a-asset-$(date +%s)
+      counterpart: payer@yieldfabric.com
+      expiry: $(date -u -v+30d +%Y-%m-%dT%H:%M:%SZ)
+      contract_id: suite_t3a_asset
+      data: { name: "T3A Asset", description: "cancelSwap test asset" }
+
+  - name: t3a_create
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "784001"
+      idempotency_key: t3a-create-$(date +%s)
+      initiator:
+        obligation_ids: [suite_t3a_asset]
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments:
+          denomination: aud-token-asset
+          amount: 1000000000000000000000
+          payments: [{ id: t3a-want-1 }]
+      deadline: $(date -u -v+24H +%Y-%m-%dT%H:%M:%SZ)
+
+  - name: t3a_cancel
+    type: cancel_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "784001"
+      key: cancel_key
+      value: cancel_value
+      idempotency_key: t3a-cancel-$(date +%s)
+
+  # unhappy: a cancelled swap cannot be completed
+  - name: t3a_complete_after_cancel_fails
+    type: complete_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      swap_id: "784001"
+      idempotency_key: t3a-complete-bad-$(date +%s)
+      expect_failure: true
+
+  # ─── expireSwap: an abandoned swap past its deadline is unwound (assets return) ───
+  - name: t3b_asset
+    type: create_obligation
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      idempotency_key: t3b-asset-$(date +%s)
+      counterpart: payer@yieldfabric.com
+      expiry: $(date -u -v+60d +%Y-%m-%dT%H:%M:%SZ)
+      contract_id: suite_t3b_asset
+      data: { name: "T3B Asset", description: "expireSwap test asset" }
+
+  - name: t3b_create
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "784002"
+      idempotency_key: t3b-create-$(date +%s)
+      initiator:
+        obligation_ids: [suite_t3b_asset]
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments:
+          denomination: aud-token-asset
+          amount: 1000000000000000000000
+          payments: [{ id: t3b-want-1 }]
+      deadline: $(date -u -v+16000S +%Y-%m-%dT%H:%M:%SZ)
+
+  # never completed — abandon it, then jump past the deadline
+  - name: t3b_wait_deadline
+    type: advance_chain_time
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { seconds: 6000 }
+
+  - name: t3b_expire
+    type: expire_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "784002"
+      idempotency_key: t3b-expire-$(date +%s)
+
+  # unhappy: an expired swap cannot be completed
+  - name: t3b_complete_after_expire_fails
+    type: complete_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      swap_id: "784002"
+      idempotency_key: t3b-complete-bad-$(date +%s)
+      expect_failure: true
+
+  # ─── cancelRoll: a pending roll is unwound, freeing the source repo (R1) ───
+  - name: t3c_create
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "785001"
+      idempotency_key: t3c-create-$(date +%s)
+      deadline: $(date -u -v+24H +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+30d +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_payments:
+          denomination: usdc-asset
+          amount: 500000000000000000000
+          payments: [{ id: t3c-collat-1 }]
+        repurchase_payments:
+          denomination: usdc-asset
+          amount: 1050000000000000000000
+          payments: [{ id: t3c-repurchase-1 }]
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments:
+          denomination: aud-token-asset
+          amount: 1000000000000000000000
+          payments: [{ id: t3c-cash-1 }]
+
+  - name: t3c_complete
+    type: complete_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      swap_id: "785001"
+      idempotency_key: t3c-complete-$(date +%s)
+
+  - name: t3c_roll_initiate
+    type: initiate_roll
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      old_swap_id: "785001"
+      new_swap_id: "785002"
+      new_counterparty: issuer@yieldfabric.com
+      new_deadline: $(date -u -v+24H +%Y-%m-%dT%H:%M:%SZ)
+      new_expiry:   $(date -u -v+30d +%Y-%m-%dT%H:%M:%SZ)
+      idempotency_key: t3c-roll-$(date +%s)
+
+  # unhappy: R1 is frozen (rollPending) — cannot repurchase while a roll is pending
+  - name: t3c_repurchase_r1_while_pending_fails
+    type: repurchase_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "785001"
+      idempotency_key: t3c-repurchase-frozen-$(date +%s)
+      expect_failure: true
+
+  - name: t3c_cancel_roll
+    type: cancel_roll
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      new_swap_id: "785002"
+      idempotency_key: t3c-cancel-roll-$(date +%s)
+
+  # happy: after cancelRoll, R1 is freed and can be repurchased
+  - name: t3c_repurchase_r1_after_cancel
+    type: repurchase_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "785001"
+      idempotency_key: t3c-repurchase-freed-$(date +%s)
+
+  # unhappy: the cancelled roll (R2) cannot be completed
+  - name: t3c_roll_complete_after_cancel_fails
+    type: complete_roll
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      new_swap_id: "785002"
+      idempotency_key: t3c-roll-complete-bad-$(date +%s)
+      expect_failure: true

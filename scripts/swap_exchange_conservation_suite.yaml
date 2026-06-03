@@ -1,0 +1,322 @@
+# ════════════════════════════════════════════════════════════════════════════
+#  SWAP EXCHANGE & VALUE CONSERVATION — does every leg actually settle?
+# ════════════════════════════════════════════════════════════════════════════
+#  The other suites verify the repurchase + forfeit legs, but they ASSUME the rest
+#  of the swap exchange works. In particular the UPFRONT cash leg was never checked:
+#  at `complete` the lender's cash lands in the BORROWER's `locked_in` (pull-based;
+#  the auto-retrieve only fires for the completer's own receivables), and nothing
+#  downstream forces the borrower to claim it — they repurchase from baseline funds.
+#  So "does the borrower actually receive the upfront?" is untested — the same class
+#  as the #69 / #71 "cash left one party but never reached the other" findings.
+#
+#  This suite verifies the CORE exchange: every leg credits the right party by the
+#  EXACT amount, using the assert `minus:` delta modifier (actual := after - before)
+#  for true per-leg value conservation — not just "balance moved".
+#
+#  RECORD NAMES:
+#    upfront (lender → borrower)     PAY-SWAP-{swap}-counterparty-0   (borrower claims)
+#    repurchase (borrower → lender)  PAY-REPURCHASE-{swap}-0          (lender claims)
+#
+#  PARTIES (funded users): payer = BORROWER, investor = LENDER.
+#  Amounts: upfront 1000 AUD (1e21), repurchase 1050 USDC (1.05e21), E4 swap 500 AUD (5e20).
+#  E3 is the only forfeit (advance +3500 > its +3200S expiry); E1/E2/E4 never advance.
+# ════════════════════════════════════════════════════════════════════════════
+
+commands:
+
+  # ──── Fund borrower + lender confidential balances (clean baselines for the deltas).
+  - name: fund_payer_aud
+    type: deposit
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { asset_id: aud-token-asset, amount: 1000000000000000000000000, idempotency_key: ec-payer-aud-$(date +%s) }
+  - name: fund_payer_usdc
+    type: deposit
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { asset_id: usdc-asset, amount: 1000000000000000000000000, idempotency_key: ec-payer-usdc-$(date +%s) }
+  - name: fund_investor_aud
+    type: deposit
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: aud-token-asset, amount: 1000000000000000000000000, idempotency_key: ec-inv-aud-$(date +%s) }
+  - name: fund_investor_usdc
+    type: deposit
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: usdc-asset, amount: 1000000000000000000000000, idempotency_key: ec-inv-usdc-$(date +%s) }
+
+
+  # ════════ E1 — UPFRONT LEG (the suspected gap): does the borrower receive the lender's cash? ════════
+  # Isolated so a failure is unambiguous. If e1_assert_upfront fails, the lender pays but the borrower
+  # cannot claim the upfront — a delivery bug in the same family as #69/#71.
+  - name: e1_underlying
+    type: create_obligation
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { idempotency_key: e1-under-$(date +%s), counterpart: payer@yieldfabric.com, expiry: $(date -u -v+90d +%Y-%m-%dT%H:%M:%SZ), contract_id: na_e1_underlying, data: { name: "E1 underlying", description: "upfront-leg collateral" } }
+  - name: e1_payer_aud_before
+    type: balance
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { asset_id: aud-token-asset }
+  - name: e1_create
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "880001"
+      idempotency_key: e1-create-$(date +%s)
+      deadline: $(date -u -v+40d +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+80d +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_obligation_ids: [na_e1_underlying]
+        repurchase_payments: { denomination: usdc-asset, amount: 1050000000000000000000, payments: [{ id: e1-repurch-1 }] }
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: e1-cash-1 }] }
+  - name: e1_complete
+    type: complete_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { swap_id: "880001", idempotency_key: e1-complete-$(date +%s) }
+  # the BORROWER claims the lender's upfront — the leg never previously exercised
+  - name: e1_payer_claim_upfront
+    type: accept
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { payment_id: PAY-SWAP-880001-counterparty-0, idempotency_key: e1-claim-$(date +%s) }
+  - name: e1_payer_aud_after
+    type: balance
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { asset_id: aud-token-asset }
+  - name: e1_assert_upfront
+    type: assert
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      actual: "$e1_payer_aud_after.private_balance"
+      minus:  "$e1_payer_aud_before.private_balance"
+      equals: "1000000000000000000000"          # borrower must receive EXACTLY the 1000 AUD upfront
+
+
+  # ════════ E2 — FULL REPO CYCLE: exact per-leg conservation (every unit accounted for) ════════
+  # create → complete → borrower claims upfront → repurchase → lender claims repurchase → collateral
+  # returns to borrower. Asserts all four cash deltas exactly + the collateral round-trip.
+  - name: e2_underlying
+    type: create_obligation
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { idempotency_key: e2-under-$(date +%s), counterpart: payer@yieldfabric.com, expiry: $(date -u -v+90d +%Y-%m-%dT%H:%M:%SZ), contract_id: na_e2_underlying, data: { name: "E2 underlying", description: "full-cycle collateral" } }
+  - name: e2_payer_aud_before
+    type: balance
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { asset_id: aud-token-asset }
+  - name: e2_payer_usdc_before
+    type: balance
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { asset_id: usdc-asset }
+  - name: e2_investor_aud_before
+    type: balance
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: aud-token-asset }
+  - name: e2_investor_usdc_before
+    type: balance
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: usdc-asset }
+  - name: e2_create
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "880002"
+      idempotency_key: e2-create-$(date +%s)
+      deadline: $(date -u -v+40d +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+80d +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_obligation_ids: [na_e2_underlying]
+        repurchase_payments: { denomination: usdc-asset, amount: 1050000000000000000000, payments: [{ id: e2-repurch-1 }] }
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: e2-cash-1 }] }
+  - name: e2_complete
+    type: complete_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { swap_id: "880002", idempotency_key: e2-complete-$(date +%s) }
+  - name: e2_payer_claim_upfront
+    type: accept
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { payment_id: PAY-SWAP-880002-counterparty-0, idempotency_key: e2-claim-up-$(date +%s) }
+  - name: e2_repurchase
+    type: repurchase_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { swap_id: "880002", idempotency_key: e2-repurch-$(date +%s) }
+  - name: e2_investor_claim_repurchase
+    type: accept
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { payment_id: PAY-REPURCHASE-880002-0, idempotency_key: e2-claim-rp-$(date +%s) }
+  - name: e2_payer_aud_after
+    type: balance
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { asset_id: aud-token-asset }
+  - name: e2_payer_usdc_after
+    type: balance
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { asset_id: usdc-asset }
+  - name: e2_investor_aud_after
+    type: balance
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: aud-token-asset }
+  - name: e2_investor_usdc_after
+    type: balance
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: usdc-asset }
+  # borrower: +1000 AUD (upfront in), -1050 USDC (repurchase out)
+  - name: e2_assert_borrower_aud
+    type: assert
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { actual: "$e2_payer_aud_after.private_balance", minus: "$e2_payer_aud_before.private_balance", equals: "1000000000000000000000" }
+  - name: e2_assert_borrower_usdc
+    type: assert
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { actual: "$e2_payer_usdc_after.private_balance", minus: "$e2_payer_usdc_before.private_balance", equals: "-1050000000000000000000" }
+  # lender: -1000 AUD (upfront out), +1050 USDC (repurchase in)
+  - name: e2_assert_lender_aud
+    type: assert
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { actual: "$e2_investor_aud_after.private_balance", minus: "$e2_investor_aud_before.private_balance", equals: "-1000000000000000000000" }
+  - name: e2_assert_lender_usdc
+    type: assert
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { actual: "$e2_investor_usdc_after.private_balance", minus: "$e2_investor_usdc_before.private_balance", equals: "1050000000000000000000" }
+  # collateral returned to the borrower (create_swap offering it succeeds only if owned)
+  - name: e2_verify_payer_owns
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "880099"
+      idempotency_key: e2-verify-$(date +%s)
+      initiator: { obligation_ids: [na_e2_underlying] }
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: e2-verify-1 }] }
+      deadline: $(date -u -v+30d +%Y-%m-%dT%H:%M:%SZ)
+
+
+  # ════════ E3 — FORFEIT CYCLE: default outcome conserves (borrower keeps loan, lender keeps collateral) ════════
+  # create (short expiry) → complete → borrower claims upfront → default (advance) → lender forfeits.
+  # The borrower KEEPS the 1000 AUD (never repaid); the lender is -1000 AUD but seizes the collateral.
+  - name: e3_underlying
+    type: create_obligation
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { idempotency_key: e3-under-$(date +%s), counterpart: payer@yieldfabric.com, expiry: $(date -u -v+90d +%Y-%m-%dT%H:%M:%SZ), contract_id: na_e3_underlying, data: { name: "E3 underlying", description: "forfeit collateral" } }
+  - name: e3_payer_aud_before
+    type: balance
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { asset_id: aud-token-asset }
+  - name: e3_investor_aud_before
+    type: balance
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: aud-token-asset }
+  - name: e3_create
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "880003"
+      idempotency_key: e3-create-$(date +%s)
+      deadline: $(date -u -v+2500S +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+3200S +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_obligation_ids: [na_e3_underlying]
+        repurchase_payments: { denomination: usdc-asset, amount: 1050000000000000000000, payments: [{ id: e3-repurch-1 }] }
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: e3-cash-1 }] }
+  - name: e3_complete
+    type: complete_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { swap_id: "880003", idempotency_key: e3-complete-$(date +%s) }
+  - name: e3_payer_claim_upfront
+    type: accept
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { payment_id: PAY-SWAP-880003-counterparty-0, idempotency_key: e3-claim-$(date +%s) }
+  - name: e3_advance
+    type: advance_chain_time
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { seconds: 3500 }   # > the +3200S expiry; E3 is the only forfeit so Σ_before = 0
+  - name: e3_forfeit
+    type: expire_collateral
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { swap_id: "880003", idempotency_key: e3-forfeit-$(date +%s) }
+  - name: e3_payer_aud_after
+    type: balance
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { asset_id: aud-token-asset }
+  - name: e3_investor_aud_after
+    type: balance
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: aud-token-asset }
+  # borrower keeps the upfront (+1000 AUD), never repaid
+  - name: e3_assert_borrower_kept_loan
+    type: assert
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { actual: "$e3_payer_aud_after.private_balance", minus: "$e3_payer_aud_before.private_balance", equals: "1000000000000000000000" }
+  # lender is down the loan (-1000 AUD) but seizes the collateral (verified below)
+  - name: e3_assert_lender_lost_cash
+    type: assert
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { actual: "$e3_investor_aud_after.private_balance", minus: "$e3_investor_aud_before.private_balance", equals: "-1000000000000000000000" }
+  # collateral seized by the lender (investor now owns the underlying)
+  - name: e3_verify_investor_owns
+    type: create_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      swap_id: "880098"
+      idempotency_key: e3-verify-$(date +%s)
+      initiator: { obligation_ids: [na_e3_underlying] }
+      counterparty:
+        id: payer@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: e3-verify-1 }] }
+      deadline: $(date -u -v+30d +%Y-%m-%dT%H:%M:%SZ)
+
+
+  # ════════ E4 — PLAIN BILATERAL SWAP (no repo): obligation ⇄ cash, both sides settle ════════
+  # Not a repo: payer offers an obligation, investor pays 500 AUD; on complete the obligation goes to
+  # investor and the cash to payer. Tests the swap primitive's atomic two-sided exchange directly.
+  - name: e4_asset
+    type: create_obligation
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { idempotency_key: e4-asset-$(date +%s), counterpart: payer@yieldfabric.com, expiry: $(date -u -v+90d +%Y-%m-%dT%H:%M:%SZ), contract_id: na_e4_asset, data: { name: "E4 asset", description: "obligation to swap for cash" } }
+  - name: e4_payer_aud_before
+    type: balance
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { asset_id: aud-token-asset }
+  - name: e4_create
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "880004"
+      idempotency_key: e4-create-$(date +%s)
+      deadline: $(date -u -v+40d +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        obligation_ids: [na_e4_asset]
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 500000000000000000000, payments: [{ id: e4-cash-1 }] }
+  - name: e4_complete
+    type: complete_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { swap_id: "880004", idempotency_key: e4-complete-$(date +%s) }
+  # payer receives the cash for the obligation
+  - name: e4_payer_claim_cash
+    type: accept
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { payment_id: PAY-SWAP-880004-counterparty-0, idempotency_key: e4-claim-$(date +%s) }
+  - name: e4_payer_aud_after
+    type: balance
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { asset_id: aud-token-asset }
+  - name: e4_assert_seller_paid
+    type: assert
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { actual: "$e4_payer_aud_after.private_balance", minus: "$e4_payer_aud_before.private_balance", equals: "500000000000000000000" }
+  # the obligation now belongs to investor (the buyer) — offering it as investor succeeds only if owned
+  - name: e4_verify_investor_owns_asset
+    type: create_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      swap_id: "880097"
+      idempotency_key: e4-verify-$(date +%s)
+      initiator: { obligation_ids: [na_e4_asset] }
+      counterparty:
+        id: payer@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 500000000000000000000, payments: [{ id: e4-verify-1 }] }
+      deadline: $(date -u -v+30d +%Y-%m-%dT%H:%M:%SZ)

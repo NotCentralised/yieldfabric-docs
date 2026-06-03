@@ -1,0 +1,253 @@
+# ════════════════════════════════════════════════════════════════════════════
+#  RESIDUAL-RISK SUITE — the forfeit cases the hardening pass left ONLY ownership-verified
+# ════════════════════════════════════════════════════════════════════════════
+#  The lifecycle / nested suites prove a forfeit cascade ONLY by offering the underlying
+#  in a fresh create_swap (the end-lender CAN reference it ⇒ owns it). That is one-sided:
+#  it never asserts the forfeit's CASH economics, and never proves the value did NOT also
+#  land with an intermediate or the borrower. This suite closes that gap with the one thing
+#  about a forfeit that IS exactly balance-assertable:
+#
+#    On default, the lender is OUT the upfront cash (paid at complete, never repaid) AND
+#    receives the collateral instead. So for every forfeit we assert BOTH halves:
+#      (a) the seizing lender's confidential cash dropped by EXACTLY the upfront, and
+#      (b) the seizing lender owns the underlying (ownership probe — the existing pattern).
+#    (a) is the economic proof the ownership probe alone can't give: a forfeit that silently
+#    delivered cash to the wrong party, or left the lender whole, now fails.
+#
+#  RR1 — single-level forfeit (the basic forfeit economic outcome — asserted NOWHERE today).
+#  RR2 — nested forfeit cascade: the END-lender's cash + ownership, PLUS exploratory negative
+#        probes that the intermediate / borrower do NOT end up with the underlying.
+#
+#  PARTIES: payer = borrower · investor = lender (RR1) / intermediate (RR2) · issuer = end-lender.
+#  CHAIN-TIME is cumulative (chain = wall + Σ), same rule as the lifecycle suite:
+#    create rejects unless deadline_offset > Σ_before + 120s; expire_collateral fires once
+#    Σ_after > the swap's EXPIRY offset. Fresh file ⇒ Σ starts at 0.
+#      RR1: Σ_before 0     deadline +2000S  expiry +2800S  advance +3000 → Σ 3000
+#      RR2: Σ_before 3000  deadline +5000S  expiry +6000S  advance +4000 → Σ 7000
+#  RELIABLE vs EXPLORATORY: the cash + ownership asserts are reliable (grounded in confirmed
+#  behavior). The negative ownership probes (RR2) are EXPLORATORY — they test whether the
+#  platform BLOCKS a non-owner's offer or silently EXCLUDES the collateral; either outcome is a
+#  finding. They run LAST so a surprise there can't mask the reliable asserts above them.
+# ════════════════════════════════════════════════════════════════════════════
+
+commands:
+
+  # ──── Fund payer / investor / issuer (AUD + USDC).
+  - name: fund_payer_aud
+    type: deposit
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { asset_id: aud-token-asset, amount: 1000000000000000000000000, idempotency_key: rr-payer-aud-$(date +%s) }
+  - name: fund_payer_usdc
+    type: deposit
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { asset_id: usdc-asset, amount: 1000000000000000000000000, idempotency_key: rr-payer-usdc-$(date +%s) }
+  - name: fund_investor_aud
+    type: deposit
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: aud-token-asset, amount: 1000000000000000000000000, idempotency_key: rr-inv-aud-$(date +%s) }
+  - name: fund_investor_usdc
+    type: deposit
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: usdc-asset, amount: 1000000000000000000000000, idempotency_key: rr-inv-usdc-$(date +%s) }
+  - name: fund_issuer_aud
+    type: deposit
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { asset_id: aud-token-asset, amount: 1000000000000000000000000, idempotency_key: rr-iss-aud-$(date +%s) }
+  - name: fund_issuer_usdc
+    type: deposit
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { asset_id: usdc-asset, amount: 1000000000000000000000000, idempotency_key: rr-iss-usdc-$(date +%s) }
+
+
+  # ════════ RR1 — SINGLE-LEVEL FORFEIT: lender is OUT the upfront AND seizes the collateral ════════
+  # payer borrows 1000 AUD from investor against the underlying, then DEFAULTS. On forfeit, investor's
+  # AUD must be down exactly the 1000 upfront (paid at complete, never repaid) and investor must own the
+  # underlying. Neither half is asserted anywhere in the existing suites.
+  - name: rr1_underlying
+    type: create_obligation
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { idempotency_key: rr1-under-$(date +%s), counterpart: payer@yieldfabric.com, expiry: $(date -u -v+90d +%Y-%m-%dT%H:%M:%SZ), contract_id: na_rr1_underlying, data: { name: "RR1 underlying", description: "single forfeit economics" } }
+  # Snapshot the lender BEFORE the upfront is paid (at complete).
+  - name: rr1_investor_aud_before
+    type: balance
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: aud-token-asset }
+  - name: rr1_create
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "870001"
+      idempotency_key: rr1-create-$(date +%s)
+      deadline: $(date -u -v+2000S +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+2800S +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_obligation_ids: [na_rr1_underlying]
+        repurchase_payments: { denomination: usdc-asset, amount: 1050000000000000000000, payments: [{ id: rr1-repurch-1 }] }
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: rr1-cash-1 }] }
+  - name: rr1_complete
+    type: complete_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { swap_id: "870001", idempotency_key: rr1-complete-$(date +%s) }
+  # DEFAULT: advance past the +2800S expiry (Σ→3000), then forfeit.
+  - name: rr1_advance
+    type: advance_chain_time
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { seconds: 3000 }
+  - name: rr1_forfeit
+    type: expire_collateral
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { swap_id: "870001", idempotency_key: rr1-forfeit-$(date +%s) }
+  - name: rr1_investor_aud_after
+    type: balance
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: aud-token-asset }
+  # (a) CASH: the lender paid the 1000 upfront and got NOTHING back on default → before − after == 1000.
+  - name: rr1_assert_lender_out_upfront
+    type: assert
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      actual: "$rr1_investor_aud_before.private_balance"
+      minus: "$rr1_investor_aud_after.private_balance"
+      equals: "1000000000000000000000"
+  # (b) COLLATERAL: the lender now owns the underlying (offering it in a create_swap escrows it on-chain,
+  # which reverts unless investor holds it) — the established ownership proof.
+  - name: rr1_assert_lender_owns_collateral
+    type: create_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      swap_id: "870099"
+      idempotency_key: rr1-owns-$(date +%s)
+      initiator: { obligation_ids: [na_rr1_underlying] }
+      counterparty:
+        id: payer@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: rr1-owns-1 }] }
+      deadline: $(date -u -v+30d +%Y-%m-%dT%H:%M:%SZ)
+
+
+  # ════════ RR2 — NESTED FORFEIT CASCADE: the END-lender's economics + destination triangulation ════════
+  # repo_1 payer⇄investor (investor lends 1000) → repo_2 investor⇄issuer (issuer lends 1000, Cont_1 is
+  # collateral). Both DEFAULT; issuer (end-lender) forfeits the cascade. issuer must be OUT its 1000 outer
+  # upfront AND own the underlying; the intermediate (investor) and borrower (payer) must NOT own it.
+  - name: rr2_underlying
+    type: create_obligation
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { idempotency_key: rr2-under-$(date +%s), counterpart: payer@yieldfabric.com, expiry: $(date -u -v+90d +%Y-%m-%dT%H:%M:%SZ), contract_id: na_rr2_underlying, data: { name: "RR2 underlying", description: "nested forfeit cascade economics" } }
+
+  - name: rr2_repo1_create
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "870011"
+      idempotency_key: rr2-r1-create-$(date +%s)
+      deadline: $(date -u -v+5000S +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+6000S +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_obligation_ids: [na_rr2_underlying]
+        repurchase_payments: { denomination: usdc-asset, amount: 1050000000000000000000, payments: [{ id: rr2-r1-repurch-1 }] }
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: rr2-r1-cash-1 }] }
+  - name: rr2_repo1_complete
+    type: complete_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { swap_id: "870011", idempotency_key: rr2-r1-complete-$(date +%s) }
+
+  # Snapshot the END-lender (issuer) BEFORE it pays the outer upfront (at repo_2 complete).
+  - name: rr2_issuer_aud_before
+    type: balance
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { asset_id: aud-token-asset }
+  - name: rr2_repo2_create
+    type: create_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      swap_id: "870012"
+      idempotency_key: rr2-r2-create-$(date +%s)
+      deadline: $(date -u -v+5000S +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+6000S +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_contract_references: [{ composed_contract_id: COMPOSED-CONTRACT-REPO-SWAP-870011 }]
+        repurchase_payments: { denomination: aud-token-asset, amount: 1020000000000000000000, payments: [{ id: rr2-r2-repurch-1 }] }
+      counterparty:
+        id: issuer@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: rr2-r2-cash-1 }] }
+  - name: rr2_repo2_complete
+    type: complete_swap
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { swap_id: "870012", idempotency_key: rr2-r2-complete-$(date +%s) }
+
+  # DEFAULT both: advance past the +6000S expiry (Σ→7000). End-lender (issuer) forfeits the cascade —
+  # repo_2 first (seizes Cont_1), then repo_1 (now holding Cont_1, seizes the underlying). Both by issuer,
+  # matching the lifecycle suites' "end-lender calls all forfeits" finding.
+  - name: rr2_advance
+    type: advance_chain_time
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { seconds: 4000 }
+  - name: rr2_repo2_forfeit
+    type: expire_collateral
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { swap_id: "870012", idempotency_key: rr2-r2-forfeit-$(date +%s) }
+  - name: rr2_repo1_forfeit
+    type: expire_collateral
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { swap_id: "870011", idempotency_key: rr2-r1-forfeit-$(date +%s) }
+  - name: rr2_issuer_aud_after
+    type: balance
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { asset_id: aud-token-asset }
+  # (a) CASH: the end-lender paid the 1000 outer upfront and got NOTHING back → before − after == 1000.
+  - name: rr2_assert_end_lender_out_upfront
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      actual: "$rr2_issuer_aud_before.private_balance"
+      minus: "$rr2_issuer_aud_after.private_balance"
+      equals: "1000000000000000000000"
+  # (b) COLLATERAL: the cascade landed the underlying with the END-lender (issuer).
+  - name: rr2_assert_end_lender_owns
+    type: create_swap
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      swap_id: "870098"
+      idempotency_key: rr2-owns-$(date +%s)
+      initiator: { obligation_ids: [na_rr2_underlying] }
+      counterparty:
+        id: payer@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: rr2-owns-1 }] }
+      deadline: $(date -u -v+30d +%Y-%m-%dT%H:%M:%SZ)
+
+  # ── NEGATIVE (run LAST): the cascade went PAST the intermediate and the borrower. ──
+  # Each offers (as a main obligation) the underlying it does NOT hold. create_swap REJECTS an
+  # explicitly-named obligation the initiator isn't the HOLDER of, with a typed error — the resolver no
+  # longer silently excludes an EXPLICIT leg (silent-filtering is reserved for composed_contract_id
+  # expansions, whose un-held nested legs are expected). We assert that typed reason via expect_error so a
+  # regression back to silent-exclude (which would let a non-owner post an asset it doesn't hold, or
+  # silently under-collateralize a swap) is caught here instead of "failing to fail".
+  - name: rr2_intermediate_cannot_offer_underlying
+    type: create_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      swap_id: "870097"
+      idempotency_key: rr2-interm-$(date +%s)
+      initiator: { obligation_ids: [na_rr2_underlying] }
+      counterparty:
+        id: payer@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: rr2-interm-1 }] }
+      deadline: $(date -u -v+30d +%Y-%m-%dT%H:%M:%SZ)
+      expect_failure: true
+      expect_error: "does not hold obligation contract"
+  - name: rr2_borrower_cannot_offer_underlying
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "870096"
+      idempotency_key: rr2-borrower-$(date +%s)
+      initiator: { obligation_ids: [na_rr2_underlying] }
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: rr2-borrower-1 }] }
+      deadline: $(date -u -v+30d +%Y-%m-%dT%H:%M:%SZ)
+      expect_failure: true
+      expect_error: "does not hold obligation contract"

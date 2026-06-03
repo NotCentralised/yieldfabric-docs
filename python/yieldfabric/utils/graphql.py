@@ -205,7 +205,102 @@ class GraphQLMutation:
         }
     }
     """
-    
+
+    REPURCHASE_SWAP = """
+    mutation RepurchaseSwap($input: RepurchaseSwapInput!) {
+        repurchaseSwap(input: $input) {
+            success
+            message
+            accountAddress
+            swapId
+            repurchaseResult
+            messageId
+            transactionId
+            signature
+            timestamp
+        }
+    }
+    """
+
+    EXPIRE_COLLATERAL = """
+    mutation ExpireCollateral($input: ExpireCollateralInput!) {
+        expireCollateral(input: $input) {
+            success
+            message
+            accountAddress
+            swapId
+            expireResult
+            messageId
+            transactionId
+            signature
+            timestamp
+        }
+    }
+    """
+
+    EXPIRE_SWAP = """
+    mutation ExpireSwap($input: ExpireSwapInput!) {
+        expireSwap(input: $input) {
+            success
+            message
+            accountAddress
+            swapId
+            expireResult
+            messageId
+            transactionId
+            signature
+            timestamp
+        }
+    }
+    """
+
+    CANCEL_ROLL = """
+    mutation CancelRoll($input: CancelRollInput!) {
+        cancelRoll(input: $input) {
+            success
+            message
+            accountAddress
+            newSwapId
+            cancelResult
+            messageId
+            transactionId
+            signature
+            timestamp
+        }
+    }
+    """
+
+    INITIATE_ROLL = """
+    mutation InitiateRoll($input: RollRepoInput!) {
+        initiateRoll(input: $input) {
+            success
+            message
+            accountAddress
+            oldSwapId
+            newSwapId
+            messageId
+            transactionId
+            signature
+            timestamp
+        }
+    }
+    """
+
+    COMPLETE_ROLL = """
+    mutation CompleteRoll($input: CompleteRollInput!) {
+        completeRoll(input: $input) {
+            success
+            message
+            accountAddress
+            newSwapId
+            messageId
+            transactionId
+            signature
+            timestamp
+        }
+    }
+    """
+
     MINT = """
     mutation Mint($input: MintInput!) {
         mint(input: $input) {
@@ -298,6 +393,12 @@ class GraphQLMutation:
             'create_swap': GraphQLMutation.CREATE_SWAP,
             'complete_swap': GraphQLMutation.COMPLETE_SWAP,
             'cancel_swap': GraphQLMutation.CANCEL_SWAP,
+            'repurchase_swap': GraphQLMutation.REPURCHASE_SWAP,
+            'expire_collateral': GraphQLMutation.EXPIRE_COLLATERAL,
+            'expire_swap': GraphQLMutation.EXPIRE_SWAP,
+            'cancel_roll': GraphQLMutation.CANCEL_ROLL,
+            'initiate_roll': GraphQLMutation.INITIATE_ROLL,
+            'complete_roll': GraphQLMutation.COMPLETE_ROLL,
             'mint': GraphQLMutation.MINT,
             'burn': GraphQLMutation.BURN,
             'accept_all': GraphQLMutation.ACCEPT_ALL,
@@ -314,9 +415,120 @@ class GraphQLMutation:
         }
 
 
+class DataPolicyGraphQL:
+    """
+    GraphQL operations for data-driven policies on group ConfidentialAccounts
+    (the `pipelineGate` namespace). Strings mirror the frontend exactly —
+    yieldfabric-app/src/components/workflowPipeline/api.ts — so a payload that
+    works in the app works here.
+
+    Lifecycle: addDataPolicy (register, MQ) → approveDataPolicy (record one
+    reusable M-of-N approval signature, off-chain) → executeUnderPolicy (run a
+    bound op under the approved policy, MQ). dataPolicies / dataPolicyApproval
+    are reads.
+    """
+
+    ADD_DATA_POLICY = """
+    mutation AddDataPolicy($input: AddDataPolicyInput!) {
+        pipelineGate {
+            addDataPolicy(input: $input) {
+                success
+                message
+                messageId
+                policyId
+            }
+        }
+    }
+    """
+
+    APPROVE_DATA_POLICY = """
+    mutation ApproveDataPolicy($input: ApproveDataPolicyInput!) {
+        pipelineGate {
+            approveDataPolicy(input: $input) {
+                success
+                message
+                signer
+                collected
+                approved
+                registeredDigest
+            }
+        }
+    }
+    """
+
+    EXECUTE_UNDER_POLICY = """
+    mutation ExecuteUnderPolicy($input: ExecuteUnderPolicyInput!) {
+        pipelineGate {
+            executeUnderPolicy(input: $input) {
+                success
+                message
+                messageId
+                policyId
+                collected
+                approved
+            }
+        }
+    }
+    """
+
+    DATA_POLICY_APPROVAL = """
+    query GetDataPolicyApproval($accountAddress: String!, $policyId: String!) {
+        pipelineGate {
+            dataPolicyApproval(accountAddress: $accountAddress, policyId: $policyId) {
+                accountAddress
+                policyId
+                chainId
+                registeredDigest
+                minSignatories
+                collected
+                approved
+                requiredSigners
+                callerIds
+            }
+        }
+    }
+    """
+
+    COMMIT_ORACLE_DOCUMENT = """
+    mutation CommitOracleDocument($input: CommitOracleDocumentInput!) {
+        pipelineGate {
+            commitOracleDocument(input: $input) {
+                success
+                message
+                messageId
+                oracleAddress
+                key
+            }
+        }
+    }
+    """
+
+    DATA_POLICIES = """
+    query GetDataPolicies($walletId: String!) {
+        pipelineGate {
+            dataPolicies(walletId: $walletId) {
+                id
+                walletId
+                walletAddress
+                policyId
+                policyType
+                start
+                expiry
+                maxUse
+                minSignatories
+                requiredSigners
+                executors
+                allowedOperations
+                amountBounds { token lo hi }
+            }
+        }
+    }
+    """
+
+
 class GraphQLQuery:
     """Helper class for building GraphQL queries."""
-    
+
     @staticmethod
     def build_payload(query: str, variables: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Build GraphQL query payload."""

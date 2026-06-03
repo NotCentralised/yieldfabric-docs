@@ -1,0 +1,656 @@
+# ════════════════════════════════════════════════════════════════════════════
+#  DATA-POLICY ON GROUP ACCOUNTS — RESTRICTED-MEMBER EXECUTION FUNCTIONAL SUITE
+# ════════════════════════════════════════════════════════════════════════════
+#
+#  Runs against the LIVE runtime (Rust + circom + Solidity) via the Python
+#  harness:  python -m yieldfabric.cli execute scripts/datapolicy_group_suite.yaml
+#  Assumes a FRESH deploy + `setup.yaml` seeded (users + Issuer/Collateral groups
+#  with deployed accounts).
+#
+#  FEATURE UNDER TEST — "execute a group function through a policy by a RESTRICTED
+#  member". It MIRRORS NFT group membership exactly: the policy is the membership
+#  credential and its EXECUTOR is the member. The relay is only the meta-tx submitter
+#  (tx.origin) and NEVER appears in the policy. The execution chain is the same relay→I→G
+#  as any delegate group call, with executeUnderPolicy as the entry point (mirrors
+#  yieldfabric-smart-contracts/test/ConfidentialAccountPolicy.test.ts):
+#    G = the group account (Issuer Group)          — the policy account; the op runs ON G
+#    approver = the OWNER (issuer)                  — in `required_signers`; issuer creates AND
+#               approves the policy (a reusable M-of-N signature over the operation-independent
+#               digest), GRANTING collateral execution — like an owner adding an NFT member
+#    executor = the restricted MEMBER (collateral) — in `executors_address`; the policy holder.
+#               Its OWN account I is msg.sender of executeUnderPolicy
+#               (relay → I.executeMultiMetaTransaction([ G.executeUnderPolicy(...) ]) → G),
+#               which isPolicyCaller checks against executors_address.
+#
+#  The owner registers a data policy on G and APPROVES it ONCE. The restricted `policymember`
+#  (PolicyExecution-scoped, NOT an on-chain owner — recognised purely BY this policy) then
+#  triggers a bounded confidential send out of G through executeUnderPolicy on its own account I;
+#  the policy (executor check + approval + amount bounds + data requirements) gates it.
+#
+#  Semantics anchored in:
+#    yieldfabric-tokens/src/flow/pipeline_gate.rs  (add/approve/execute resolvers,
+#                                                    require_group_policy_account)
+#    yieldfabric-smart-contracts/contracts         (DataPolicyLib, executeUnderPolicy)
+#
+#  `expect_failure: true` marks negative tests (a failed command is PASS, a success
+#  is FAIL). `expect_error` optionally substring-matches the surfaced error.
+#
+#  Parties (seeded SuperAdmins; see setup.yaml):
+#    issuer@yieldfabric.com     — owner of "Issuer Group"  → registers + APPROVES the policy
+#    collateral@yieldfabric.com — restricted policymember  → EXECUTOR (policy holder) + trigger
+#    (the relay / VAULT_PRIVATE_KEY only submits the meta-tx; it is NOT a policy participant)
+#
+#  ⚠️  ENV-SPECIFIC CONSTANT — the AUD token's on-chain CONTRACT address. It MUST be
+#  the token that the `aud-token-asset` asset deposits into (the policy binds the
+#  send to this 0x address, not the asset slug). The value below is setup.yaml's
+#  chain-31337 AUD token; change it if your deploy differs.
+#
+#  Coverage:
+#    Happy  register → owner APPROVES → member (executor) triggers a bounded send out of G, then
+#           ACCEPTS and SPENDS the inbound (ground-truth proof the policy-sent funds credited)
+#    A      execute BEFORE the approval threshold is met        → fail (not fully approved)
+#    B      a NON-required-signer (collateral) tries to APPROVE → fail (not in caller set)
+#    D      execute with amount ABOVE the policy's hi bound     → fail
+#    E      execute an op the policy is NOT bound to (Withdraw) → fail
+#    F      max_use=1: execute twice                            → 2nd fail
+#    G      policy start in the future: execute                → fail
+#    H      a data requirement that cannot be met: execute      → fail
+#    I      register while NOT acting as the group              → fail (group-accounts-only)
+#
+#  ORACLE CONSTRAINTS (source=3 data requirement — a committed oracle value must
+#  satisfy a frozen constraint, proved in ZK by the DataVerifier):
+#    O-commit  commit a confidential oracle document                  → passes
+#    O-happy   constraint SATISFIED → restricted member executes      → passes
+#    O1        execute an oracle-gated policy whose doc was NOT committed → fail (no document, at execute)
+#    O2        register an oracle req whose doc was NOT committed        → fail (no document, fail-fast at register)
+#
+#  vIdHash is now SERVER-DERIVED: registering an oracle requirement freezes its
+#  `constraintCommitment` (DataVerifier vIdHash). Callers OMIT it and pass the raw
+#  `oracle_query` instead — addDataPolicy reads the committed document and runs the
+#  SAME gen_oracle_witness the executor uses to derive the commitment (and mints a
+#  random salt for bound privacy). So O-happy is fully automated; its execute
+#  SUCCEEDING is the runtime parity proof (registration-derived vIdHash == the
+#  executor's). Callers may still pass `constraint_commitment` explicitly (O1 does,
+#  to reach the execute-time gate). See pipeline_gate.rs::add_data_policy_inner.
+# ════════════════════════════════════════════════════════════════════════════
+
+commands:
+
+  # ───────────────────────── SETUP / IDENTITY RESOLUTION ─────────────────────────
+  # Resolve the addresses the policies are wired from, straight off the JWT claims.
+
+  # Owner acting AS the group → G (group_account_address), G's wallet id, and the
+  # owner's own account (the approver registered in required_signers).
+  - name: owner_ctx
+    type: whoami
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+
+  # The restricted member's own account (the executor, on-chain `I`) + user id.
+  - name: member_ctx
+    type: whoami
+    user: { id: collateral@yieldfabric.com, password: collateral_password }
+
+  # NOTE: collateral is deliberately NOT added as a member here. Registering the data policy below
+  # (happy_add_policy, naming collateral in `executor_accounts`) IS what makes collateral a restricted
+  # policymember — auth DERIVES membership from the policy at delegation-mint time (no group_members
+  # row), and that membership is valid only while the policy is. This "register ⇒ membership" is the
+  # feature under test; the old explicit `add_member` step is gone.
+
+  # Fund the GROUP's confidential AUD so the bounded send has balance to move. A fresh
+  # group account holds no ERC-20, so it can't `deposit` directly (deposit pulls ERC-20
+  # from the caller). Fund the owner (who holds ERC-20), send to the group, and have the
+  # group accept — the way nc_acacia moves assets into a group.
+  - name: fund_owner_aud
+    type: deposit
+    user: { id: issuer@yieldfabric.com, password: issuer_password }   # as SELF — issuer holds ERC-20
+    parameters:
+      asset_id: aud-token-asset
+      amount: 1000000000000000000000
+      idempotency_key: dp-fund-owner-$(date +%s)
+
+  - name: fund_group_send
+    type: instant
+    user: { id: issuer@yieldfabric.com, password: issuer_password }   # as SELF → send into the group
+    parameters:
+      asset_id: aud-token-asset
+      amount: 1000000000000000000000
+      destination_id: Issuer Group
+      idempotency_key: dp-fund-group-send-$(date +%s)
+
+  - name: fund_group_accept
+    type: accept_all
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }   # as the GROUP
+    parameters:
+      denomination: aud-token-asset
+      wait: true
+
+
+  # ════════════════════ HAPPY PATH — restricted member executes ════════════════════
+  # Policy 9001 on G mirrors a delegate group call: the final group-function call runs through
+  # `executeUnderPolicy` on the EXECUTOR's own account I (relay → I → G) — the policy analog of an
+  # NFT member's relay→I→G delegate call:
+  #   - the OWNER registers the policy on G (defines the restriction: bound to `send`, amount in
+  #     [0, 500 AUD], gated by a confidential-balance requirement on AUD) and APPROVES it — issuer is
+  #     the `required_signers`, and its approval GRANTS collateral execution;
+  #   - the restricted MEMBER (collateral) is the `executor_accounts` (the policy holder). Its OWN
+  #     account I runs the outer meta-tx, so `msg.sender` of executeUnderPolicy on G is I, which
+  #     isPolicyCaller checks against `executors_address`. The relay only submits the meta-tx to I.
+  - name: happy_add_policy
+    type: add_data_policy
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters:
+      account_address: $owner_ctx.group_account_address
+      wallet_id: $owner_ctx.default_wallet_id
+      policy_id: "9001"
+      expiry: "$(date -v+365d +%s)"
+      max_use: "5"
+      min_signatories: 1
+      required_signers: [ $owner_ctx.account_address ]   # the OWNER (issuer) approves — its sig authorizes the policy (like granting NFT membership)
+      # The EXECUTOR is the policy holder (collateral): its OWN account I is msg.sender of
+      # executeUnderPolicy via relay → I.executeMultiMetaTransaction → G, checked by isPolicyCaller.
+      executor_accounts: [ $member_ctx.account_address ]
+      allowed_operations: [ send ]
+      amount_bounds:
+        - token: "0x59b670e9fA9D0A427751Af201D676719a970857b"   # ⚠️ AUD token (see header)
+          lo: "0"
+          hi: "500000000000000000000"
+      requirements:
+        - source: 0                                              # PrivateVault (confidential balance)
+          denomination: "0x59b670e9fA9D0A427751Af201D676719a970857b"
+          lo: "0"
+          hi: "1000000000000000000000000000"
+      idempotency_key: dp-9001-add-$(date +%s)
+
+  # The OWNER (issuer) approves once (1-of-1) — issuer is the policy's required_signer. This is the
+  # owner GRANTING collateral the right to execute under the policy, mirroring an owner adding an NFT
+  # member to the group. Issuer signs AS SELF (no `group:`), so the recovered approver account is
+  # issuer's own account = required_signers[0].
+  - name: happy_approve
+    type: approve_data_policy
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      account_address: $owner_ctx.group_account_address
+      policy_id: "9001"
+
+  # Read-back: the reusable approval is complete (1/1).
+  - name: happy_approval_state
+    type: data_policy_approval
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters:
+      account_address: $owner_ctx.group_account_address
+      policy_id: "9001"
+
+  - name: happy_assert_approved
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      actual: "$happy_approval_state.approved"
+      equals: "True"
+
+  # ── BASELINE: a regular delegate group send FROM G by the OWNER (issuer acting as the group via
+  # relay → G.executeMultiMetaTransaction) — the NON-policy path that executeUnderPolicy mirrors. It
+  # confirms send-from-G works on its own, and seeds the member with an extra 100 AUD so the
+  # spend-based ground-truth check below leaves a positive remainder for the balance assertion.
+  - name: baseline_owner_send_from_group
+    type: instant
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters:
+      asset_id: aud-token-asset
+      amount: 100000000000000000000
+      destination_id: collateral@yieldfabric.com
+      idempotency_key: dp-control-send-$(date +%s)
+      wait: true
+
+  # Baseline the destination's confidential AUD before the policy-driven send.
+  - name: dest_aud_before
+    type: balance
+    user: { id: collateral@yieldfabric.com, password: collateral_password }
+    parameters: { asset_id: aud-token-asset }
+
+  # ★ THE FEATURE: the RESTRICTED member executes a bounded send OUT OF THE GROUP.
+  - name: happy_execute
+    type: execute_under_policy
+    user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
+    parameters:
+      account_address: $owner_ctx.group_account_address
+      policy_id: "9001"
+      operation_type: Send
+      operation_data:
+        token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b"
+        destination_id: collateral@yieldfabric.com
+        amount: "100000000000000000000"
+      idempotency_key: dp-9001-exec-$(date +%s)
+
+  # The member accepts the inbound policy-sent AUD.
+  - name: dest_accept
+    type: accept_all
+    user: { id: collateral@yieldfabric.com, password: collateral_password }
+    parameters: { denomination: aud-token-asset, wait: true }
+
+  # ── GROUND TRUTH (no false +/-): the authoritative proof the policy-sent funds genuinely credited
+  # is that the member can SPEND them. collateral sends the 100 AUD it just received back to issuer.
+  # If the confidential balance is real, the send's sender-balance proof generates and settles; if the
+  # credit never happened, the member has nothing to prove against and this FAILS. This does not depend
+  # on the balance READ (which lags the async credit post-processing), so it cannot give a false pass.
+  - name: dest_member_spend
+    type: instant
+    user: { id: collateral@yieldfabric.com, password: collateral_password }
+    parameters:
+      asset_id: aud-token-asset
+      amount: 100000000000000000000
+      destination_id: issuer@yieldfabric.com
+      idempotency_key: dp-member-spend-$(date +%s)
+      wait: true
+
+  # Observational balance read AFTER the authoritative spend (post-processing has had time to settle).
+  # The member started at 0, received 100 (policy) + 100 (control), spent 100 → must now read > 0.
+  - name: dest_aud_after
+    type: balance
+    user: { id: collateral@yieldfabric.com, password: collateral_password }
+    parameters: { asset_id: aud-token-asset }
+
+  - name: happy_assert_funds_moved
+    type: assert
+    user: { id: collateral@yieldfabric.com, password: collateral_password }
+    parameters:
+      actual: "$dest_aud_after.private_balance"
+      gt: "$dest_aud_before.private_balance"
+
+
+  # ════════════════════════════ NEGATIVE GUARDS ════════════════════════════
+
+  # ─── A — execute BEFORE approval (policy 9011 registered but never approved) ───
+  - name: a_add_unapproved
+    type: add_data_policy
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters:
+      account_address: $owner_ctx.group_account_address
+      wallet_id: $owner_ctx.default_wallet_id
+      policy_id: "9011"
+      expiry: "$(date -v+365d +%s)"
+      max_use: "5"
+      min_signatories: 1
+      required_signers: [ $owner_ctx.account_address ]
+      executor_accounts: [ $member_ctx.account_address ]   # collateral = policy holder / executor (its account I is msg.sender at G via relay→I→G)
+      allowed_operations: [ send ]
+      amount_bounds:
+        - { token: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "0", hi: "500000000000000000000" }
+      requirements:
+        - { source: 0, denomination: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "0", hi: "1000000000000000000000000000" }
+      idempotency_key: dp-9011-add-$(date +%s)
+
+  - name: a_execute_before_approval_fails
+    type: execute_under_policy
+    user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
+    parameters:
+      account_address: $owner_ctx.group_account_address
+      policy_id: "9011"
+      operation_type: Send
+      operation_data:
+        token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b"
+        destination_id: collateral@yieldfabric.com
+        amount: "100000000000000000000"
+      idempotency_key: dp-9011-exec-bad-$(date +%s)
+      expect_failure: true
+      expect_error: "not fully approved"
+
+  # ─── B — a NON-REQUIRED-SIGNER tries to APPROVE 9001 ───
+  # 9001's required_signers is the OWNER (issuer) — the approver. Collateral is the EXECUTOR (policy
+  # holder), NOT in the caller set, so collateral attempting to APPROVE must be rejected. Collateral
+  # EXECUTES under the policy; it never approves — the owner's approval is what grants it execution.
+  - name: b_nonsigner_approve_fails
+    type: approve_data_policy
+    user: { id: collateral@yieldfabric.com, password: collateral_password }
+    parameters:
+      account_address: $owner_ctx.group_account_address
+      policy_id: "9001"
+      expect_failure: true
+      expect_error: "caller set"
+
+  # (No separate "wrong executor" negative: executeUnderPolicy runs on the executor's OWN account I,
+  #  so msg.sender at G IS that executor — a non-executor literally cannot produce the call. The
+  #  approval restriction is covered by B; the group-context requirement by I.)
+
+  # ─── D — execute with amount ABOVE the policy's hi bound (500 AUD) ───
+  - name: d_execute_over_bound_fails
+    type: execute_under_policy
+    user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
+    parameters:
+      account_address: $owner_ctx.group_account_address
+      policy_id: "9001"
+      operation_type: Send
+      operation_data:
+        token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b"
+        destination_id: collateral@yieldfabric.com
+        amount: "600000000000000000000"
+      idempotency_key: dp-9001-exec-over-bad-$(date +%s)
+      expect_failure: true
+      # Over-bound CONFIDENTIAL send. The amount is private, so the bound is enforced by a ZK
+      # amount-range proof (DataPolicyLib._checkAmountRange), NOT the plaintext AmountAboveMax check
+      # (which fires only for PUBLIC deposit/withdraw). 600 ∉ [0,500] makes the range proof
+      # unsatisfiable, so its `who` public signal (input[2]) is garbage and fails the on-chain
+      # `who == address(this)` bind → WhoMismatch. (A backend pre-check could reject this with a
+      # clearer "amount exceeds bound" before proving — see note in the response.)
+      expect_error: "WhoMismatch"
+
+  # ─── E — execute an op the policy is NOT bound to (Withdraw vs the bound Send) ───
+  - name: e_execute_wrong_op_fails
+    type: execute_under_policy
+    user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
+    parameters:
+      account_address: $owner_ctx.group_account_address
+      policy_id: "9001"
+      operation_type: Withdraw
+      operation_data:
+        token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b"
+        amount: "100000000000000000000"
+        obligor: "0x0000000000000000000000000000000000000000"
+        treasurer_secret: ""
+      idempotency_key: dp-9001-exec-wrongop-bad-$(date +%s)
+      expect_failure: true
+      # The backend op-binding PRE-CHECK (transaction_creation.rs) catches the wrong op BEFORE
+      # submitting: the built Withdraw op (selector 0xd0d297b2) matches none of policy 9001's allowed
+      # calls ([send 0x840b5300]). A fast-fail — it never reaches the on-chain
+      # OperationNotAllowedByPolicy backstop in DataPolicyLib.authorize.
+      expect_error: "allowed calls (target/selector mismatch)"
+
+  # ─── F — max_use exhaustion (policy 9012, max_use=1): 2nd execute must fail ───
+  - name: f_add_capped
+    type: add_data_policy
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters:
+      account_address: $owner_ctx.group_account_address
+      wallet_id: $owner_ctx.default_wallet_id
+      policy_id: "9012"
+      expiry: "$(date -v+365d +%s)"
+      max_use: "1"
+      min_signatories: 1
+      required_signers: [ $owner_ctx.account_address ]
+      executor_accounts: [ $member_ctx.account_address ]   # collateral = policy holder / executor (its account I is msg.sender at G via relay→I→G)
+      allowed_operations: [ send ]
+      amount_bounds:
+        - { token: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "0", hi: "500000000000000000000" }
+      requirements:
+        - { source: 0, denomination: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "0", hi: "1000000000000000000000000000" }
+      idempotency_key: dp-9012-add-$(date +%s)
+
+  - name: f_approve_capped
+    type: approve_data_policy
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      account_address: $owner_ctx.group_account_address
+      policy_id: "9012"
+
+  - name: f_execute_first_ok
+    type: execute_under_policy
+    user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
+    parameters:
+      account_address: $owner_ctx.group_account_address
+      policy_id: "9012"
+      operation_type: Send
+      operation_data:
+        token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b"
+        destination_id: collateral@yieldfabric.com
+        amount: "100000000000000000000"
+      idempotency_key: dp-9012-exec1-$(date +%s)
+
+  - name: f_execute_second_fails
+    type: execute_under_policy
+    user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
+    parameters:
+      account_address: $owner_ctx.group_account_address
+      policy_id: "9012"
+      operation_type: Send
+      operation_data:
+        token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b"
+        destination_id: collateral@yieldfabric.com
+        amount: "100000000000000000000"
+      idempotency_key: dp-9012-exec2-bad-$(date +%s)
+      expect_failure: true
+      expect_error: "PolicyMaxUseExceeded"   # DataPolicyLib.authorize — counter (1) >= maxUse (1) after the first execute
+
+  # ─── G — policy whose window has NOT started yet (start in the future) ───
+  - name: g_add_future
+    type: add_data_policy
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters:
+      account_address: $owner_ctx.group_account_address
+      wallet_id: $owner_ctx.default_wallet_id
+      policy_id: "9013"
+      start: "$(date -v+365d +%s)"
+      expiry: "$(date -v+730d +%s)"
+      max_use: "5"
+      min_signatories: 1
+      required_signers: [ $owner_ctx.account_address ]
+      executor_accounts: [ $member_ctx.account_address ]   # collateral = policy holder / executor (its account I is msg.sender at G via relay→I→G)
+      allowed_operations: [ send ]
+      amount_bounds:
+        - { token: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "0", hi: "500000000000000000000" }
+      requirements:
+        - { source: 0, denomination: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "0", hi: "1000000000000000000000000000" }
+      idempotency_key: dp-9013-add-$(date +%s)
+
+  - name: g_approve_future
+    type: approve_data_policy
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      account_address: $owner_ctx.group_account_address
+      policy_id: "9013"
+
+  - name: g_execute_not_started_fails
+    type: execute_under_policy
+    user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
+    parameters:
+      account_address: $owner_ctx.group_account_address
+      policy_id: "9013"
+      operation_type: Send
+      operation_data:
+        token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b"
+        destination_id: collateral@yieldfabric.com
+        amount: "100000000000000000000"
+      idempotency_key: dp-9013-exec-bad-$(date +%s)
+      expect_failure: true
+      expect_error: "PolicyNotStarted"   # DataPolicyLib.authorize — block.timestamp < policy.start (window opens in 365d)
+
+  # ─── H — a data requirement that cannot be met (PublicBalance on AUD ≫ holdings) ───
+  - name: h_add_unmeetable
+    type: add_data_policy
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters:
+      account_address: $owner_ctx.group_account_address
+      wallet_id: $owner_ctx.default_wallet_id
+      policy_id: "9014"
+      expiry: "$(date -v+365d +%s)"
+      max_use: "5"
+      min_signatories: 1
+      required_signers: [ $owner_ctx.account_address ]
+      executor_accounts: [ $member_ctx.account_address ]   # collateral = policy holder / executor (its account I is msg.sender at G via relay→I→G)
+      allowed_operations: [ send ]
+      amount_bounds:
+        - { token: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "0", hi: "500000000000000000000" }
+      requirements:
+        # PublicBalance (source 1): require an absurd ERC-20 balance the account can't have.
+        - source: 1
+          target: "0x59b670e9fA9D0A427751Af201D676719a970857b"
+          threshold: "1000000000000000000000000000000000"
+      idempotency_key: dp-9014-add-$(date +%s)
+
+  - name: h_approve_unmeetable
+    type: approve_data_policy
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      account_address: $owner_ctx.group_account_address
+      policy_id: "9014"
+
+  - name: h_execute_requirement_unmet_fails
+    type: execute_under_policy
+    user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
+    parameters:
+      account_address: $owner_ctx.group_account_address
+      policy_id: "9014"
+      operation_type: Send
+      operation_data:
+        token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b"
+        destination_id: collateral@yieldfabric.com
+        amount: "100000000000000000000"
+      idempotency_key: dp-9014-exec-bad-$(date +%s)
+      expect_failure: true
+      expect_error: "DataRequirementNotMet"   # DataPolicyLib.authorize — source-1 PublicBalance requirement (absurd threshold) is unmet
+
+  # ─── I — data policies are GROUP-ONLY: register while NOT acting as the group ───
+  - name: i_add_as_individual_fails
+    type: add_data_policy
+    user: { id: issuer@yieldfabric.com, password: issuer_password }   # NOTE: no `group:` → acts as self
+    parameters:
+      account_address: $owner_ctx.group_account_address
+      wallet_id: $owner_ctx.default_wallet_id
+      policy_id: "9015"
+      expiry: "$(date -v+365d +%s)"
+      max_use: "5"
+      min_signatories: 1
+      required_signers: [ $owner_ctx.account_address ]
+      executor_accounts: [ $member_ctx.account_address ]   # collateral = policy holder / executor (its account I is msg.sender at G via relay→I→G)
+      allowed_operations: [ send ]
+      requirements:
+        - { source: 0, denomination: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "0", hi: "1000000000000000000000000000" }
+      idempotency_key: dp-9015-add-bad-$(date +%s)
+      expect_failure: true
+      expect_error: "GROUP accounts"
+
+
+  # ════════════════════════════ ORACLE CONSTRAINTS ════════════════════════════
+  # A source=3 requirement gates execution on a committed oracle value satisfying a
+  # frozen constraint (ZK DataVerifier). The committing account is the requirement's
+  # `obligor`; here the group commits under its own account.
+
+  # ─── O-commit — commit a confidential oracle document (proves the commit API) ───
+  - name: o_commit_doc
+    type: commit_oracle_document
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters:
+      account_address: $owner_ctx.group_account_address
+      key: "9020"
+      value: "750"
+      document_json: '{"score": 750}'
+      idempotency_key: dp-oracle-commit-$(date +%s)
+
+  # ─── O-happy — constraint SATISFIED → restricted member executes (AUTOMATED) ───
+  # No vIdHash to paste: OMIT constraint_commitment and pass the raw oracle_query.
+  # addDataPolicy reads the committed document (O-commit) and derives + freezes the
+  # commitment via the SAME gen_oracle_witness the executor runs. This execute
+  # SUCCEEDING is the runtime parity proof (registration-derived vIdHash == executor's).
+  - name: ohappy_add_policy
+    type: add_data_policy
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters:
+      account_address: $owner_ctx.group_account_address
+      wallet_id: $owner_ctx.default_wallet_id
+      policy_id: "9020"
+      expiry: "$(date -v+365d +%s)"
+      max_use: "5"
+      min_signatories: 1
+      required_signers: [ $owner_ctx.account_address ]
+      executor_accounts: [ $member_ctx.account_address ]   # collateral = policy holder / executor (its account I is msg.sender at G via relay→I→G)
+      allowed_operations: [ send ]
+      requirements:
+        - source: 3
+          obligor: $owner_ctx.group_account_address   # the account that committed the document (O-commit)
+          token_id: "9020"
+          # constraint_commitment OMITTED → derived server-side from oracle_query over the committed doc
+          oracle_query: '{"score": [700, 1000000]}'   # the doc's score (750) is in [700, 1000000] ⇒ satisfied
+      idempotency_key: dp-9020-add-$(date +%s)
+
+  - name: ohappy_approve
+    type: approve_data_policy
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      account_address: $owner_ctx.group_account_address
+      policy_id: "9020"
+
+  - name: ohappy_execute
+    type: execute_under_policy
+    user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
+    parameters:
+      account_address: $owner_ctx.group_account_address
+      policy_id: "9020"
+      operation_type: Send
+      operation_data:
+        token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b"
+        destination_id: collateral@yieldfabric.com
+        amount: "100000000000000000000"
+      idempotency_key: dp-9020-exec-$(date +%s)
+
+  # ─── O1 — execute an oracle-gated policy whose document was NEVER committed ───
+  # Pass an EXPLICIT (dummy, non-zero) constraint_commitment so the server-derive is
+  # skipped and registration succeeds; execution then fails at the "no committed
+  # document" gate. (Omitting it instead fail-fasts at registration — see O2.)
+  - name: o1_add_nodoc_policy
+    type: add_data_policy
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters:
+      account_address: $owner_ctx.group_account_address
+      wallet_id: $owner_ctx.default_wallet_id
+      policy_id: "9021"
+      expiry: "$(date -v+365d +%s)"
+      max_use: "5"
+      min_signatories: 1
+      required_signers: [ $owner_ctx.account_address ]
+      executor_accounts: [ $member_ctx.account_address ]   # collateral = policy holder / executor (its account I is msg.sender at G via relay→I→G)
+      allowed_operations: [ send ]
+      amount_bounds:
+        - { token: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "0", hi: "500000000000000000000" }
+      requirements:
+        - source: 3                                  # Oracle
+          obligor: $owner_ctx.group_account_address  # the committing account getCommitment reads
+          token_id: "9021"    # a numeric key with NO committed document
+          constraint_commitment: [ "1", "1" ]        # explicit ⇒ skips server-derive; execute hits the no-doc gate
+          oracle_query: '{"score": [700, 1000000]}'
+      idempotency_key: dp-9021-add-$(date +%s)
+
+  - name: o1_approve_nodoc
+    type: approve_data_policy
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      account_address: $owner_ctx.group_account_address
+      policy_id: "9021"
+
+  - name: o1_execute_nodoc_fails
+    type: execute_under_policy
+    user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
+    parameters:
+      account_address: $owner_ctx.group_account_address
+      policy_id: "9021"
+      operation_type: Send
+      operation_data:
+        token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b"
+        destination_id: collateral@yieldfabric.com
+        amount: "100000000000000000000"
+      idempotency_key: dp-9021-exec-bad-$(date +%s)
+      expect_failure: true
+      expect_error: "no committed document"
+
+  # ─── O2 — register an oracle policy whose document was NEVER committed (fail-fast) ───
+  # Omit the commitment for an un-committed key: the server-derive has no document to read,
+  # so registration fails IMMEDIATELY — instead of silently bricking at execution time.
+  - name: o2_register_without_doc_fails
+    type: add_data_policy
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters:
+      account_address: $owner_ctx.group_account_address
+      wallet_id: $owner_ctx.default_wallet_id
+      policy_id: "9022"
+      expiry: "$(date -v+365d +%s)"
+      max_use: "5"
+      min_signatories: 1
+      required_signers: [ $owner_ctx.account_address ]
+      executor_accounts: [ $member_ctx.account_address ]   # collateral = policy holder / executor (its account I is msg.sender at G via relay→I→G)
+      allowed_operations: [ send ]
+      requirements:
+        - source: 3
+          obligor: $owner_ctx.group_account_address
+          token_id: "9022"    # numeric key, never committed → server-derive has no document
+          oracle_query: '{"score": [700, 1000000]}'
+          # constraint_commitment OMITTED → server-derive reads the doc → none → fails fast at registration
+      idempotency_key: dp-9022-add-bad-$(date +%s)
+      expect_failure: true
+      expect_error: "no committed document"

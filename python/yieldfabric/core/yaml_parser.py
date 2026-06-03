@@ -206,7 +206,10 @@ class YAMLParser:
                     self.logger.error(f"Command {i} must be a dictionary")
                     return False
                 
-                required_fields = ['name', 'type', 'user', 'parameters']
+                # `parameters` is OPTIONAL: some command types take none (e.g. `whoami`), and
+                # Command.from_dict already defaults a missing `parameters` to {}. Keep the
+                # validator consistent with the parser rather than rejecting param-less commands.
+                required_fields = ['name', 'type', 'user']
                 for field in required_fields:
                     if field not in cmd:
                         self.logger.error(f"Command {i} missing required field: {field}")

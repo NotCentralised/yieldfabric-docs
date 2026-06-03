@@ -1,0 +1,338 @@
+# ════════════════════════════════════════════════════════════════════════════
+#  REPO POSITION TRANSFER MATRIX — "swapping the repo to a new counterparty"
+# ════════════════════════════════════════════════════════════════════════════
+#  The repo's LENDER position (Cont = COMPOSED-CONTRACT-REPO-SWAP-{swap}) is itself
+#  transferable: the counterparty can SELL/hand it to a new holder via
+#  `transfer_obligation`. The system is built to follow the CURRENT holder of the
+#  repurchase obligation for every terminal op — repurchase (processor Phase 4.4),
+#  forfeit (resolve_forfeit_recipient_entity_id), and roll (HOLDER=new counterparty).
+#  This matrix is the systematic proof that, after a transfer, each op pays/delivers
+#  to the NEW holder. Note the asymmetry the run confirmed: CLAIMING a payment is
+#  payee-gated (the original lender can no longer claim the repurchase — T1 negative),
+#  but TRIGGERING a forfeit is PERMISSIONLESS (anyone can fire expire_collateral; the
+#  collateral still lands with the current HOLDER, not the caller — T2).
+#
+#  Prior coverage was only incidental: F5 (transfer→repurchase, exploratory) and the
+#  F4 forfeit-forward cascade. This adds balance-verified routing for all three ops,
+#  the payee-gated negative, and a double-transfer.
+#
+#  PARTIES: payer = BORROWER · investor = ORIGINAL lender · issuer = TRANSFEREE.
+#  Transfer: the current holder calls transfer_obligation on the COMPOSED-CONTRACT-
+#  REPO-SWAP-{swap} with destination_id = the new holder.
+#  Amounts: upfront 1000 AUD, repurchase 1050 USDC. Uses the assert `minus:` delta.
+#  T2 is the only forfeit (advance +3500 > its +3200S expiry, Σ_before=0); others never advance.
+# ════════════════════════════════════════════════════════════════════════════
+
+commands:
+
+  # ──── Fund all three parties (borrower, original lender, transferee).
+  - name: fund_payer_aud
+    type: deposit
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { asset_id: aud-token-asset, amount: 1000000000000000000000000, idempotency_key: rt-payer-aud-$(date +%s) }
+  - name: fund_payer_usdc
+    type: deposit
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { asset_id: usdc-asset, amount: 1000000000000000000000000, idempotency_key: rt-payer-usdc-$(date +%s) }
+  - name: fund_investor_aud
+    type: deposit
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: aud-token-asset, amount: 1000000000000000000000000, idempotency_key: rt-inv-aud-$(date +%s) }
+  - name: fund_investor_usdc
+    type: deposit
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: usdc-asset, amount: 1000000000000000000000000, idempotency_key: rt-inv-usdc-$(date +%s) }
+  - name: fund_issuer_aud
+    type: deposit
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { asset_id: aud-token-asset, amount: 1000000000000000000000000, idempotency_key: rt-iss-aud-$(date +%s) }
+  - name: fund_issuer_usdc
+    type: deposit
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { asset_id: usdc-asset, amount: 1000000000000000000000000, idempotency_key: rt-iss-usdc-$(date +%s) }
+
+
+  # ════════ T1 — TRANSFER → REPURCHASE: cash routes to the NEW holder (not the original) ════════
+  - name: t1_underlying
+    type: create_obligation
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { idempotency_key: t1-under-$(date +%s), counterpart: payer@yieldfabric.com, expiry: $(date -u -v+90d +%Y-%m-%dT%H:%M:%SZ), contract_id: na_t1_underlying, data: { name: "T1 underlying", description: "transfer then repurchase" } }
+  - name: t1_create
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "890001"
+      idempotency_key: t1-create-$(date +%s)
+      deadline: $(date -u -v+40d +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+80d +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_obligation_ids: [na_t1_underlying]
+        repurchase_payments: { denomination: usdc-asset, amount: 1050000000000000000000, payments: [{ id: t1-repurch-1 }] }
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: t1-cash-1 }] }
+  - name: t1_complete
+    type: complete_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { swap_id: "890001", idempotency_key: t1-complete-$(date +%s) }
+  # investor (original lender) SELLS the lender position to issuer
+  - name: t1_transfer
+    type: transfer_obligation
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { contract_id: COMPOSED-CONTRACT-REPO-SWAP-890001, destination_id: issuer@yieldfabric.com, idempotency_key: t1-transfer-$(date +%s) }
+  - name: t1_issuer_usdc_before
+    type: balance
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { asset_id: usdc-asset }
+  # ALSO snapshot the ORIGINAL lender (investor) — after selling the position they must receive NOTHING
+  - name: t1_investor_usdc_before
+    type: balance
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: usdc-asset }
+  - name: t1_repurchase
+    type: repurchase_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { swap_id: "890001", idempotency_key: t1-repurch-$(date +%s) }
+  # NEGATIVE: the ORIGINAL lender (investor) is no longer the payee → cannot claim the repurchase
+  - name: t1_original_lender_claim_fails
+    type: accept
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    # NO expect_error ON PURPOSE. The run revealed the platform rejects a non-payee only INCIDENTALLY,
+    # via the on-chain ZK balance proof (utils/Vault.sol:565 "Initial amounts don't match") — the SAME
+    # generic revert a BROKEN retrieve produces (cf. the #71/#75 bugs). Pinning that string would
+    # conflate "non-payee correctly rejected" with "retrieve regressed", so a future bug could pass this
+    # negative for the wrong reason — a false signal. The AUTHORITATIVE proof that routing is correct is
+    # the balance pair below: t1_assert_cash_to_new_holder (issuer +1050) AND
+    # t1_assert_no_cash_to_original_lender (investor +0).
+    # PLATFORM FINDING (separate): `accept` has no explicit payee-authorization check — the clean
+    # "You are not the owner" gate at utils/Vault.sol:572 is never reached because :565 fails first.
+    parameters: { payment_id: PAY-REPURCHASE-890001-0, idempotency_key: t1-orig-claim-$(date +%s), expect_failure: true }
+  # POSITIVE: the NEW holder (issuer) claims the repurchase cash
+  - name: t1_new_holder_claim
+    type: accept
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { payment_id: PAY-REPURCHASE-890001-0, idempotency_key: t1-new-claim-$(date +%s) }
+  - name: t1_issuer_usdc_after
+    type: balance
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { asset_id: usdc-asset }
+  - name: t1_assert_cash_to_new_holder
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { actual: "$t1_issuer_usdc_after.private_balance", minus: "$t1_issuer_usdc_before.private_balance", equals: "1050000000000000000000" }
+  # AND the original lender (investor) USDC must be UNCHANGED — proves the cash did not also leak to the seller
+  - name: t1_investor_usdc_after
+    type: balance
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: usdc-asset }
+  - name: t1_assert_no_cash_to_original_lender
+    type: assert
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { actual: "$t1_investor_usdc_after.private_balance", minus: "$t1_investor_usdc_before.private_balance", equals: "0" }
+
+
+  # ════════ T2 — TRANSFER → FORFEIT: collateral to the NEW holder (forfeit trigger is permissionless) ════════
+  - name: t2_underlying
+    type: create_obligation
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { idempotency_key: t2-under-$(date +%s), counterpart: payer@yieldfabric.com, expiry: $(date -u -v+90d +%Y-%m-%dT%H:%M:%SZ), contract_id: na_t2_underlying, data: { name: "T2 underlying", description: "transfer then forfeit" } }
+  - name: t2_create
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "890002"
+      idempotency_key: t2-create-$(date +%s)
+      deadline: $(date -u -v+2500S +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+3200S +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_obligation_ids: [na_t2_underlying]
+        repurchase_payments: { denomination: usdc-asset, amount: 1050000000000000000000, payments: [{ id: t2-repurch-1 }] }
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: t2-cash-1 }] }
+  - name: t2_complete
+    type: complete_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { swap_id: "890002", idempotency_key: t2-complete-$(date +%s) }
+  - name: t2_transfer
+    type: transfer_obligation
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { contract_id: COMPOSED-CONTRACT-REPO-SWAP-890002, destination_id: issuer@yieldfabric.com, idempotency_key: t2-transfer-$(date +%s) }
+  - name: t2_advance
+    type: advance_chain_time
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { seconds: 3500 }   # > the +3200S expiry; T2 is the only forfeit so Σ_before = 0
+  # CLARIFICATION (run finding): expire_collateral is PERMISSIONLESS — any party can trigger the
+  # expiry, even the ORIGINAL lender who already transferred the position away. The forfeit RECIPIENT
+  # is resolved from the current HOLDER (issuer), NOT the caller, so the collateral still lands with
+  # issuer (verified below). Triggering it as investor here is the STRONGER test (caller ≠ recipient):
+  # the original lender can fire the trigger but gains nothing — the holder gets the asset. (Matches
+  # J1, where payer triggered forfeits on swaps it wasn't a party to. Claiming a PAYMENT is payee-
+  # gated — see T1's negative — but triggering a forfeit is not.)
+  - name: t2_forfeit_by_original_lender
+    type: expire_collateral
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { swap_id: "890002", idempotency_key: t2-forfeit-$(date +%s) }
+  # PROOF: the NEW holder (issuer) owns the collateral (offering it succeeds only if owned)
+  - name: t2_verify_new_holder_owns
+    type: create_swap
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      swap_id: "890098"
+      idempotency_key: t2-verify-$(date +%s)
+      initiator: { obligation_ids: [na_t2_underlying] }
+      counterparty:
+        id: payer@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: t2-verify-1 }] }
+      deadline: $(date -u -v+30d +%Y-%m-%dT%H:%M:%SZ)
+
+
+  # ════════ T3 — TRANSFER → ROLL: the roll follows the new holder — #75 FIXED ════════
+  # After transfer, issuer holds the lender position; payer rolls bringing in investor as the new lender.
+  # complete_roll used to REVERT InvalidCollateralPayment because the vault (roll.rs) routed the coverage
+  # to the STORED old counterparty (investor) while the contract validates against _getCounterpartyAddress
+  # (ownerOf → issuer, the current holder). #75 routes the coverage to the dynamic holder
+  # (getCounterpartyAddress), so complete_roll now SUCCEEDS against a transferred position.
+  # (Requires the rebuilt payments service.)
+  - name: t3_underlying
+    type: create_obligation
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { idempotency_key: t3-under-$(date +%s), counterpart: payer@yieldfabric.com, expiry: $(date -u -v+90d +%Y-%m-%dT%H:%M:%SZ), contract_id: na_t3_underlying, data: { name: "T3 underlying", description: "transfer then roll" } }
+  - name: t3_create
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "890003"
+      idempotency_key: t3-create-$(date +%s)
+      deadline: $(date -u -v+40d +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+80d +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_obligation_ids: [na_t3_underlying]
+        repurchase_payments: { denomination: usdc-asset, amount: 1050000000000000000000, payments: [{ id: t3-repurch-1 }] }
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: t3-cash-1 }] }
+  - name: t3_complete
+    type: complete_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { swap_id: "890003", idempotency_key: t3-complete-$(date +%s) }
+  - name: t3_transfer
+    type: transfer_obligation
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { contract_id: COMPOSED-CONTRACT-REPO-SWAP-890003, destination_id: issuer@yieldfabric.com, idempotency_key: t3-transfer-$(date +%s) }
+  # #75 ECONOMIC PROOF (was missing): snapshot the dynamic holder (issuer) BEFORE the roll. The roll's
+  # coverage payment atomically repurchases the old repo (890003, repurchase = 1050 USDC) and #75 routes
+  # it to the CURRENT holder (issuer), not the stale stored counterparty (investor). issuer must receive
+  # exactly that coverage once it claims it (below). Without this the suite only proved "complete_roll
+  # didn't revert", never that the coverage cash reached the right party.
+  - name: t3_issuer_usdc_before
+    type: balance
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { asset_id: usdc-asset }
+  # payer rolls; new lender = investor; the bought-out CURRENT lender must resolve to issuer (the holder)
+  - name: t3_roll_initiate
+    type: initiate_roll
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      old_swap_id: "890003"
+      new_swap_id: "890013"
+      new_counterparty: investor@yieldfabric.com
+      new_deadline: $(date -u -v+40d +%Y-%m-%dT%H:%M:%SZ)
+      new_expiry:   $(date -u -v+80d +%Y-%m-%dT%H:%M:%SZ)
+      idempotency_key: t3-roll-$(date +%s)
+  - name: t3_roll_complete
+    type: complete_roll
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { new_swap_id: "890013", idempotency_key: t3-roll-complete-$(date +%s) }
+  # #75 PROOF cont.: the dynamic holder (issuer = the bought-out OLD lender) claims the COVERAGE.
+  # CORRECTED (run finding): the coverage to the old lender is PAY-SWAP-{new_swap}-counterparty-0
+  # (payee=issuer, 1050 USDC, real id_hash — confirmed in run log: "materialised counterparty receivable
+  # PAY-SWAP-890013-counterparty-0 … to WLT-0x9b43…"), routed to the dynamic holder by #75. It is NOT
+  # PAY-ROLL-UPFRONT-{new_swap}-0, which is the BORROWER's pre-funded repurchase to the NEW lender
+  # (payee=investor, the #71 payment) — issuer is not its payee, so claiming that reverted "Nonce don't
+  # match". If #75 regressed (coverage routed to the stale counterparty or zero), issuer can't claim this.
+  - name: t3_coverage_claim
+    type: accept
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { payment_id: PAY-SWAP-890013-counterparty-0, idempotency_key: t3-coverage-claim-$(date +%s) }
+  - name: t3_issuer_usdc_after
+    type: balance
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { asset_id: usdc-asset }
+  - name: t3_assert_coverage_to_dynamic_holder
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { actual: "$t3_issuer_usdc_after.private_balance", minus: "$t3_issuer_usdc_before.private_balance", equals: "1050000000000000000000" }
+
+
+  # ════════ T4 — DOUBLE TRANSFER → REPURCHASE: cash routes to the FINAL holder after two hops ════════
+  # investor → issuer → investor (round-trip). The repurchase must follow the chain to the FINAL holder
+  # (investor), proving the resolution isn't a one-shot stored value.
+  - name: t4_underlying
+    type: create_obligation
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { idempotency_key: t4-under-$(date +%s), counterpart: payer@yieldfabric.com, expiry: $(date -u -v+90d +%Y-%m-%dT%H:%M:%SZ), contract_id: na_t4_underlying, data: { name: "T4 underlying", description: "double transfer then repurchase" } }
+  - name: t4_create
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "890004"
+      idempotency_key: t4-create-$(date +%s)
+      deadline: $(date -u -v+40d +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+80d +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_obligation_ids: [na_t4_underlying]
+        repurchase_payments: { denomination: usdc-asset, amount: 1050000000000000000000, payments: [{ id: t4-repurch-1 }] }
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: t4-cash-1 }] }
+  - name: t4_complete
+    type: complete_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { swap_id: "890004", idempotency_key: t4-complete-$(date +%s) }
+  - name: t4_transfer1
+    type: transfer_obligation
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { contract_id: COMPOSED-CONTRACT-REPO-SWAP-890004, destination_id: issuer@yieldfabric.com, idempotency_key: t4-transfer1-$(date +%s) }
+  - name: t4_transfer2
+    type: transfer_obligation
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { contract_id: COMPOSED-CONTRACT-REPO-SWAP-890004, destination_id: investor@yieldfabric.com, idempotency_key: t4-transfer2-$(date +%s) }
+  - name: t4_investor_usdc_before
+    type: balance
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: usdc-asset }
+  # ALSO snapshot the INTERMEDIATE holder (issuer) — the round-trip's middle hop must receive NOTHING,
+  # proving the repurchase followed the chain to the FINAL holder rather than paying a prior holder.
+  - name: t4_issuer_usdc_before
+    type: balance
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { asset_id: usdc-asset }
+  - name: t4_repurchase
+    type: repurchase_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { swap_id: "890004", idempotency_key: t4-repurch-$(date +%s) }
+  - name: t4_final_holder_claim
+    type: accept
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { payment_id: PAY-REPURCHASE-890004-0, idempotency_key: t4-claim-$(date +%s) }
+  - name: t4_investor_usdc_after
+    type: balance
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: usdc-asset }
+  - name: t4_assert_cash_to_final_holder
+    type: assert
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { actual: "$t4_investor_usdc_after.private_balance", minus: "$t4_investor_usdc_before.private_balance", equals: "1050000000000000000000" }
+  # AND the intermediate holder (issuer) received nothing — together with the line above this proves the
+  # repurchase tracks the CURRENT holder through the transfer chain, not a stale/intermediate value.
+  # (Known residual: the final holder equals the original counterparty here, so this does not fully
+  # distinguish "follows the chain" from "defaults to the original" — a distinct 3rd final holder would.)
+  - name: t4_issuer_usdc_after
+    type: balance
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { asset_id: usdc-asset }
+  - name: t4_assert_no_cash_to_intermediate
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { actual: "$t4_issuer_usdc_after.private_balance", minus: "$t4_issuer_usdc_before.private_balance", equals: "0" }
