@@ -156,6 +156,30 @@ def eip191_message_hash(message_hash_hex: str) -> str:
     return digest.hex()
 
 
+def recover_eip191_address(message_hash_hex: str, signature: str) -> str:
+    """
+    Recover the EOA that EIP-191 personal_sign'd a raw 32-byte hash — the SAME address the
+    on-chain `ConfidentialOracle.recoverDocumentSigner` / `getSigner` yields. The exact inverse of
+    the `eip191_message_hash` + `sign_vault` pair: recovers over
+    `keccak256("\\x19Ethereum Signed Message:\\n32" || hash)`.
+
+    `signature` is r+s+v hex (0x optional). A `v` of 0/1 is normalised to 27/28 (the form
+    `Account.recover_message` accepts), mirroring the backend's / contract's `v < 27 ⇒ v += 27`.
+    """
+    _require_eth_account()
+    msg_hex = (message_hash_hex or "").strip().removeprefix("0x").strip()
+    hash_bytes = bytes.fromhex(msg_hex)
+    if len(hash_bytes) != 32:
+        raise ValueError(f"message_hash must be 32 bytes, got {len(hash_bytes)}")
+    sig_hex = (signature or "").strip().removeprefix("0x").strip()
+    sig_bytes = bytearray.fromhex(sig_hex)
+    if len(sig_bytes) != 65:
+        raise ValueError(f"signature must be 65 bytes, got {len(sig_bytes)}")
+    if sig_bytes[64] < 27:
+        sig_bytes[64] += 27
+    return Account.recover_message(encode_defunct(primitive=hash_bytes), signature=bytes(sig_bytes))
+
+
 def sign_message_hash(private_key_hex: str, message_hash_hex: str) -> str:
     """
     personal_sign a raw 32-byte hash.

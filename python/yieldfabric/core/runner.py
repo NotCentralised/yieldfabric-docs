@@ -283,6 +283,7 @@ class YieldFabricRunner:
             "approve_data_policy",
             "execute_under_policy",
             "commit_oracle_document",
+            "sign_oracle_document",
             "data_policies",
             "data_policy_approval",
         ]:

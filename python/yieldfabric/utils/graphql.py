@@ -472,10 +472,10 @@ class DataPolicyGraphQL:
     """
 
     DATA_POLICY_APPROVAL = """
-    query GetDataPolicyApproval($accountAddress: String!, $policyId: String!) {
+    query GetDataPolicyApproval($account: String!, $policyId: String!) {
         pipelineGate {
-            dataPolicyApproval(accountAddress: $accountAddress, policyId: $policyId) {
-                accountAddress
+            dataPolicyApproval(account: $account, policyId: $policyId) {
+                account
                 policyId
                 chainId
                 registeredDigest
@@ -498,6 +498,19 @@ class DataPolicyGraphQL:
                 messageId
                 oracleAddress
                 key
+            }
+        }
+    }
+    """
+
+    # Compute the message an issuer EIP-191-signs to attest a document — the keccak of its
+    # DataVerifier idHash. Pure read; the caller signs it (auth vault/sign) and passes the
+    # signature to commitOracleDocument, where a policy's requiredSigner enforces the issuer.
+    DOCUMENT_SIGNER_MESSAGE = """
+    query DocumentSignerMessage($input: OracleFlowDocumentSignerMessageInput!) {
+        oracleFlow {
+            documentSignerMessage(input: $input) {
+                message
             }
         }
     }

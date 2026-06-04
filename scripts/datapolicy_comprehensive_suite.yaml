@@ -74,10 +74,14 @@ commands:
 
   # Fund the GROUP's confidential AUD so bounded sends have balance to move (nc_acacia pattern:
   # the owner holds ERC-20, deposits, sends into the group, the group accepts).
+  - name: owner_self_ctx          # issuer's OWN wallet id (owner_ctx acts as the group, so its
+    type: whoami                  # default_wallet_id is the GROUP's) — required_signers needs the issuer
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+
   - name: fund_owner_aud
     type: deposit
     user: { id: issuer@yieldfabric.com, password: issuer_password }
-    parameters: { asset_id: aud-token-asset, amount: 1000000000000000000000, idempotency_key: cmp-fund-owner-$(date +%s) }
+    parameters: { asset_id: aud-token-asset, amount: 1000000000000000000000, idempotency_key: cmp-fund-owner-$(date +%s | tee /tmp/yf_cmp_nonce) }
 
   - name: fund_group_send
     type: instant
@@ -97,25 +101,25 @@ commands:
     type: add_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
+      account_address: $owner_ctx.default_wallet_id
       wallet_id: $owner_ctx.default_wallet_id
-      policy_id: "9001"
+      policy_id: "$(cat /tmp/yf_cmp_nonce)01"
       expiry: "$(date -v+365d +%s)"
       max_use: "10"
       min_signatories: 1
-      required_signers: [ $owner_ctx.account_address ]      # owner (issuer) approves
-      executor_accounts: [ $member_ctx.account_address ]    # collateral executes (the member)
+      required_signers: [ $owner_self_ctx.default_wallet_id ]      # owner (issuer) approves
+      executor_accounts: [ $member_ctx.default_wallet_id ]    # collateral executes (the member)
       allowed_operations: [ send ]
       amount_bounds:
-        - { token: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "0", hi: "500000000000000000000" }
+        - { token: aud-token-asset, lo: "0", hi: "500000000000000000000" }
       requirements:
-        - { source: 0, denomination: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "0", hi: "1000000000000000000000000000" }
+        - { source: 0, denomination: aud-token-asset, lo: "0", hi: "1000000000000000000000000000" }
       idempotency_key: cmp-9001-add-$(date +%s)
 
   - name: m1_approve         # owner approves once (1-of-1)
     type: approve_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password }
-    parameters: { account_address: $owner_ctx.group_account_address, policy_id: "9001" }
+    parameters: { account_address: $owner_ctx.default_wallet_id, policy_id: "$(cat /tmp/yf_cmp_nonce)01" }
 
   # ★ M1: collateral — recognised as a policymember PURELY because P9001 names it — executes a
   # bounded send out of G. No add_member step exists; auth derived the membership at delegation-mint.
@@ -123,10 +127,10 @@ commands:
     type: execute_under_policy
     user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
-      policy_id: "9001"
+      account_address: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_cmp_nonce)01"
       operation_type: Send
-      operation_data: { token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b", destination_id: collateral@yieldfabric.com, amount: "100000000000000000000" }
+      operation_data: { token_address: aud-token-asset, destination_id: collateral@yieldfabric.com, amount: "100000000000000000000" }
       idempotency_key: cmp-9001-exec-$(date +%s)
 
   # M2: investor is named in NO policy on Issuer Group → auth's delegation-mint cannot derive
@@ -135,10 +139,10 @@ commands:
     type: execute_under_policy
     user: { id: investor@yieldfabric.com, password: investor_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
-      policy_id: "9001"
+      account_address: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_cmp_nonce)01"
       operation_type: Send
-      operation_data: { token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b", destination_id: investor@yieldfabric.com, amount: "100000000000000000000" }
+      operation_data: { token_address: aud-token-asset, destination_id: investor@yieldfabric.com, amount: "100000000000000000000" }
       idempotency_key: cmp-9001-investor-bad-$(date +%s)
       expect_failure: true
       # No expect_error pin: the only way this fails is the membership/delegation denial — investor
@@ -168,35 +172,35 @@ commands:
     type: add_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
+      account_address: $owner_ctx.default_wallet_id
       wallet_id: $owner_ctx.default_wallet_id
-      policy_id: "9002"
+      policy_id: "$(cat /tmp/yf_cmp_nonce)02"
       expiry: "$(date -v+365d +%s)"
       max_use: "5"
       min_signatories: 1
-      required_signers: [ $owner_ctx.account_address ]
-      executor_accounts: [ $member_ctx.account_address ]
+      required_signers: [ $owner_self_ctx.default_wallet_id ]
+      executor_accounts: [ $member_ctx.default_wallet_id ]
       allowed_operations: [ send ]
       amount_bounds:
-        - { token: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "0", hi: "500000000000000000000" }
+        - { token: aud-token-asset, lo: "0", hi: "500000000000000000000" }
       requirements:
         # lo (1e24) ≫ the group's ~900 AUD confidential balance ⇒ balance ∉ [lo, hi] ⇒ unsatisfiable proof.
-        - { source: 0, denomination: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "1000000000000000000000000", hi: "2000000000000000000000000" }
+        - { source: 0, denomination: aud-token-asset, lo: "1000000000000000000000000", hi: "2000000000000000000000000" }
       idempotency_key: cmp-9002-add-$(date +%s)
 
   - name: s0_unsat_approve
     type: approve_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password }
-    parameters: { account_address: $owner_ctx.group_account_address, policy_id: "9002" }
+    parameters: { account_address: $owner_ctx.default_wallet_id, policy_id: "$(cat /tmp/yf_cmp_nonce)02" }
 
   - name: s0_unsat_execute
     type: execute_under_policy
     user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
-      policy_id: "9002"
+      account_address: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_cmp_nonce)02"
       operation_type: Send
-      operation_data: { token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b", destination_id: collateral@yieldfabric.com, amount: "100000000000000000000" }
+      operation_data: { token_address: aud-token-asset, destination_id: collateral@yieldfabric.com, amount: "100000000000000000000" }
       idempotency_key: cmp-9002-exec-bad-$(date +%s)
       expect_failure: true
       # source-0 BalanceAssert proof is unsatisfiable (balance ∉ [lo,hi]) ⇒ garbage `who` ⇒ WhoMismatch.
@@ -209,34 +213,34 @@ commands:
     type: add_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
+      account_address: $owner_ctx.default_wallet_id
       wallet_id: $owner_ctx.default_wallet_id
-      policy_id: "9003"
+      policy_id: "$(cat /tmp/yf_cmp_nonce)03"
       expiry: "$(date -v+365d +%s)"
       max_use: "5"
       min_signatories: 1
-      required_signers: [ $owner_ctx.account_address ]
-      executor_accounts: [ $member_ctx.account_address ]
+      required_signers: [ $owner_self_ctx.default_wallet_id ]
+      executor_accounts: [ $member_ctx.default_wallet_id ]
       allowed_operations: [ send ]
       amount_bounds:
-        - { token: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "0", hi: "500000000000000000000" }
+        - { token: aud-token-asset, lo: "0", hi: "500000000000000000000" }
       requirements:
-        - { source: 1, target: "0x59b670e9fA9D0A427751Af201D676719a970857b", threshold: "1000000000000000000000000000000000" }
+        - { source: 1, target: aud-token-asset, threshold: "1000000000000000000000000000000000" }
       idempotency_key: cmp-9003-add-$(date +%s)
 
   - name: s1_unsat_approve
     type: approve_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password }
-    parameters: { account_address: $owner_ctx.group_account_address, policy_id: "9003" }
+    parameters: { account_address: $owner_ctx.default_wallet_id, policy_id: "$(cat /tmp/yf_cmp_nonce)03" }
 
   - name: s1_unsat_execute
     type: execute_under_policy
     user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
-      policy_id: "9003"
+      account_address: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_cmp_nonce)03"
       operation_type: Send
-      operation_data: { token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b", destination_id: collateral@yieldfabric.com, amount: "100000000000000000000" }
+      operation_data: { token_address: aud-token-asset, destination_id: collateral@yieldfabric.com, amount: "100000000000000000000" }
       idempotency_key: cmp-9003-exec-bad-$(date +%s)
       expect_failure: true
       expect_error: "DataRequirementNotMet"
@@ -255,10 +259,10 @@ commands:
     type: execute_under_policy
     user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
-      policy_id: "9001"
+      account_address: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_cmp_nonce)01"
       operation_type: Send
-      operation_data: { token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b", destination_id: collateral@yieldfabric.com, amount: "600000000000000000000" }
+      operation_data: { token_address: aud-token-asset, destination_id: collateral@yieldfabric.com, amount: "600000000000000000000" }
       idempotency_key: cmp-9001-over-bad-$(date +%s)
       expect_failure: true
       expect_error: "WhoMismatch"
@@ -271,34 +275,34 @@ commands:
     type: add_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
+      account_address: $owner_ctx.default_wallet_id
       wallet_id: $owner_ctx.default_wallet_id
-      policy_id: "9008"
+      policy_id: "$(cat /tmp/yf_cmp_nonce)08"
       expiry: "$(date -v+365d +%s)"
       max_use: "5"
       min_signatories: 1
-      required_signers: [ $owner_ctx.account_address ]
-      executor_accounts: [ $member_ctx.account_address ]
+      required_signers: [ $owner_self_ctx.default_wallet_id ]
+      executor_accounts: [ $member_ctx.default_wallet_id ]
       allowed_operations: [ withdraw ]
       amount_bounds:
-        - { token: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "0", hi: "500000000000000000000" }
+        - { token: aud-token-asset, lo: "0", hi: "500000000000000000000" }
       requirements:
-        - { source: 0, denomination: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "0", hi: "1000000000000000000000000000" }
+        - { source: 0, denomination: aud-token-asset, lo: "0", hi: "1000000000000000000000000000" }
       idempotency_key: cmp-9008-add-$(date +%s)
 
   - name: op_withdraw_approve
     type: approve_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password }
-    parameters: { account_address: $owner_ctx.group_account_address, policy_id: "9008" }
+    parameters: { account_address: $owner_ctx.default_wallet_id, policy_id: "$(cat /tmp/yf_cmp_nonce)08" }
 
   - name: op_withdraw_over_bound
     type: execute_under_policy
     user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
-      policy_id: "9008"
+      account_address: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_cmp_nonce)08"
       operation_type: Withdraw
-      operation_data: { token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b", amount: "600000000000000000000", obligor: "0x0000000000000000000000000000000000000000", treasurer_secret: "" }
+      operation_data: { token_address: aud-token-asset, amount: "600000000000000000000", obligor: "0x0000000000000000000000000000000000000000", treasurer_secret: "" }
       idempotency_key: cmp-9008-over-bad-$(date +%s)
       expect_failure: true
       expect_error: "AmountAboveMax"
@@ -309,10 +313,10 @@ commands:
     type: execute_under_policy
     user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
-      policy_id: "9001"
+      account_address: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_cmp_nonce)01"
       operation_type: Withdraw
-      operation_data: { token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b", amount: "100000000000000000000", obligor: "0x0000000000000000000000000000000000000000", treasurer_secret: "" }
+      operation_data: { token_address: aud-token-asset, amount: "100000000000000000000", obligor: "0x0000000000000000000000000000000000000000", treasurer_secret: "" }
       idempotency_key: cmp-9001-wrongop-bad-$(date +%s)
       expect_failure: true
       expect_error: "allowed calls (target/selector mismatch)"
@@ -324,35 +328,35 @@ commands:
     type: add_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
+      account_address: $owner_ctx.default_wallet_id
       wallet_id: $owner_ctx.default_wallet_id
-      policy_id: "9004"
+      policy_id: "$(cat /tmp/yf_cmp_nonce)04"
       expiry: "$(date -v+365d +%s)"
       max_use: "5"
       min_signatories: 2
-      required_signers: [ $owner_ctx.account_address, $approver2_ctx.account_address ]   # issuer + payer
-      executor_accounts: [ $member_ctx.account_address ]
+      required_signers: [ $owner_self_ctx.default_wallet_id, $approver2_ctx.default_wallet_id ]   # issuer + payer
+      executor_accounts: [ $member_ctx.default_wallet_id ]
       allowed_operations: [ send ]
       amount_bounds:
-        - { token: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "0", hi: "500000000000000000000" }
+        - { token: aud-token-asset, lo: "0", hi: "500000000000000000000" }
       requirements:
-        - { source: 0, denomination: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "0", hi: "1000000000000000000000000000" }
+        - { source: 0, denomination: aud-token-asset, lo: "0", hi: "1000000000000000000000000000" }
       idempotency_key: cmp-9004-add-$(date +%s)
 
   - name: mofn_approve_1of2     # issuer approves → collected 1/2 (not yet approved)
     type: approve_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password }
-    parameters: { account_address: $owner_ctx.group_account_address, policy_id: "9004" }
+    parameters: { account_address: $owner_ctx.default_wallet_id, policy_id: "$(cat /tmp/yf_cmp_nonce)04" }
 
   # 2-of-2 PARTIAL: with only 1/2 collected, execution is rejected at the resolver ("not fully approved").
   - name: mofn_partial_execute_fails
     type: execute_under_policy
     user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
-      policy_id: "9004"
+      account_address: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_cmp_nonce)04"
       operation_type: Send
-      operation_data: { token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b", destination_id: collateral@yieldfabric.com, amount: "100000000000000000000" }
+      operation_data: { token_address: aud-token-asset, destination_id: collateral@yieldfabric.com, amount: "100000000000000000000" }
       idempotency_key: cmp-9004-partial-bad-$(date +%s)
       expect_failure: true
       expect_error: "not fully approved"
@@ -360,12 +364,12 @@ commands:
   - name: mofn_approve_2of2     # payer approves → collected 2/2 (approved)
     type: approve_data_policy
     user: { id: payer@yieldfabric.com, password: payer_password }
-    parameters: { account_address: $owner_ctx.group_account_address, policy_id: "9004" }
+    parameters: { account_address: $owner_ctx.default_wallet_id, policy_id: "$(cat /tmp/yf_cmp_nonce)04" }
 
   - name: mofn_approval_state
     type: data_policy_approval
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
-    parameters: { account_address: $owner_ctx.group_account_address, policy_id: "9004" }
+    parameters: { account_address: $owner_ctx.default_wallet_id, policy_id: "$(cat /tmp/yf_cmp_nonce)04" }
 
   - name: mofn_assert_approved
     type: assert
@@ -377,10 +381,10 @@ commands:
     type: execute_under_policy
     user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
-      policy_id: "9004"
+      account_address: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_cmp_nonce)04"
       operation_type: Send
-      operation_data: { token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b", destination_id: collateral@yieldfabric.com, amount: "100000000000000000000" }
+      operation_data: { token_address: aud-token-asset, destination_id: collateral@yieldfabric.com, amount: "100000000000000000000" }
       idempotency_key: cmp-9004-exec-$(date +%s)
 
   # Non-signer approves: collateral (the EXECUTOR, not in required_signers) tries to approve P9001 → fail.
@@ -388,8 +392,8 @@ commands:
     type: approve_data_policy
     user: { id: collateral@yieldfabric.com, password: collateral_password }
     parameters:
-      account_address: $owner_ctx.group_account_address
-      policy_id: "9001"
+      account_address: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_cmp_nonce)01"
       expect_failure: true
       expect_error: "caller set"
 
@@ -400,29 +404,29 @@ commands:
     type: add_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
+      account_address: $owner_ctx.default_wallet_id
       wallet_id: $owner_ctx.default_wallet_id
-      policy_id: "9007"
+      policy_id: "$(cat /tmp/yf_cmp_nonce)07"
       expiry: "$(date -v+365d +%s)"
       max_use: "1"
       min_signatories: 1
-      required_signers: [ $owner_ctx.account_address ]
-      executor_accounts: [ $member_ctx.account_address ]
+      required_signers: [ $owner_self_ctx.default_wallet_id ]
+      executor_accounts: [ $member_ctx.default_wallet_id ]
       allowed_operations: [ send ]
       amount_bounds:
-        - { token: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "0", hi: "500000000000000000000" }
+        - { token: aud-token-asset, lo: "0", hi: "500000000000000000000" }
       requirements:
-        - { source: 0, denomination: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "0", hi: "1000000000000000000000000000" }
+        - { source: 0, denomination: aud-token-asset, lo: "0", hi: "1000000000000000000000000000" }
       idempotency_key: cmp-9007-add-$(date +%s)
 
   - name: life_before_approval_fails
     type: execute_under_policy
     user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
-      policy_id: "9007"
+      account_address: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_cmp_nonce)07"
       operation_type: Send
-      operation_data: { token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b", destination_id: collateral@yieldfabric.com, amount: "100000000000000000000" }
+      operation_data: { token_address: aud-token-asset, destination_id: collateral@yieldfabric.com, amount: "100000000000000000000" }
       idempotency_key: cmp-9007-noappr-bad-$(date +%s)
       expect_failure: true
       expect_error: "not fully approved"
@@ -431,26 +435,26 @@ commands:
   - name: life_maxuse_approve
     type: approve_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password }
-    parameters: { account_address: $owner_ctx.group_account_address, policy_id: "9007" }
+    parameters: { account_address: $owner_ctx.default_wallet_id, policy_id: "$(cat /tmp/yf_cmp_nonce)07" }
 
   - name: life_maxuse_first_ok
     type: execute_under_policy
     user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
-      policy_id: "9007"
+      account_address: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_cmp_nonce)07"
       operation_type: Send
-      operation_data: { token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b", destination_id: collateral@yieldfabric.com, amount: "100000000000000000000" }
+      operation_data: { token_address: aud-token-asset, destination_id: collateral@yieldfabric.com, amount: "100000000000000000000" }
       idempotency_key: cmp-9007-exec1-$(date +%s)
 
   - name: life_maxuse_second_fails
     type: execute_under_policy
     user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
-      policy_id: "9007"
+      account_address: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_cmp_nonce)07"
       operation_type: Send
-      operation_data: { token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b", destination_id: collateral@yieldfabric.com, amount: "100000000000000000000" }
+      operation_data: { token_address: aud-token-asset, destination_id: collateral@yieldfabric.com, amount: "100000000000000000000" }
       idempotency_key: cmp-9007-exec2-bad-$(date +%s)
       expect_failure: true
       expect_error: "PolicyMaxUseExceeded"
@@ -460,35 +464,35 @@ commands:
     type: add_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
+      account_address: $owner_ctx.default_wallet_id
       wallet_id: $owner_ctx.default_wallet_id
-      policy_id: "9005"
+      policy_id: "$(cat /tmp/yf_cmp_nonce)05"
       start: "$(date -v+365d +%s)"
       expiry: "$(date -v+730d +%s)"
       max_use: "5"
       min_signatories: 1
-      required_signers: [ $owner_ctx.account_address ]
-      executor_accounts: [ $member_ctx.account_address ]
+      required_signers: [ $owner_self_ctx.default_wallet_id ]
+      executor_accounts: [ $member_ctx.default_wallet_id ]
       allowed_operations: [ send ]
       amount_bounds:
-        - { token: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "0", hi: "500000000000000000000" }
+        - { token: aud-token-asset, lo: "0", hi: "500000000000000000000" }
       requirements:
-        - { source: 0, denomination: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "0", hi: "1000000000000000000000000000" }
+        - { source: 0, denomination: aud-token-asset, lo: "0", hi: "1000000000000000000000000000" }
       idempotency_key: cmp-9005-add-$(date +%s)
 
   - name: life_notstarted_approve
     type: approve_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password }
-    parameters: { account_address: $owner_ctx.group_account_address, policy_id: "9005" }
+    parameters: { account_address: $owner_ctx.default_wallet_id, policy_id: "$(cat /tmp/yf_cmp_nonce)05" }
 
   - name: life_notstarted_fails
     type: execute_under_policy
     user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
-      policy_id: "9005"
+      account_address: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_cmp_nonce)05"
       operation_type: Send
-      operation_data: { token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b", destination_id: collateral@yieldfabric.com, amount: "100000000000000000000" }
+      operation_data: { token_address: aud-token-asset, destination_id: collateral@yieldfabric.com, amount: "100000000000000000000" }
       idempotency_key: cmp-9005-bad-$(date +%s)
       expect_failure: true
       expect_error: "PolicyNotStarted"
@@ -498,35 +502,35 @@ commands:
     type: add_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
+      account_address: $owner_ctx.default_wallet_id
       wallet_id: $owner_ctx.default_wallet_id
-      policy_id: "9006"
+      policy_id: "$(cat /tmp/yf_cmp_nonce)06"
       start: "$(date -v-730d +%s)"
       expiry: "$(date -v-365d +%s)"
       max_use: "5"
       min_signatories: 1
-      required_signers: [ $owner_ctx.account_address ]
-      executor_accounts: [ $member_ctx.account_address ]
+      required_signers: [ $owner_self_ctx.default_wallet_id ]
+      executor_accounts: [ $member_ctx.default_wallet_id ]
       allowed_operations: [ send ]
       amount_bounds:
-        - { token: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "0", hi: "500000000000000000000" }
+        - { token: aud-token-asset, lo: "0", hi: "500000000000000000000" }
       requirements:
-        - { source: 0, denomination: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "0", hi: "1000000000000000000000000000" }
+        - { source: 0, denomination: aud-token-asset, lo: "0", hi: "1000000000000000000000000000" }
       idempotency_key: cmp-9006-add-$(date +%s)
 
   - name: life_expired_approve
     type: approve_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password }
-    parameters: { account_address: $owner_ctx.group_account_address, policy_id: "9006" }
+    parameters: { account_address: $owner_ctx.default_wallet_id, policy_id: "$(cat /tmp/yf_cmp_nonce)06" }
 
   - name: life_expired_fails
     type: execute_under_policy
     user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
-      policy_id: "9006"
+      account_address: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_cmp_nonce)06"
       operation_type: Send
-      operation_data: { token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b", destination_id: collateral@yieldfabric.com, amount: "100000000000000000000" }
+      operation_data: { token_address: aud-token-asset, destination_id: collateral@yieldfabric.com, amount: "100000000000000000000" }
       idempotency_key: cmp-9006-bad-$(date +%s)
       expect_failure: true
       expect_error: "PolicyExpired"
@@ -538,17 +542,17 @@ commands:
     type: add_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password }   # acts as self, not the group
     parameters:
-      account_address: $owner_ctx.group_account_address
+      account_address: $owner_ctx.default_wallet_id
       wallet_id: $owner_ctx.default_wallet_id
-      policy_id: "9010"
+      policy_id: "$(cat /tmp/yf_cmp_nonce)10"
       expiry: "$(date -v+365d +%s)"
       max_use: "5"
       min_signatories: 1
-      required_signers: [ $owner_ctx.account_address ]
-      executor_accounts: [ $member_ctx.account_address ]
+      required_signers: [ $owner_self_ctx.default_wallet_id ]
+      executor_accounts: [ $member_ctx.default_wallet_id ]
       allowed_operations: [ send ]
       requirements:
-        - { source: 0, denomination: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "0", hi: "1000000000000000000000000000" }
+        - { source: 0, denomination: aud-token-asset, lo: "0", hi: "1000000000000000000000000000" }
       idempotency_key: cmp-9010-bad-$(date +%s)
       expect_failure: true
       expect_error: "GROUP accounts"
@@ -558,17 +562,17 @@ commands:
     type: add_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
+      account_address: $owner_ctx.default_wallet_id
       wallet_id: $owner_ctx.default_wallet_id
-      policy_id: "9011"
+      policy_id: "$(cat /tmp/yf_cmp_nonce)11"
       expiry: "$(date -v+365d +%s)"
       max_use: "5"
       min_signatories: 1
-      required_signers: [ $owner_ctx.account_address ]
-      executor_accounts: [ $member_ctx.account_address ]
+      required_signers: [ $owner_self_ctx.default_wallet_id ]
+      executor_accounts: [ $member_ctx.default_wallet_id ]
       allowed_operations: [ send ]
       requirements:
-        - { source: 1, target: "0x59b670e9fA9D0A427751Af201D676719a970857b", threshold: "0" }   # zero threshold ⇒ rejected
+        - { source: 1, target: aud-token-asset, threshold: "0" }   # zero threshold ⇒ rejected
       idempotency_key: cmp-9011-bad-$(date +%s)
       expect_failure: true
       # Caught on-chain at registration (addPolicyMetaWithData), not the resolver: the fail-closed

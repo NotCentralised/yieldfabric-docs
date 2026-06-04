@@ -28,15 +28,15 @@
 #                                          InvalidDataRequirement. A from-scratch violating policy still
 #                                          can't register — caught ON-CHAIN, not in the off-chain derive.
 #    • credential DRIFTS out of range     → registration succeeded (satisfied then); at execution the
-#      after a satisfying registration         witness over the LIVE credential is again zeroed, now
-#      (the "DEAD POLICY" path)                MISMATCHING the frozen valid commitment ⇒ ThresholdMismatch.
+#      after a satisfying registration         witness over the LIVE credential is ENTIRELY zeroed, so the
+#      (the "DEAD POLICY" path)                idHash check (first in _checkOracle) fails ⇒ StoredHashMismatch.
 #                                          Recoverable by re-committing a satisfying value.
 #    • no committed document              → server-derive can't read it ⇒ "has no committed document"
 #
 #  DEAD POLICY = a registered+approved policy that can't execute because its credential doesn't satisfy
 #  the frozen constraint. A from-scratch violating policy is rejected ON-CHAIN at registration
 #  (InvalidDataRequirement — the derived commitment is zeroed), so a dead policy only arises via credential
-#  DRIFT (section E: satisfied at registration, later out of range ⇒ ThresholdMismatch at execution) or an
+#  DRIFT (section E: satisfied at registration, later out of range ⇒ StoredHashMismatch at execution) or an
 #  explicit constraint_commitment that bypasses the derive. Fail-closed (denies, never wrongly allows), revivable.
 #
 #  INCLUSIVE BOUNDS: [L,U] include both ends (DataVerifier.circom GreaterEqThan/LessEqThan) — value==L
@@ -45,6 +45,10 @@
 #  Parties (seeded SuperAdmins; setup.yaml): issuer = group owner (registers + approves); collateral =
 #  restricted policymember = EXECUTOR. AUD token: 0x59b670e9fA9D0A427751Af201D676719a970857b.
 #  Doc keys 94xx, policy IDs 95xx (kept distinct to avoid confusion).
+#  RE-RUNNABLE: policy IDs are per-run-unique — fund_owner_aud writes a run nonce (date +%s) to
+#  /tmp/yf_orc_nonce, and each policy_id is "$(cat /tmp/yf_orc_nonce)<NN>". Re-running on the SAME deploy
+#  never hits PolicyIdAlreadyExists (the on-chain registry dedups IDs). Doc keys (94xx) stay fixed —
+#  commit_oracle_document upserts by key, so they don't collide. (A fresh deploy works too.)
 # ════════════════════════════════════════════════════════════════════════════
 
 commands:
@@ -58,10 +62,14 @@ commands:
     type: whoami
     user: { id: collateral@yieldfabric.com, password: collateral_password }
 
+  - name: owner_self_ctx          # issuer's OWN wallet id — owner_ctx acts as the group (so its
+    type: whoami                  # default_wallet_id is the GROUP's); required_signers needs the issuer
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+
   - name: fund_owner_aud
     type: deposit
     user: { id: issuer@yieldfabric.com, password: issuer_password }
-    parameters: { asset_id: aud-token-asset, amount: 1000000000000000000000, idempotency_key: orc-fund-owner-$(date +%s) }
+    parameters: { asset_id: aud-token-asset, amount: 1000000000000000000000, idempotency_key: orc-fund-owner-$(date +%s | tee /tmp/yf_orc_nonce) }
 
   - name: fund_group_send
     type: instant
@@ -78,26 +86,26 @@ commands:
   - name: a_commit                # credential {"score":750}
     type: commit_oracle_document
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
-    parameters: { account_address: $owner_ctx.group_account_address, key: "9400", value: "750", document_json: '{"score": 750}', idempotency_key: orc-a-commit-$(date +%s) }
+    parameters: { obligor: $owner_ctx.default_wallet_id, key: "9400", document_json: '{"score": 750}', idempotency_key: orc-a-commit-$(date +%s) }
 
   - name: a_add                   # constraint score ∈ [700,1000]; 750 satisfies ⇒ server-derive succeeds
     type: add_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
+      account: $owner_ctx.default_wallet_id
       wallet_id: $owner_ctx.default_wallet_id
-      policy_id: "9500"
+      policy_id: "$(cat /tmp/yf_orc_nonce)00"
       expiry: "$(date -v+365d +%s)"
       max_use: "10"
       min_signatories: 1
-      required_signers: [ $owner_ctx.account_address ]
-      executor_accounts: [ $member_ctx.account_address ]
+      required_signers: [ $owner_self_ctx.default_wallet_id ]
+      executor_accounts: [ $member_ctx.default_wallet_id ]
       allowed_operations: [ send ]
       amount_bounds:
-        - { token: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "0", hi: "500000000000000000000" }
+        - { token: aud-token-asset, lo: "0", hi: "500000000000000000000" }
       requirements:
         - source: 3
-          obligor: $owner_ctx.group_account_address
+          obligor: $owner_ctx.default_wallet_id
           token_id: "9400"
           oracle_query: '{"constraints": {"score": {"min": 700, "max": 1000}}}'
       idempotency_key: orc-9500-add-$(date +%s)
@@ -105,41 +113,41 @@ commands:
   - name: a_approve
     type: approve_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password }
-    parameters: { account_address: $owner_ctx.group_account_address, policy_id: "9500" }
+    parameters: { account: $owner_ctx.default_wallet_id, policy_id: "$(cat /tmp/yf_orc_nonce)00" }
 
   - name: a_execute               # 750 ∈ [700,1000] ⇒ executes (a REAL constraint, not a vacuous disclosure)
     type: execute_under_policy
     user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
-      policy_id: "9500"
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_orc_nonce)00"
       operation_type: Send
-      operation_data: { token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b", destination_id: collateral@yieldfabric.com, amount: "100000000000000000000" }
+      operation_data: { token_address: aud-token-asset, destination_id: collateral@yieldfabric.com, amount: "100000000000000000000" }
       idempotency_key: orc-9500-exec-$(date +%s)
 
   - name: alo_commit              # credential {"score":700} — exactly the lower bound
     type: commit_oracle_document
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
-    parameters: { account_address: $owner_ctx.group_account_address, key: "9401", value: "700", document_json: '{"score": 700}', idempotency_key: orc-alo-commit-$(date +%s) }
+    parameters: { obligor: $owner_ctx.default_wallet_id, key: "9401", document_json: '{"score": 700}', idempotency_key: orc-alo-commit-$(date +%s) }
 
   - name: alo_add                 # [700,1000]; value==min must satisfy (inclusive)
     type: add_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
+      account: $owner_ctx.default_wallet_id
       wallet_id: $owner_ctx.default_wallet_id
-      policy_id: "9501"
+      policy_id: "$(cat /tmp/yf_orc_nonce)01"
       expiry: "$(date -v+365d +%s)"
       max_use: "5"
       min_signatories: 1
-      required_signers: [ $owner_ctx.account_address ]
-      executor_accounts: [ $member_ctx.account_address ]
+      required_signers: [ $owner_self_ctx.default_wallet_id ]
+      executor_accounts: [ $member_ctx.default_wallet_id ]
       allowed_operations: [ send ]
       amount_bounds:
-        - { token: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "0", hi: "500000000000000000000" }
+        - { token: aud-token-asset, lo: "0", hi: "500000000000000000000" }
       requirements:
         - source: 3
-          obligor: $owner_ctx.group_account_address
+          obligor: $owner_ctx.default_wallet_id
           token_id: "9401"
           oracle_query: '{"constraints": {"score": {"min": 700, "max": 1000}}}'
       idempotency_key: orc-9501-add-$(date +%s)
@@ -147,41 +155,41 @@ commands:
   - name: alo_approve
     type: approve_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password }
-    parameters: { account_address: $owner_ctx.group_account_address, policy_id: "9501" }
+    parameters: { account: $owner_ctx.default_wallet_id, policy_id: "$(cat /tmp/yf_orc_nonce)01" }
 
   - name: alo_execute             # 700 == min ⇒ inclusive ⇒ executes
     type: execute_under_policy
     user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
-      policy_id: "9501"
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_orc_nonce)01"
       operation_type: Send
-      operation_data: { token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b", destination_id: collateral@yieldfabric.com, amount: "100000000000000000000" }
+      operation_data: { token_address: aud-token-asset, destination_id: collateral@yieldfabric.com, amount: "100000000000000000000" }
       idempotency_key: orc-9501-exec-$(date +%s)
 
   - name: ahi_commit              # credential {"score":1000} — exactly the upper bound
     type: commit_oracle_document
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
-    parameters: { account_address: $owner_ctx.group_account_address, key: "9402", value: "1000", document_json: '{"score": 1000}', idempotency_key: orc-ahi-commit-$(date +%s) }
+    parameters: { obligor: $owner_ctx.default_wallet_id, key: "9402", document_json: '{"score": 1000}', idempotency_key: orc-ahi-commit-$(date +%s) }
 
   - name: ahi_add
     type: add_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
+      account: $owner_ctx.default_wallet_id
       wallet_id: $owner_ctx.default_wallet_id
-      policy_id: "9502"
+      policy_id: "$(cat /tmp/yf_orc_nonce)02"
       expiry: "$(date -v+365d +%s)"
       max_use: "5"
       min_signatories: 1
-      required_signers: [ $owner_ctx.account_address ]
-      executor_accounts: [ $member_ctx.account_address ]
+      required_signers: [ $owner_self_ctx.default_wallet_id ]
+      executor_accounts: [ $member_ctx.default_wallet_id ]
       allowed_operations: [ send ]
       amount_bounds:
-        - { token: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "0", hi: "500000000000000000000" }
+        - { token: aud-token-asset, lo: "0", hi: "500000000000000000000" }
       requirements:
         - source: 3
-          obligor: $owner_ctx.group_account_address
+          obligor: $owner_ctx.default_wallet_id
           token_id: "9402"
           oracle_query: '{"constraints": {"score": {"min": 700, "max": 1000}}}'
       idempotency_key: orc-9502-add-$(date +%s)
@@ -189,16 +197,16 @@ commands:
   - name: ahi_approve
     type: approve_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password }
-    parameters: { account_address: $owner_ctx.group_account_address, policy_id: "9502" }
+    parameters: { account: $owner_ctx.default_wallet_id, policy_id: "$(cat /tmp/yf_orc_nonce)02" }
 
   - name: ahi_execute             # 1000 == max ⇒ inclusive ⇒ executes
     type: execute_under_policy
     user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
-      policy_id: "9502"
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_orc_nonce)02"
       operation_type: Send
-      operation_data: { token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b", destination_id: collateral@yieldfabric.com, amount: "100000000000000000000" }
+      operation_data: { token_address: aud-token-asset, destination_id: collateral@yieldfabric.com, amount: "100000000000000000000" }
       idempotency_key: orc-9502-exec-$(date +%s)
 
 
@@ -209,18 +217,18 @@ commands:
     type: add_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
+      account: $owner_ctx.default_wallet_id
       wallet_id: $owner_ctx.default_wallet_id
-      policy_id: "9510"
+      policy_id: "$(cat /tmp/yf_orc_nonce)10"
       expiry: "$(date -v+365d +%s)"
       max_use: "5"
       min_signatories: 1
-      required_signers: [ $owner_ctx.account_address ]
-      executor_accounts: [ $member_ctx.account_address ]
+      required_signers: [ $owner_self_ctx.default_wallet_id ]
+      executor_accounts: [ $member_ctx.default_wallet_id ]
       allowed_operations: [ send ]
       requirements:
         - source: 3
-          obligor: $owner_ctx.group_account_address
+          obligor: $owner_ctx.default_wallet_id
           token_id: "9400"
           oracle_query: '{"constraints": {"score": {"min": 800, "max": 1000}}}'
       idempotency_key: orc-9510-bad-$(date +%s)
@@ -231,18 +239,18 @@ commands:
     type: add_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
+      account: $owner_ctx.default_wallet_id
       wallet_id: $owner_ctx.default_wallet_id
-      policy_id: "9511"
+      policy_id: "$(cat /tmp/yf_orc_nonce)11"
       expiry: "$(date -v+365d +%s)"
       max_use: "5"
       min_signatories: 1
-      required_signers: [ $owner_ctx.account_address ]
-      executor_accounts: [ $member_ctx.account_address ]
+      required_signers: [ $owner_self_ctx.default_wallet_id ]
+      executor_accounts: [ $member_ctx.default_wallet_id ]
       allowed_operations: [ send ]
       requirements:
         - source: 3
-          obligor: $owner_ctx.group_account_address
+          obligor: $owner_ctx.default_wallet_id
           token_id: "9400"
           oracle_query: '{"constraints": {"score": {"min": 100, "max": 500}}}'
       idempotency_key: orc-9511-bad-$(date +%s)
@@ -254,26 +262,26 @@ commands:
   - name: c_commit                # rich credential: two numeric fields + a disclosed string
     type: commit_oracle_document
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
-    parameters: { account_address: $owner_ctx.group_account_address, key: "9410", value: "750", document_json: '{"score": 750, "income": 90000, "name": "Acme"}', idempotency_key: orc-c-commit-$(date +%s) }
+    parameters: { obligor: $owner_ctx.default_wallet_id, key: "9410", document_json: '{"score": 750, "income": 90000, "name": "Acme"}', idempotency_key: orc-c-commit-$(date +%s) }
 
   - name: c_both_add              # BOTH score ∈ [700,800] AND income ∈ [50000,200000] hold
     type: add_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
+      account: $owner_ctx.default_wallet_id
       wallet_id: $owner_ctx.default_wallet_id
-      policy_id: "9520"
+      policy_id: "$(cat /tmp/yf_orc_nonce)20"
       expiry: "$(date -v+365d +%s)"
       max_use: "5"
       min_signatories: 1
-      required_signers: [ $owner_ctx.account_address ]
-      executor_accounts: [ $member_ctx.account_address ]
+      required_signers: [ $owner_self_ctx.default_wallet_id ]
+      executor_accounts: [ $member_ctx.default_wallet_id ]
       allowed_operations: [ send ]
       amount_bounds:
-        - { token: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "0", hi: "500000000000000000000" }
+        - { token: aud-token-asset, lo: "0", hi: "500000000000000000000" }
       requirements:
         - source: 3
-          obligor: $owner_ctx.group_account_address
+          obligor: $owner_ctx.default_wallet_id
           token_id: "9410"
           oracle_query: '{"constraints": {"score": {"min": 700, "max": 800}, "income": {"min": 50000, "max": 200000}}}'
       idempotency_key: orc-9520-add-$(date +%s)
@@ -281,34 +289,34 @@ commands:
   - name: c_both_approve
     type: approve_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password }
-    parameters: { account_address: $owner_ctx.group_account_address, policy_id: "9520" }
+    parameters: { account: $owner_ctx.default_wallet_id, policy_id: "$(cat /tmp/yf_orc_nonce)20" }
 
   - name: c_both_execute          # both constraints satisfied ⇒ executes
     type: execute_under_policy
     user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
-      policy_id: "9520"
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_orc_nonce)20"
       operation_type: Send
-      operation_data: { token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b", destination_id: collateral@yieldfabric.com, amount: "100000000000000000000" }
+      operation_data: { token_address: aud-token-asset, destination_id: collateral@yieldfabric.com, amount: "100000000000000000000" }
       idempotency_key: orc-9520-exec-$(date +%s)
 
   - name: c_one_violated_add      # score holds but income ∉ [100000,200000] (90000 < 100000) ⇒ AND fails
     type: add_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
+      account: $owner_ctx.default_wallet_id
       wallet_id: $owner_ctx.default_wallet_id
-      policy_id: "9521"
+      policy_id: "$(cat /tmp/yf_orc_nonce)21"
       expiry: "$(date -v+365d +%s)"
       max_use: "5"
       min_signatories: 1
-      required_signers: [ $owner_ctx.account_address ]
-      executor_accounts: [ $member_ctx.account_address ]
+      required_signers: [ $owner_self_ctx.default_wallet_id ]
+      executor_accounts: [ $member_ctx.default_wallet_id ]
       allowed_operations: [ send ]
       requirements:
         - source: 3
-          obligor: $owner_ctx.group_account_address
+          obligor: $owner_ctx.default_wallet_id
           token_id: "9410"
           oracle_query: '{"constraints": {"score": {"min": 700, "max": 800}, "income": {"min": 100000, "max": 200000}}}'
       idempotency_key: orc-9521-bad-$(date +%s)
@@ -322,20 +330,20 @@ commands:
     type: add_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
+      account: $owner_ctx.default_wallet_id
       wallet_id: $owner_ctx.default_wallet_id
-      policy_id: "9530"
+      policy_id: "$(cat /tmp/yf_orc_nonce)30"
       expiry: "$(date -v+365d +%s)"
       max_use: "5"
       min_signatories: 1
-      required_signers: [ $owner_ctx.account_address ]
-      executor_accounts: [ $member_ctx.account_address ]
+      required_signers: [ $owner_self_ctx.default_wallet_id ]
+      executor_accounts: [ $member_ctx.default_wallet_id ]
       allowed_operations: [ send ]
       amount_bounds:
-        - { token: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "0", hi: "500000000000000000000" }
+        - { token: aud-token-asset, lo: "0", hi: "500000000000000000000" }
       requirements:
         - source: 3
-          obligor: $owner_ctx.group_account_address
+          obligor: $owner_ctx.default_wallet_id
           token_id: "9410"
           oracle_query: '{"fields": ["name"], "constraints": {"score": {"min": 700, "max": 800}}}'
       idempotency_key: orc-9530-add-$(date +%s)
@@ -343,16 +351,16 @@ commands:
   - name: d_approve
     type: approve_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password }
-    parameters: { account_address: $owner_ctx.group_account_address, policy_id: "9530" }
+    parameters: { account: $owner_ctx.default_wallet_id, policy_id: "$(cat /tmp/yf_orc_nonce)30" }
 
   - name: d_execute               # score 750 ∈ [700,800] (name merely disclosed) ⇒ executes
     type: execute_under_policy
     user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
-      policy_id: "9530"
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_orc_nonce)30"
       operation_type: Send
-      operation_data: { token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b", destination_id: collateral@yieldfabric.com, amount: "100000000000000000000" }
+      operation_data: { token_address: aud-token-asset, destination_id: collateral@yieldfabric.com, amount: "100000000000000000000" }
       idempotency_key: orc-9530-exec-$(date +%s)
 
 
@@ -362,26 +370,26 @@ commands:
   - name: e_commit                # {"score":750} — satisfies the [700,1000] constraint at registration
     type: commit_oracle_document
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
-    parameters: { account_address: $owner_ctx.group_account_address, key: "9420", value: "750", document_json: '{"score": 750}', idempotency_key: orc-e-commit-$(date +%s) }
+    parameters: { obligor: $owner_ctx.default_wallet_id, key: "9420", document_json: '{"score": 750}', idempotency_key: orc-e-commit-$(date +%s) }
 
   - name: e_add                   # 750 ∈ [700,1000] ⇒ server-derive succeeds ⇒ registration succeeds
     type: add_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
+      account: $owner_ctx.default_wallet_id
       wallet_id: $owner_ctx.default_wallet_id
-      policy_id: "9540"
+      policy_id: "$(cat /tmp/yf_orc_nonce)40"
       expiry: "$(date -v+365d +%s)"
       max_use: "5"
       min_signatories: 1
-      required_signers: [ $owner_ctx.account_address ]
-      executor_accounts: [ $member_ctx.account_address ]
+      required_signers: [ $owner_self_ctx.default_wallet_id ]
+      executor_accounts: [ $member_ctx.default_wallet_id ]
       allowed_operations: [ send ]
       amount_bounds:
-        - { token: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "0", hi: "500000000000000000000" }
+        - { token: aud-token-asset, lo: "0", hi: "500000000000000000000" }
       requirements:
         - source: 3
-          obligor: $owner_ctx.group_account_address
+          obligor: $owner_ctx.default_wallet_id
           token_id: "9420"
           oracle_query: '{"constraints": {"score": {"min": 700, "max": 1000}}}'
       idempotency_key: orc-9540-add-$(date +%s)
@@ -389,63 +397,63 @@ commands:
   - name: e_approve
     type: approve_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password }
-    parameters: { account_address: $owner_ctx.group_account_address, policy_id: "9540" }
+    parameters: { account: $owner_ctx.default_wallet_id, policy_id: "$(cat /tmp/yf_orc_nonce)40" }
 
   - name: e_recommit_drift        # UPDATE the credential at key 9420 to 400 — now ∉ [700,1000] (the drift)
     type: commit_oracle_document
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
-    parameters: { account_address: $owner_ctx.group_account_address, key: "9420", value: "400", document_json: '{"score": 400}', idempotency_key: orc-e-recommit-$(date +%s) }
+    parameters: { obligor: $owner_ctx.default_wallet_id, key: "9420", document_json: '{"score": 400}', idempotency_key: orc-e-recommit-$(date +%s) }
 
   - name: e_execute_fails         # the now-dead policy: live credential 400 ∉ [700,1000] ⇒ proof unsatisfiable
     type: execute_under_policy
     user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
-      policy_id: "9540"
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_orc_nonce)40"
       operation_type: Send
-      operation_data: { token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b", destination_id: collateral@yieldfabric.com, amount: "100000000000000000000" }
+      operation_data: { token_address: aud-token-asset, destination_id: collateral@yieldfabric.com, amount: "100000000000000000000" }
       idempotency_key: orc-9540-bad-$(date +%s)
       expect_failure: true
-      # The drifted credential (400) yields a ZEROED vIdHash that MISMATCHES the frozen valid constraint
-      # commitment on-chain ⇒ expected ThresholdMismatch (the registration-time twins revert
-      # InvalidDataRequirement instead — at registration there is no frozen commitment to compare against).
-      # Left loose for the first run to confirm the exact selector; expect_failure still guards the worst
-      # case — a SUCCESS would mean the live re-check is not enforcing a drifted credential.
+      # CONFIRMED by run: a violating credential zeroes the WHOLE witness, so the idHash (input[0..1])
+      # check — FIRST in _checkOracle — fails before vIdHash is reached ⇒ StoredHashMismatch. (The
+      # registration-time twins revert InvalidDataRequirement instead: at registration only the zeroed
+      # vIdHash constraint_commitment is validated, there's no committed idHash to compare against yet.)
+      expect_error: "StoredHashMismatch"
 
 
   # ═══════════ F — MULTIPLE ORACLE REQUIREMENTS (two independent credentials) ═══════════
   - name: f_commit_score
     type: commit_oracle_document
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
-    parameters: { account_address: $owner_ctx.group_account_address, key: "9430", value: "750", document_json: '{"score": 750}', idempotency_key: orc-f-commit1-$(date +%s) }
+    parameters: { obligor: $owner_ctx.default_wallet_id, key: "9430", document_json: '{"score": 750}', idempotency_key: orc-f-commit1-$(date +%s) }
 
   - name: f_commit_rating
     type: commit_oracle_document
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
-    parameters: { account_address: $owner_ctx.group_account_address, key: "9431", value: "5", document_json: '{"rating": 5}', idempotency_key: orc-f-commit2-$(date +%s) }
+    parameters: { obligor: $owner_ctx.default_wallet_id, key: "9431", document_json: '{"rating": 5}', idempotency_key: orc-f-commit2-$(date +%s) }
 
   - name: f_both_add              # TWO source-3 requirements, each its own key — both proven at execution
     type: add_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
+      account: $owner_ctx.default_wallet_id
       wallet_id: $owner_ctx.default_wallet_id
-      policy_id: "9550"
+      policy_id: "$(cat /tmp/yf_orc_nonce)50"
       expiry: "$(date -v+365d +%s)"
       max_use: "5"
       min_signatories: 1
-      required_signers: [ $owner_ctx.account_address ]
-      executor_accounts: [ $member_ctx.account_address ]
+      required_signers: [ $owner_self_ctx.default_wallet_id ]
+      executor_accounts: [ $member_ctx.default_wallet_id ]
       allowed_operations: [ send ]
       amount_bounds:
-        - { token: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "0", hi: "500000000000000000000" }
+        - { token: aud-token-asset, lo: "0", hi: "500000000000000000000" }
       requirements:
         - source: 3
-          obligor: $owner_ctx.group_account_address
+          obligor: $owner_ctx.default_wallet_id
           token_id: "9430"
           oracle_query: '{"constraints": {"score": {"min": 700, "max": 1000}}}'
         - source: 3
-          obligor: $owner_ctx.group_account_address
+          obligor: $owner_ctx.default_wallet_id
           token_id: "9431"
           oracle_query: '{"constraints": {"rating": {"min": 1, "max": 10}}}'
       idempotency_key: orc-9550-add-$(date +%s)
@@ -453,38 +461,38 @@ commands:
   - name: f_both_approve
     type: approve_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password }
-    parameters: { account_address: $owner_ctx.group_account_address, policy_id: "9550" }
+    parameters: { account: $owner_ctx.default_wallet_id, policy_id: "$(cat /tmp/yf_orc_nonce)50" }
 
   - name: f_both_execute          # score 750 ∈ [700,1000] AND rating 5 ∈ [1,10] ⇒ executes
     type: execute_under_policy
     user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
-      policy_id: "9550"
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_orc_nonce)50"
       operation_type: Send
-      operation_data: { token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b", destination_id: collateral@yieldfabric.com, amount: "100000000000000000000" }
+      operation_data: { token_address: aud-token-asset, destination_id: collateral@yieldfabric.com, amount: "100000000000000000000" }
       idempotency_key: orc-9550-exec-$(date +%s)
 
   - name: f_one_violated_add      # rating constraint [6,10] but committed 5 ⇒ the SECOND requirement can't derive
     type: add_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
+      account: $owner_ctx.default_wallet_id
       wallet_id: $owner_ctx.default_wallet_id
-      policy_id: "9551"
+      policy_id: "$(cat /tmp/yf_orc_nonce)51"
       expiry: "$(date -v+365d +%s)"
       max_use: "5"
       min_signatories: 1
-      required_signers: [ $owner_ctx.account_address ]
-      executor_accounts: [ $member_ctx.account_address ]
+      required_signers: [ $owner_self_ctx.default_wallet_id ]
+      executor_accounts: [ $member_ctx.default_wallet_id ]
       allowed_operations: [ send ]
       requirements:
         - source: 3
-          obligor: $owner_ctx.group_account_address
+          obligor: $owner_ctx.default_wallet_id
           token_id: "9430"
           oracle_query: '{"constraints": {"score": {"min": 700, "max": 1000}}}'
         - source: 3
-          obligor: $owner_ctx.group_account_address
+          obligor: $owner_ctx.default_wallet_id
           token_id: "9431"
           oracle_query: '{"constraints": {"rating": {"min": 6, "max": 10}}}'
       idempotency_key: orc-9551-bad-$(date +%s)
@@ -497,20 +505,130 @@ commands:
     type: add_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
+      account: $owner_ctx.default_wallet_id
       wallet_id: $owner_ctx.default_wallet_id
-      policy_id: "9560"
+      policy_id: "$(cat /tmp/yf_orc_nonce)60"
       expiry: "$(date -v+365d +%s)"
       max_use: "5"
       min_signatories: 1
-      required_signers: [ $owner_ctx.account_address ]
-      executor_accounts: [ $member_ctx.account_address ]
+      required_signers: [ $owner_self_ctx.default_wallet_id ]
+      executor_accounts: [ $member_ctx.default_wallet_id ]
       allowed_operations: [ send ]
       requirements:
         - source: 3
-          obligor: $owner_ctx.group_account_address
+          obligor: $owner_ctx.default_wallet_id
           token_id: "9499"
           oracle_query: '{"constraints": {"score": {"min": 700, "max": 1000}}}'
       idempotency_key: orc-9560-bad-$(date +%s)
       expect_failure: true
       expect_error: "has no committed document"
+
+
+  # ═══════════ H — ISSUER SIGNATURE (requiredSigner): signed passes, wrong key rejected ═══════════
+  # On top of the ZK constraint, an Oracle requirement can demand the committed document be SIGNED by a
+  # specific issuer EOA (`required_signer`). `sign_oracle_document` fetches the message to sign (the keccak
+  # of the document's idHash, via oracleFlow.documentSignerMessage), EIP-191-signs it with the caller's
+  # server-custodied key (the SAME auth vault/sign path as approve_data_policy), and recovers the signer
+  # EOA so the policy can name it. RIGHT key (the issuer signs) ⇒ recoverDocumentSigner matches ⇒ executes;
+  # WRONG key (a different entity signs) ⇒ on-chain DocumentSignerMismatch. `required_signer == 0` (every
+  # section above) keeps the signature-less behaviour, so this is purely additive.
+
+  # ── RIGHT KEY: the issuer signs their own document ──
+  - name: h_sign_right
+    type: sign_oracle_document
+    user: { id: issuer@yieldfabric.com, password: issuer_password }   # signs with the issuer's own key
+    parameters: { document_json: '{"score": 750}' }
+
+  - name: h_commit_right
+    type: commit_oracle_document
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters: { obligor: $owner_ctx.default_wallet_id, key: "9700", document_json: '{"score": 750}', signature: $h_sign_right.signature, idempotency_key: orc-f-right-commit-$(date +%s) }
+
+  - name: h_add_right             # constraint score ∈ [700,1000] AND required_signer = the issuer's EOA
+    type: add_data_policy
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters:
+      account: $owner_ctx.default_wallet_id
+      wallet_id: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_orc_nonce)70"
+      expiry: "$(date -v+365d +%s)"
+      max_use: "10"
+      min_signatories: 1
+      required_signers: [ $owner_self_ctx.default_wallet_id ]
+      executor_accounts: [ $member_ctx.default_wallet_id ]
+      allowed_operations: [ send ]
+      amount_bounds:
+        - { token: aud-token-asset, lo: "0", hi: "500000000000000000000" }
+      requirements:
+        - source: 3
+          obligor: $owner_ctx.default_wallet_id
+          token_id: "9700"
+          oracle_query: '{"constraints": {"score": {"min": 700, "max": 1000}}}'
+          required_signer: $h_sign_right.signer_address      # the issuer EOA that signed the document
+      idempotency_key: orc-9700-add-$(date +%s)
+
+  - name: h_approve_right
+    type: approve_data_policy
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { account: $owner_ctx.default_wallet_id, policy_id: "$(cat /tmp/yf_orc_nonce)70" }
+
+  - name: h_execute_right         # signed by required_signer ⇒ recoverDocumentSigner matches ⇒ executes
+    type: execute_under_policy
+    user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
+    parameters:
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_orc_nonce)70"
+      operation_type: Send
+      operation_data: { token_address: aud-token-asset, destination_id: collateral@yieldfabric.com, amount: "100000000000000000000" }
+      idempotency_key: orc-9700-exec-$(date +%s)
+
+  # ── WRONG KEY: a different entity (collateral) signs; the policy still requires the issuer ──
+  - name: h_sign_wrong
+    type: sign_oracle_document
+    user: { id: collateral@yieldfabric.com, password: collateral_password }   # signs with the WRONG key
+    parameters: { document_json: '{"score": 750}' }
+
+  - name: h_commit_wrong
+    type: commit_oracle_document
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters: { obligor: $owner_ctx.default_wallet_id, key: "9701", document_json: '{"score": 750}', signature: $h_sign_wrong.signature, idempotency_key: orc-f-wrong-commit-$(date +%s) }
+
+  - name: h_add_wrong             # required_signer = the ISSUER's EOA — but the document was signed by collateral
+    type: add_data_policy
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters:
+      account: $owner_ctx.default_wallet_id
+      wallet_id: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_orc_nonce)71"
+      expiry: "$(date -v+365d +%s)"
+      max_use: "10"
+      min_signatories: 1
+      required_signers: [ $owner_self_ctx.default_wallet_id ]
+      executor_accounts: [ $member_ctx.default_wallet_id ]
+      allowed_operations: [ send ]
+      amount_bounds:
+        - { token: aud-token-asset, lo: "0", hi: "500000000000000000000" }
+      requirements:
+        - source: 3
+          obligor: $owner_ctx.default_wallet_id
+          token_id: "9701"
+          oracle_query: '{"constraints": {"score": {"min": 700, "max": 1000}}}'
+          required_signer: $h_sign_right.signer_address      # the ISSUER EOA (≠ the collateral signer at 9701)
+      idempotency_key: orc-9701-add-$(date +%s)
+
+  - name: h_approve_wrong
+    type: approve_data_policy
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { account: $owner_ctx.default_wallet_id, policy_id: "$(cat /tmp/yf_orc_nonce)71" }
+
+  - name: h_execute_wrong         # document signed by collateral, policy requires the issuer ⇒ on-chain rejects
+    type: execute_under_policy
+    user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
+    parameters:
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_orc_nonce)71"
+      operation_type: Send
+      operation_data: { token_address: aud-token-asset, destination_id: collateral@yieldfabric.com, amount: "100000000000000000000" }
+      idempotency_key: orc-9701-exec-$(date +%s)
+      expect_failure: true
+      expect_error: "DocumentSignerMismatch"

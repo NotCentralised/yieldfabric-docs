@@ -84,7 +84,7 @@ def test_add_data_policy_builds_camelcased_group_input(config, services):
     response = executor.execute(_command(
         "happy_add_policy", "add_data_policy",
         {
-            "account_address": "0xGROUP",
+            "account": "0xGROUP",
             "wallet_id": "wallet-uuid",
             "policy_id": "9001",
             "expiry": "12345",
@@ -103,7 +103,7 @@ def test_add_data_policy_builds_camelcased_group_input(config, services):
     mutation, variables = payments.graphql_mutation.call_args.args[0], payments.graphql_mutation.call_args.args[1]
     assert "pipelineGate" in mutation and "addDataPolicy" in mutation
     inp = variables["input"]
-    assert inp["accountAddress"] == "0xGROUP"
+    assert inp["account"] == "0xGROUP"
     assert inp["walletId"] == "wallet-uuid"
     assert inp["policyId"] == "9001"
     assert inp["minSignatories"] == 1
@@ -147,13 +147,13 @@ def test_execute_under_policy_serializes_operation_data(config, services):
     op_data = {"token_address": "0xAUD", "destination_id": "collateral@yieldfabric.com", "amount": "100"}
     response = executor.execute(_command(
         "happy_execute", "execute_under_policy",
-        {"account_address": "0xGROUP", "policy_id": "9001", "operation_type": "Send", "operation_data": op_data},
+        {"account": "0xGROUP", "policy_id": "9001", "operation_type": "Send", "operation_data": op_data},
         group="Issuer Group",
     ))
 
     assert response.success
     inp = payments.graphql_mutation.call_args.args[1]["input"]
-    assert inp["accountAddress"] == "0xGROUP"
+    assert inp["account"] == "0xGROUP"
     assert inp["policyId"] == "9001"
     assert inp["operationType"] == "Send"
     # operationData crosses the wire as a JSON string
@@ -183,7 +183,7 @@ def test_approve_data_policy_signs_via_auth_rest_api(config, services):
          patch("yieldfabric.executors.policy_executor.get_sub", return_value="issuer-uuid"):
         response = executor.execute(_command(
             "happy_approve", "approve_data_policy",
-            {"account_address": "0xGROUP", "policy_id": "9001"},
+            {"account": "0xGROUP", "policy_id": "9001"},
         ))
 
     assert response.success
@@ -219,7 +219,7 @@ def test_approve_data_policy_fails_when_signer_rejected(config, services):
          patch("yieldfabric.executors.policy_executor.get_sub", return_value="member-uuid"):
         response = executor.execute(_command(
             "member_approve", "approve_data_policy",
-            {"account_address": "0xGROUP", "policy_id": "9001"},
+            {"account": "0xGROUP", "policy_id": "9001"},
         ))
 
     assert not response.success
@@ -241,7 +241,7 @@ def test_add_data_policy_oracle_requirement_camelcased(config, services):
     response = executor.execute(_command(
         "oracle_add", "add_data_policy",
         {
-            "account_address": "0xGROUP", "wallet_id": "w", "policy_id": "9020",
+            "account": "0xGROUP", "wallet_id": "w", "policy_id": "9020",
             "expiry": "1", "max_use": "5", "min_signatories": 1,
             "required_signers": ["0xOWNER"], "executor_accounts": ["0xMEMBER"],
             "allowed_operations": ["send"],
@@ -279,14 +279,14 @@ def test_commit_oracle_document_builds_input(config, services):
     executor = PolicyExecutor(auth, payments, OutputStore(), config)
     response = executor.execute(_command(
         "o_commit", "commit_oracle_document",
-        {"account_address": "0xGROUP", "key": "credit-9020", "value": "750", "document_json": {"score": 750}},
+        {"obligor": "0xGROUP", "key": "credit-9020", "value": "750", "document_json": {"score": 750}},
         group="Issuer Group",
     ))
     assert response.success
     mutation, variables = payments.graphql_mutation.call_args.args[0], payments.graphql_mutation.call_args.args[1]
     assert "commitOracleDocument" in mutation
     inp = variables["input"]
-    assert inp["accountAddress"] == "0xGROUP"
+    assert inp["obligor"] == "0xGROUP"
     assert inp["key"] == "credit-9020"
     assert inp["value"] == "750"
     # a YAML mapping document is normalised to a JSON string

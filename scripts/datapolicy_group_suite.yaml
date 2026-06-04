@@ -100,13 +100,17 @@ commands:
   # group account holds no ERC-20, so it can't `deposit` directly (deposit pulls ERC-20
   # from the caller). Fund the owner (who holds ERC-20), send to the group, and have the
   # group accept — the way nc_acacia moves assets into a group.
+  - name: owner_self_ctx          # issuer's OWN wallet id (owner_ctx acts as the group, so its
+    type: whoami                  # default_wallet_id is the GROUP's) — required_signers needs the issuer
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+
   - name: fund_owner_aud
     type: deposit
     user: { id: issuer@yieldfabric.com, password: issuer_password }   # as SELF — issuer holds ERC-20
     parameters:
       asset_id: aud-token-asset
       amount: 1000000000000000000000
-      idempotency_key: dp-fund-owner-$(date +%s)
+      idempotency_key: dp-fund-owner-$(date +%s | tee /tmp/yf_grp_nonce)
 
   - name: fund_group_send
     type: instant
@@ -139,24 +143,24 @@ commands:
     type: add_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
+      account: $owner_ctx.default_wallet_id
       wallet_id: $owner_ctx.default_wallet_id
-      policy_id: "9001"
+      policy_id: "$(cat /tmp/yf_grp_nonce)01"
       expiry: "$(date -v+365d +%s)"
       max_use: "5"
       min_signatories: 1
-      required_signers: [ $owner_ctx.account_address ]   # the OWNER (issuer) approves — its sig authorizes the policy (like granting NFT membership)
+      required_signers: [ $owner_self_ctx.default_wallet_id ]   # the OWNER (issuer) approves — its sig authorizes the policy (like granting NFT membership)
       # The EXECUTOR is the policy holder (collateral): its OWN account I is msg.sender of
       # executeUnderPolicy via relay → I.executeMultiMetaTransaction → G, checked by isPolicyCaller.
-      executor_accounts: [ $member_ctx.account_address ]
+      executor_accounts: [ $member_ctx.default_wallet_id ]
       allowed_operations: [ send ]
       amount_bounds:
-        - token: "0x59b670e9fA9D0A427751Af201D676719a970857b"   # ⚠️ AUD token (see header)
+        - token: aud-token-asset   # ⚠️ AUD token (see header)
           lo: "0"
           hi: "500000000000000000000"
       requirements:
         - source: 0                                              # PrivateVault (confidential balance)
-          denomination: "0x59b670e9fA9D0A427751Af201D676719a970857b"
+          denomination: aud-token-asset
           lo: "0"
           hi: "1000000000000000000000000000"
       idempotency_key: dp-9001-add-$(date +%s)
@@ -169,16 +173,16 @@ commands:
     type: approve_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password }
     parameters:
-      account_address: $owner_ctx.group_account_address
-      policy_id: "9001"
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_grp_nonce)01"
 
   # Read-back: the reusable approval is complete (1/1).
   - name: happy_approval_state
     type: data_policy_approval
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
-      policy_id: "9001"
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_grp_nonce)01"
 
   - name: happy_assert_approved
     type: assert
@@ -212,11 +216,11 @@ commands:
     type: execute_under_policy
     user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
-      policy_id: "9001"
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_grp_nonce)01"
       operation_type: Send
       operation_data:
-        token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b"
+        token_address: aud-token-asset
         destination_id: collateral@yieldfabric.com
         amount: "100000000000000000000"
       idempotency_key: dp-9001-exec-$(date +%s)
@@ -264,30 +268,30 @@ commands:
     type: add_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
+      account: $owner_ctx.default_wallet_id
       wallet_id: $owner_ctx.default_wallet_id
-      policy_id: "9011"
+      policy_id: "$(cat /tmp/yf_grp_nonce)11"
       expiry: "$(date -v+365d +%s)"
       max_use: "5"
       min_signatories: 1
-      required_signers: [ $owner_ctx.account_address ]
-      executor_accounts: [ $member_ctx.account_address ]   # collateral = policy holder / executor (its account I is msg.sender at G via relay→I→G)
+      required_signers: [ $owner_self_ctx.default_wallet_id ]
+      executor_accounts: [ $member_ctx.default_wallet_id ]   # collateral = policy holder / executor (its account I is msg.sender at G via relay→I→G)
       allowed_operations: [ send ]
       amount_bounds:
-        - { token: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "0", hi: "500000000000000000000" }
+        - { token: aud-token-asset, lo: "0", hi: "500000000000000000000" }
       requirements:
-        - { source: 0, denomination: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "0", hi: "1000000000000000000000000000" }
+        - { source: 0, denomination: aud-token-asset, lo: "0", hi: "1000000000000000000000000000" }
       idempotency_key: dp-9011-add-$(date +%s)
 
   - name: a_execute_before_approval_fails
     type: execute_under_policy
     user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
-      policy_id: "9011"
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_grp_nonce)11"
       operation_type: Send
       operation_data:
-        token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b"
+        token_address: aud-token-asset
         destination_id: collateral@yieldfabric.com
         amount: "100000000000000000000"
       idempotency_key: dp-9011-exec-bad-$(date +%s)
@@ -302,8 +306,8 @@ commands:
     type: approve_data_policy
     user: { id: collateral@yieldfabric.com, password: collateral_password }
     parameters:
-      account_address: $owner_ctx.group_account_address
-      policy_id: "9001"
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_grp_nonce)01"
       expect_failure: true
       expect_error: "caller set"
 
@@ -316,11 +320,11 @@ commands:
     type: execute_under_policy
     user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
-      policy_id: "9001"
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_grp_nonce)01"
       operation_type: Send
       operation_data:
-        token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b"
+        token_address: aud-token-asset
         destination_id: collateral@yieldfabric.com
         amount: "600000000000000000000"
       idempotency_key: dp-9001-exec-over-bad-$(date +%s)
@@ -338,11 +342,11 @@ commands:
     type: execute_under_policy
     user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
-      policy_id: "9001"
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_grp_nonce)01"
       operation_type: Withdraw
       operation_data:
-        token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b"
+        token_address: aud-token-asset
         amount: "100000000000000000000"
         obligor: "0x0000000000000000000000000000000000000000"
         treasurer_secret: ""
@@ -359,37 +363,37 @@ commands:
     type: add_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
+      account: $owner_ctx.default_wallet_id
       wallet_id: $owner_ctx.default_wallet_id
-      policy_id: "9012"
+      policy_id: "$(cat /tmp/yf_grp_nonce)12"
       expiry: "$(date -v+365d +%s)"
       max_use: "1"
       min_signatories: 1
-      required_signers: [ $owner_ctx.account_address ]
-      executor_accounts: [ $member_ctx.account_address ]   # collateral = policy holder / executor (its account I is msg.sender at G via relay→I→G)
+      required_signers: [ $owner_self_ctx.default_wallet_id ]
+      executor_accounts: [ $member_ctx.default_wallet_id ]   # collateral = policy holder / executor (its account I is msg.sender at G via relay→I→G)
       allowed_operations: [ send ]
       amount_bounds:
-        - { token: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "0", hi: "500000000000000000000" }
+        - { token: aud-token-asset, lo: "0", hi: "500000000000000000000" }
       requirements:
-        - { source: 0, denomination: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "0", hi: "1000000000000000000000000000" }
+        - { source: 0, denomination: aud-token-asset, lo: "0", hi: "1000000000000000000000000000" }
       idempotency_key: dp-9012-add-$(date +%s)
 
   - name: f_approve_capped
     type: approve_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password }
     parameters:
-      account_address: $owner_ctx.group_account_address
-      policy_id: "9012"
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_grp_nonce)12"
 
   - name: f_execute_first_ok
     type: execute_under_policy
     user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
-      policy_id: "9012"
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_grp_nonce)12"
       operation_type: Send
       operation_data:
-        token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b"
+        token_address: aud-token-asset
         destination_id: collateral@yieldfabric.com
         amount: "100000000000000000000"
       idempotency_key: dp-9012-exec1-$(date +%s)
@@ -398,11 +402,11 @@ commands:
     type: execute_under_policy
     user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
-      policy_id: "9012"
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_grp_nonce)12"
       operation_type: Send
       operation_data:
-        token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b"
+        token_address: aud-token-asset
         destination_id: collateral@yieldfabric.com
         amount: "100000000000000000000"
       idempotency_key: dp-9012-exec2-bad-$(date +%s)
@@ -414,38 +418,38 @@ commands:
     type: add_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
+      account: $owner_ctx.default_wallet_id
       wallet_id: $owner_ctx.default_wallet_id
-      policy_id: "9013"
+      policy_id: "$(cat /tmp/yf_grp_nonce)13"
       start: "$(date -v+365d +%s)"
       expiry: "$(date -v+730d +%s)"
       max_use: "5"
       min_signatories: 1
-      required_signers: [ $owner_ctx.account_address ]
-      executor_accounts: [ $member_ctx.account_address ]   # collateral = policy holder / executor (its account I is msg.sender at G via relay→I→G)
+      required_signers: [ $owner_self_ctx.default_wallet_id ]
+      executor_accounts: [ $member_ctx.default_wallet_id ]   # collateral = policy holder / executor (its account I is msg.sender at G via relay→I→G)
       allowed_operations: [ send ]
       amount_bounds:
-        - { token: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "0", hi: "500000000000000000000" }
+        - { token: aud-token-asset, lo: "0", hi: "500000000000000000000" }
       requirements:
-        - { source: 0, denomination: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "0", hi: "1000000000000000000000000000" }
+        - { source: 0, denomination: aud-token-asset, lo: "0", hi: "1000000000000000000000000000" }
       idempotency_key: dp-9013-add-$(date +%s)
 
   - name: g_approve_future
     type: approve_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password }
     parameters:
-      account_address: $owner_ctx.group_account_address
-      policy_id: "9013"
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_grp_nonce)13"
 
   - name: g_execute_not_started_fails
     type: execute_under_policy
     user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
-      policy_id: "9013"
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_grp_nonce)13"
       operation_type: Send
       operation_data:
-        token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b"
+        token_address: aud-token-asset
         destination_id: collateral@yieldfabric.com
         amount: "100000000000000000000"
       idempotency_key: dp-9013-exec-bad-$(date +%s)
@@ -457,21 +461,21 @@ commands:
     type: add_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
+      account: $owner_ctx.default_wallet_id
       wallet_id: $owner_ctx.default_wallet_id
-      policy_id: "9014"
+      policy_id: "$(cat /tmp/yf_grp_nonce)14"
       expiry: "$(date -v+365d +%s)"
       max_use: "5"
       min_signatories: 1
-      required_signers: [ $owner_ctx.account_address ]
-      executor_accounts: [ $member_ctx.account_address ]   # collateral = policy holder / executor (its account I is msg.sender at G via relay→I→G)
+      required_signers: [ $owner_self_ctx.default_wallet_id ]
+      executor_accounts: [ $member_ctx.default_wallet_id ]   # collateral = policy holder / executor (its account I is msg.sender at G via relay→I→G)
       allowed_operations: [ send ]
       amount_bounds:
-        - { token: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "0", hi: "500000000000000000000" }
+        - { token: aud-token-asset, lo: "0", hi: "500000000000000000000" }
       requirements:
         # PublicBalance (source 1): require an absurd ERC-20 balance the account can't have.
         - source: 1
-          target: "0x59b670e9fA9D0A427751Af201D676719a970857b"
+          target: aud-token-asset
           threshold: "1000000000000000000000000000000000"
       idempotency_key: dp-9014-add-$(date +%s)
 
@@ -479,18 +483,18 @@ commands:
     type: approve_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password }
     parameters:
-      account_address: $owner_ctx.group_account_address
-      policy_id: "9014"
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_grp_nonce)14"
 
   - name: h_execute_requirement_unmet_fails
     type: execute_under_policy
     user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
-      policy_id: "9014"
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_grp_nonce)14"
       operation_type: Send
       operation_data:
-        token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b"
+        token_address: aud-token-asset
         destination_id: collateral@yieldfabric.com
         amount: "100000000000000000000"
       idempotency_key: dp-9014-exec-bad-$(date +%s)
@@ -502,17 +506,17 @@ commands:
     type: add_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password }   # NOTE: no `group:` → acts as self
     parameters:
-      account_address: $owner_ctx.group_account_address
+      account: $owner_ctx.default_wallet_id
       wallet_id: $owner_ctx.default_wallet_id
-      policy_id: "9015"
+      policy_id: "$(cat /tmp/yf_grp_nonce)15"
       expiry: "$(date -v+365d +%s)"
       max_use: "5"
       min_signatories: 1
-      required_signers: [ $owner_ctx.account_address ]
-      executor_accounts: [ $member_ctx.account_address ]   # collateral = policy holder / executor (its account I is msg.sender at G via relay→I→G)
+      required_signers: [ $owner_self_ctx.default_wallet_id ]
+      executor_accounts: [ $member_ctx.default_wallet_id ]   # collateral = policy holder / executor (its account I is msg.sender at G via relay→I→G)
       allowed_operations: [ send ]
       requirements:
-        - { source: 0, denomination: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "0", hi: "1000000000000000000000000000" }
+        - { source: 0, denomination: aud-token-asset, lo: "0", hi: "1000000000000000000000000000" }
       idempotency_key: dp-9015-add-bad-$(date +%s)
       expect_failure: true
       expect_error: "GROUP accounts"
@@ -528,9 +532,8 @@ commands:
     type: commit_oracle_document
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
+      obligor: $owner_ctx.default_wallet_id
       key: "9020"
-      value: "750"
       document_json: '{"score": 750}'
       idempotency_key: dp-oracle-commit-$(date +%s)
 
@@ -543,18 +546,18 @@ commands:
     type: add_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
+      account: $owner_ctx.default_wallet_id
       wallet_id: $owner_ctx.default_wallet_id
-      policy_id: "9020"
+      policy_id: "$(cat /tmp/yf_grp_nonce)20"
       expiry: "$(date -v+365d +%s)"
       max_use: "5"
       min_signatories: 1
-      required_signers: [ $owner_ctx.account_address ]
-      executor_accounts: [ $member_ctx.account_address ]   # collateral = policy holder / executor (its account I is msg.sender at G via relay→I→G)
+      required_signers: [ $owner_self_ctx.default_wallet_id ]
+      executor_accounts: [ $member_ctx.default_wallet_id ]   # collateral = policy holder / executor (its account I is msg.sender at G via relay→I→G)
       allowed_operations: [ send ]
       requirements:
         - source: 3
-          obligor: $owner_ctx.group_account_address   # the account that committed the document (O-commit)
+          obligor: $owner_ctx.default_wallet_id   # the account that committed the document (O-commit)
           token_id: "9020"
           # constraint_commitment OMITTED → derived server-side from oracle_query over the committed doc
           oracle_query: '{"score": [700, 1000000]}'   # the doc's score (750) is in [700, 1000000] ⇒ satisfied
@@ -564,18 +567,18 @@ commands:
     type: approve_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password }
     parameters:
-      account_address: $owner_ctx.group_account_address
-      policy_id: "9020"
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_grp_nonce)20"
 
   - name: ohappy_execute
     type: execute_under_policy
     user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
-      policy_id: "9020"
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_grp_nonce)20"
       operation_type: Send
       operation_data:
-        token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b"
+        token_address: aud-token-asset
         destination_id: collateral@yieldfabric.com
         amount: "100000000000000000000"
       idempotency_key: dp-9020-exec-$(date +%s)
@@ -588,20 +591,20 @@ commands:
     type: add_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
+      account: $owner_ctx.default_wallet_id
       wallet_id: $owner_ctx.default_wallet_id
-      policy_id: "9021"
+      policy_id: "$(cat /tmp/yf_grp_nonce)21"
       expiry: "$(date -v+365d +%s)"
       max_use: "5"
       min_signatories: 1
-      required_signers: [ $owner_ctx.account_address ]
-      executor_accounts: [ $member_ctx.account_address ]   # collateral = policy holder / executor (its account I is msg.sender at G via relay→I→G)
+      required_signers: [ $owner_self_ctx.default_wallet_id ]
+      executor_accounts: [ $member_ctx.default_wallet_id ]   # collateral = policy holder / executor (its account I is msg.sender at G via relay→I→G)
       allowed_operations: [ send ]
       amount_bounds:
-        - { token: "0x59b670e9fA9D0A427751Af201D676719a970857b", lo: "0", hi: "500000000000000000000" }
+        - { token: aud-token-asset, lo: "0", hi: "500000000000000000000" }
       requirements:
         - source: 3                                  # Oracle
-          obligor: $owner_ctx.group_account_address  # the committing account getCommitment reads
+          obligor: $owner_ctx.default_wallet_id  # the committing account getCommitment reads
           token_id: "9021"    # a numeric key with NO committed document
           constraint_commitment: [ "1", "1" ]        # explicit ⇒ skips server-derive; execute hits the no-doc gate
           oracle_query: '{"score": [700, 1000000]}'
@@ -611,18 +614,18 @@ commands:
     type: approve_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password }
     parameters:
-      account_address: $owner_ctx.group_account_address
-      policy_id: "9021"
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_grp_nonce)21"
 
   - name: o1_execute_nodoc_fails
     type: execute_under_policy
     user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
-      policy_id: "9021"
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_grp_nonce)21"
       operation_type: Send
       operation_data:
-        token_address: "0x59b670e9fA9D0A427751Af201D676719a970857b"
+        token_address: aud-token-asset
         destination_id: collateral@yieldfabric.com
         amount: "100000000000000000000"
       idempotency_key: dp-9021-exec-bad-$(date +%s)
@@ -636,18 +639,18 @@ commands:
     type: add_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
     parameters:
-      account_address: $owner_ctx.group_account_address
+      account: $owner_ctx.default_wallet_id
       wallet_id: $owner_ctx.default_wallet_id
-      policy_id: "9022"
+      policy_id: "$(cat /tmp/yf_grp_nonce)22"
       expiry: "$(date -v+365d +%s)"
       max_use: "5"
       min_signatories: 1
-      required_signers: [ $owner_ctx.account_address ]
-      executor_accounts: [ $member_ctx.account_address ]   # collateral = policy holder / executor (its account I is msg.sender at G via relay→I→G)
+      required_signers: [ $owner_self_ctx.default_wallet_id ]
+      executor_accounts: [ $member_ctx.default_wallet_id ]   # collateral = policy holder / executor (its account I is msg.sender at G via relay→I→G)
       allowed_operations: [ send ]
       requirements:
         - source: 3
-          obligor: $owner_ctx.group_account_address
+          obligor: $owner_ctx.default_wallet_id
           token_id: "9022"    # numeric key, never committed → server-derive has no document
           oracle_query: '{"score": [700, 1000000]}'
           # constraint_commitment OMITTED → server-derive reads the doc → none → fails fast at registration

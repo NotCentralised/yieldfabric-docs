@@ -1,0 +1,558 @@
+# ════════════════════════════════════════════════════════════════════════════
+#  DATA / ORACLE POLICY — VALUE-CONSERVATION SUITE  (financial-grade)
+# ════════════════════════════════════════════════════════════════════════════
+#
+#  Runs against the LIVE runtime via the Python harness:
+#    python -m yieldfabric.cli execute scripts/datapolicy_conservation_suite.yaml
+#  Fresh deploy or same deploy (re-runnable — per-run-unique policy ids). continue_on_error: true
+#  to collect everything in one pass.
+#
+#  WHY THIS EXISTS — the other datapolicy suites verify the policy GATE (who may do what, and which
+#  denial fires where). This one verifies the MONEY: that a permitted op moves EXACTLY the right amount
+#  with two-sided conservation, and a DENIED op moves ZERO. It mirrors swap_exchange_conservation_suite's
+#  rigor (before/after balance deltas via `assert { actual, minus, equals }`) for the policy layer.
+#
+#  THE TWO INVARIANTS every section asserts:
+#    (1) HAPPY  → exact two-sided conservation: G (the group/source) decreases by X, the recipient
+#                 increases by X. Not "the execute succeeded" — the precise amount, on both sides.
+#    (2) DENIED → ZERO movement: after a rejected executeUnderPolicy, BOTH G's and the recipient's
+#                 balances are unchanged (delta == 0). A denial that silently moved money would pass a
+#                 gate-only test; it fails here.
+#
+#  Confidential-send timing (mirrors the funding pattern): a send DEBITS G at execution and CREDITS the
+#  recipient only after they `accept_all`. So every happy block is: read-before → execute → recipient
+#  accepts → read-after → assert both deltas. A denied execute creates no payment, so no accept, and both
+#  sides must be flat.
+#
+#  Parties (seeded SuperAdmins; setup.yaml):
+#    issuer@yieldfabric.com     — group owner (registers + approves)        [G read via issuer-as-group]
+#    collateral@yieldfabric.com — restricted policymember = EXECUTOR
+#    investor@yieldfabric.com   — payment RECIPIENT (distinct from source G and executor collateral)
+#    payer@yieldfabric.com      — second approver (M-of-N)
+#  Reading G's balance: issuer acting AS the group is the OWNER (not PolicyExecution-scoped), so the
+#  Part-2 validity gate doesn't apply — it reads G's confidential balance directly.
+#
+#  id-native: wallet_id for accounts, asset_id for tokens (resolved server-side). Doc keys fixed (upsert);
+#  policy ids per-run-unique via a run nonce (/tmp/yf_cons_nonce) so re-runs never hit PolicyIdAlreadyExists.
+# ════════════════════════════════════════════════════════════════════════════
+
+commands:
+
+  # ───────────────────────── SETUP ─────────────────────────
+  - name: owner_ctx
+    type: whoami
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+
+  - name: member_ctx
+    type: whoami
+    user: { id: collateral@yieldfabric.com, password: collateral_password }
+
+  - name: owner_self_ctx          # issuer's OWN wallet id (owner_ctx acts as the group) — required_signers
+    type: whoami
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+
+  - name: approver2_ctx           # payer's wallet id — second approver for M-of-N
+    type: whoami
+    user: { id: payer@yieldfabric.com, password: payer_password }
+
+  # Fund the GROUP's confidential AUD (owner holds ERC-20 → deposit → instant into the group → accept).
+  - name: fund_owner_aud
+    type: deposit
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { asset_id: aud-token-asset, amount: 2000000000000000000000, idempotency_key: cons-fund-owner-$(date +%s | tee /tmp/yf_cons_nonce) }
+
+  - name: fund_group_send
+    type: instant
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { asset_id: aud-token-asset, amount: 2000000000000000000000, destination_id: Issuer Group, idempotency_key: cons-fund-group-$(date +%s) }
+
+  - name: fund_group_accept
+    type: accept_all
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters: { denomination: aud-token-asset, wait: true }
+
+
+  # ═══════════ A — AMOUNT-BOUND SEND: conservation (A1) + over-bound moves ZERO (A2) ═══════════
+  - name: a_add                   # send-bound, amount ∈ [0,500], source-0 balance requirement
+    type: add_data_policy
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters:
+      account: $owner_ctx.default_wallet_id
+      wallet_id: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_cons_nonce)01"
+      expiry: "$(date -v+365d +%s)"
+      max_use: "10"
+      min_signatories: 1
+      required_signers: [ $owner_self_ctx.default_wallet_id ]
+      executor_accounts: [ $member_ctx.default_wallet_id ]
+      allowed_operations: [ send ]
+      amount_bounds:
+        - { token: aud-token-asset, lo: "0", hi: "500000000000000000000" }
+      requirements:
+        - { source: 0, denomination: aud-token-asset, lo: "0", hi: "1000000000000000000000000000" }
+      idempotency_key: cons-a-add-$(date +%s)
+
+  - name: a_approve
+    type: approve_data_policy
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { account: $owner_ctx.default_wallet_id, policy_id: "$(cat /tmp/yf_cons_nonce)01" }
+
+  # --- A1: happy send of 100 AUD, G → investor. Assert G −100, investor +100 (two-sided conservation). ---
+  - name: a1_g_before
+    type: balance
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters: { asset_id: aud-token-asset }
+  - name: a1_inv_before
+    type: balance
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: aud-token-asset }
+  - name: a1_execute
+    type: execute_under_policy
+    user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
+    parameters:
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_cons_nonce)01"
+      operation_type: Send
+      operation_data: { token_address: aud-token-asset, destination_id: investor@yieldfabric.com, amount: "100000000000000000000" }
+      idempotency_key: cons-a1-exec-$(date +%s)
+  - name: a1_inv_accept           # recipient accepts → balance credited
+    type: accept_all
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { denomination: aud-token-asset, wait: true }
+  - name: a1_g_after
+    type: balance
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters: { asset_id: aud-token-asset }
+  - name: a1_inv_after
+    type: balance
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: aud-token-asset }
+  - name: a1_assert_g_down_100    # G decreased by EXACTLY 100
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { actual: "$a1_g_after.private_balance", minus: "$a1_g_before.private_balance", equals: "-100000000000000000000" }
+  - name: a1_assert_inv_up_100    # investor increased by EXACTLY 100 (conservation: the same 100)
+    type: assert
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { actual: "$a1_inv_after.private_balance", minus: "$a1_inv_before.private_balance", equals: "100000000000000000000" }
+
+  # --- A2: over-bound send (600 ∉ [0,500]) is REJECTED. Assert G and investor BOTH unchanged (zero move). ---
+  - name: a2_g_before
+    type: balance
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters: { asset_id: aud-token-asset }
+  - name: a2_inv_before
+    type: balance
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: aud-token-asset }
+  - name: a2_execute_rejected     # 600 over the [0,500] bound ⇒ unsatisfiable ZK amount proof ⇒ WhoMismatch
+    type: execute_under_policy
+    user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
+    parameters:
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_cons_nonce)01"
+      operation_type: Send
+      operation_data: { token_address: aud-token-asset, destination_id: investor@yieldfabric.com, amount: "600000000000000000000" }
+      idempotency_key: cons-a2-bad-$(date +%s)
+      expect_failure: true
+      expect_error: "WhoMismatch"
+  - name: a2_g_after
+    type: balance
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters: { asset_id: aud-token-asset }
+  - name: a2_inv_after
+    type: balance
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: aud-token-asset }
+  - name: a2_assert_g_flat        # a denied op moves ZERO — G unchanged
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { actual: "$a2_g_after.private_balance", minus: "$a2_g_before.private_balance", equals: "0" }
+  - name: a2_assert_inv_flat      # …and the recipient got nothing
+    type: assert
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { actual: "$a2_inv_after.private_balance", minus: "$a2_inv_before.private_balance", equals: "0" }
+
+
+  # ═══════════ B — ORACLE-GATED SEND: conservation (B1) + credential-drift moves ZERO (B2) ═══════════
+  - name: b_commit                # credential {"score":750} at key 9600
+    type: commit_oracle_document
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters: { obligor: $owner_ctx.default_wallet_id, key: "9600", document_json: '{"score": 750}', idempotency_key: cons-b-commit-$(date +%s) }
+  - name: b_add                   # send gated on score ∈ [700,1000]; 750 satisfies
+    type: add_data_policy
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters:
+      account: $owner_ctx.default_wallet_id
+      wallet_id: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_cons_nonce)02"
+      expiry: "$(date -v+365d +%s)"
+      max_use: "10"
+      min_signatories: 1
+      required_signers: [ $owner_self_ctx.default_wallet_id ]
+      executor_accounts: [ $member_ctx.default_wallet_id ]
+      allowed_operations: [ send ]
+      amount_bounds:
+        - { token: aud-token-asset, lo: "0", hi: "500000000000000000000" }
+      requirements:
+        - source: 3
+          obligor: $owner_ctx.default_wallet_id
+          token_id: "9600"
+          oracle_query: '{"constraints": {"score": {"min": 700, "max": 1000}}}'
+      idempotency_key: cons-b-add-$(date +%s)
+  - name: b_approve
+    type: approve_data_policy
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { account: $owner_ctx.default_wallet_id, policy_id: "$(cat /tmp/yf_cons_nonce)02" }
+
+  # --- B1: oracle satisfied ⇒ send 100 executes. Assert G −100, investor +100. ---
+  - name: b1_g_before
+    type: balance
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters: { asset_id: aud-token-asset }
+  - name: b1_inv_before
+    type: balance
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: aud-token-asset }
+  - name: b1_execute
+    type: execute_under_policy
+    user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
+    parameters:
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_cons_nonce)02"
+      operation_type: Send
+      operation_data: { token_address: aud-token-asset, destination_id: investor@yieldfabric.com, amount: "100000000000000000000" }
+      idempotency_key: cons-b1-exec-$(date +%s)
+  - name: b1_inv_accept
+    type: accept_all
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { denomination: aud-token-asset, wait: true }
+  - name: b1_g_after
+    type: balance
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters: { asset_id: aud-token-asset }
+  - name: b1_inv_after
+    type: balance
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: aud-token-asset }
+  - name: b1_assert_g_down_100
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { actual: "$b1_g_after.private_balance", minus: "$b1_g_before.private_balance", equals: "-100000000000000000000" }
+  - name: b1_assert_inv_up_100
+    type: assert
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { actual: "$b1_inv_after.private_balance", minus: "$b1_inv_before.private_balance", equals: "100000000000000000000" }
+
+  # --- B2: a separate policy whose credential DRIFTS out of range after registration. The execute must
+  # move ZERO. Register with score 750 (satisfies), then re-commit 400, then execute. ---
+  - name: bd_commit               # key 9601 starts satisfying ([700,1000])
+    type: commit_oracle_document
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters: { obligor: $owner_ctx.default_wallet_id, key: "9601", document_json: '{"score": 750}', idempotency_key: cons-bd-commit-$(date +%s) }
+  - name: bd_add
+    type: add_data_policy
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters:
+      account: $owner_ctx.default_wallet_id
+      wallet_id: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_cons_nonce)03"
+      expiry: "$(date -v+365d +%s)"
+      max_use: "10"
+      min_signatories: 1
+      required_signers: [ $owner_self_ctx.default_wallet_id ]
+      executor_accounts: [ $member_ctx.default_wallet_id ]
+      allowed_operations: [ send ]
+      amount_bounds:
+        - { token: aud-token-asset, lo: "0", hi: "500000000000000000000" }
+      requirements:
+        - source: 3
+          obligor: $owner_ctx.default_wallet_id
+          token_id: "9601"
+          oracle_query: '{"constraints": {"score": {"min": 700, "max": 1000}}}'
+      idempotency_key: cons-bd-add-$(date +%s)
+  - name: bd_approve
+    type: approve_data_policy
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { account: $owner_ctx.default_wallet_id, policy_id: "$(cat /tmp/yf_cons_nonce)03" }
+  - name: bd_recommit_drift       # credential drifts to 400 ∉ [700,1000] — policy is now dead
+    type: commit_oracle_document
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters: { obligor: $owner_ctx.default_wallet_id, key: "9601", document_json: '{"score": 400}', idempotency_key: cons-bd-recommit-$(date +%s) }
+  - name: bd_g_before
+    type: balance
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters: { asset_id: aud-token-asset }
+  - name: bd_inv_before
+    type: balance
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: aud-token-asset }
+  - name: bd_execute_rejected     # live credential 400 ∉ [700,1000] ⇒ StoredHashMismatch
+    type: execute_under_policy
+    user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
+    parameters:
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_cons_nonce)03"
+      operation_type: Send
+      operation_data: { token_address: aud-token-asset, destination_id: investor@yieldfabric.com, amount: "100000000000000000000" }
+      idempotency_key: cons-bd-bad-$(date +%s)
+      expect_failure: true
+      expect_error: "StoredHashMismatch"
+  - name: bd_g_after
+    type: balance
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters: { asset_id: aud-token-asset }
+  - name: bd_inv_after
+    type: balance
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: aud-token-asset }
+  - name: bd_assert_g_flat        # a dead (drifted) policy moves ZERO
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { actual: "$bd_g_after.private_balance", minus: "$bd_g_before.private_balance", equals: "0" }
+  - name: bd_assert_inv_flat
+    type: assert
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { actual: "$bd_inv_after.private_balance", minus: "$bd_inv_before.private_balance", equals: "0" }
+
+
+  # ═══════════ C — M-of-N: value moves ONLY after full approval ═══════════
+  - name: c_add                   # 2-of-2: issuer + payer
+    type: add_data_policy
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters:
+      account: $owner_ctx.default_wallet_id
+      wallet_id: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_cons_nonce)04"
+      expiry: "$(date -v+365d +%s)"
+      max_use: "10"
+      min_signatories: 2
+      required_signers: [ $owner_self_ctx.default_wallet_id, $approver2_ctx.default_wallet_id ]
+      executor_accounts: [ $member_ctx.default_wallet_id ]
+      allowed_operations: [ send ]
+      amount_bounds:
+        - { token: aud-token-asset, lo: "0", hi: "500000000000000000000" }
+      requirements:
+        - { source: 0, denomination: aud-token-asset, lo: "0", hi: "1000000000000000000000000000" }
+      idempotency_key: cons-c-add-$(date +%s)
+  - name: c_approve_1             # only 1 of 2 — not yet executable
+    type: approve_data_policy
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { account: $owner_ctx.default_wallet_id, policy_id: "$(cat /tmp/yf_cons_nonce)04" }
+
+  # --- C1: with 1/2 approvals, execute is rejected — assert ZERO movement. ---
+  - name: c1_g_before
+    type: balance
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters: { asset_id: aud-token-asset }
+  - name: c1_inv_before
+    type: balance
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: aud-token-asset }
+  - name: c1_execute_rejected
+    type: execute_under_policy
+    user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
+    parameters:
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_cons_nonce)04"
+      operation_type: Send
+      operation_data: { token_address: aud-token-asset, destination_id: investor@yieldfabric.com, amount: "100000000000000000000" }
+      idempotency_key: cons-c1-bad-$(date +%s)
+      expect_failure: true
+      expect_error: "not fully approved"
+  - name: c1_g_after
+    type: balance
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters: { asset_id: aud-token-asset }
+  - name: c1_inv_after
+    type: balance
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: aud-token-asset }
+  - name: c1_assert_g_flat        # an under-approved op moves ZERO
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { actual: "$c1_g_after.private_balance", minus: "$c1_g_before.private_balance", equals: "0" }
+  - name: c1_assert_inv_flat
+    type: assert
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { actual: "$c1_inv_after.private_balance", minus: "$c1_inv_before.private_balance", equals: "0" }
+
+  - name: c_approve_2             # 2/2 — now executable
+    type: approve_data_policy
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { account: $owner_ctx.default_wallet_id, policy_id: "$(cat /tmp/yf_cons_nonce)04" }
+
+  # --- C2: fully approved ⇒ send 100 executes. Assert G −100, investor +100. ---
+  - name: c2_g_before
+    type: balance
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters: { asset_id: aud-token-asset }
+  - name: c2_inv_before
+    type: balance
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: aud-token-asset }
+  - name: c2_execute
+    type: execute_under_policy
+    user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
+    parameters:
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_cons_nonce)04"
+      operation_type: Send
+      operation_data: { token_address: aud-token-asset, destination_id: investor@yieldfabric.com, amount: "100000000000000000000" }
+      idempotency_key: cons-c2-exec-$(date +%s)
+  - name: c2_inv_accept
+    type: accept_all
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { denomination: aud-token-asset, wait: true }
+  - name: c2_g_after
+    type: balance
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters: { asset_id: aud-token-asset }
+  - name: c2_inv_after
+    type: balance
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: aud-token-asset }
+  - name: c2_assert_g_down_100
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { actual: "$c2_g_after.private_balance", minus: "$c2_g_before.private_balance", equals: "-100000000000000000000" }
+  - name: c2_assert_inv_up_100
+    type: assert
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { actual: "$c2_inv_after.private_balance", minus: "$c2_inv_before.private_balance", equals: "100000000000000000000" }
+
+
+  # ═══════════ D — LIFECYCLE: an EXPIRED policy moves ZERO ═══════════
+  - name: d_add                   # start + expiry both in the PAST
+    type: add_data_policy
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters:
+      account: $owner_ctx.default_wallet_id
+      wallet_id: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_cons_nonce)05"
+      start: "$(date -v-730d +%s)"
+      expiry: "$(date -v-365d +%s)"
+      max_use: "10"
+      min_signatories: 1
+      required_signers: [ $owner_self_ctx.default_wallet_id ]
+      executor_accounts: [ $member_ctx.default_wallet_id ]
+      allowed_operations: [ send ]
+      amount_bounds:
+        - { token: aud-token-asset, lo: "0", hi: "500000000000000000000" }
+      requirements:
+        - { source: 0, denomination: aud-token-asset, lo: "0", hi: "1000000000000000000000000000" }
+      idempotency_key: cons-d-add-$(date +%s)
+  - name: d_approve
+    type: approve_data_policy
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { account: $owner_ctx.default_wallet_id, policy_id: "$(cat /tmp/yf_cons_nonce)05" }
+  - name: d_g_before
+    type: balance
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters: { asset_id: aud-token-asset }
+  - name: d_inv_before
+    type: balance
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: aud-token-asset }
+  - name: d_execute_rejected      # expired ⇒ PolicyExpired
+    type: execute_under_policy
+    user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
+    parameters:
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_cons_nonce)05"
+      operation_type: Send
+      operation_data: { token_address: aud-token-asset, destination_id: investor@yieldfabric.com, amount: "100000000000000000000" }
+      idempotency_key: cons-d-bad-$(date +%s)
+      expect_failure: true
+      expect_error: "PolicyExpired"
+  - name: d_g_after
+    type: balance
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters: { asset_id: aud-token-asset }
+  - name: d_inv_after
+    type: balance
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: aud-token-asset }
+  - name: d_assert_g_flat         # an expired policy moves ZERO
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { actual: "$d_g_after.private_balance", minus: "$d_g_before.private_balance", equals: "0" }
+  - name: d_assert_inv_flat
+    type: assert
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { actual: "$d_inv_after.private_balance", minus: "$d_inv_before.private_balance", equals: "0" }
+
+
+  # ═══════════ E — ACCUMULATION: two sends conserve cumulatively (G −200, investor +200) ═══════════
+  - name: e_add
+    type: add_data_policy
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters:
+      account: $owner_ctx.default_wallet_id
+      wallet_id: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_cons_nonce)06"
+      expiry: "$(date -v+365d +%s)"
+      max_use: "5"
+      min_signatories: 1
+      required_signers: [ $owner_self_ctx.default_wallet_id ]
+      executor_accounts: [ $member_ctx.default_wallet_id ]
+      allowed_operations: [ send ]
+      amount_bounds:
+        - { token: aud-token-asset, lo: "0", hi: "500000000000000000000" }
+      requirements:
+        - { source: 0, denomination: aud-token-asset, lo: "0", hi: "1000000000000000000000000000" }
+      idempotency_key: cons-e-add-$(date +%s)
+  - name: e_approve
+    type: approve_data_policy
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { account: $owner_ctx.default_wallet_id, policy_id: "$(cat /tmp/yf_cons_nonce)06" }
+  - name: e_g_before
+    type: balance
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters: { asset_id: aud-token-asset }
+  - name: e_inv_before
+    type: balance
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: aud-token-asset }
+  - name: e_exec_1
+    type: execute_under_policy
+    user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
+    parameters:
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_cons_nonce)06"
+      operation_type: Send
+      operation_data: { token_address: aud-token-asset, destination_id: investor@yieldfabric.com, amount: "100000000000000000000" }
+      idempotency_key: cons-e1-exec-$(date +%s)
+  - name: e_accept_1
+    type: accept_all
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { denomination: aud-token-asset, wait: true }
+  - name: e_exec_2
+    type: execute_under_policy
+    user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
+    parameters:
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_cons_nonce)06"
+      operation_type: Send
+      operation_data: { token_address: aud-token-asset, destination_id: investor@yieldfabric.com, amount: "100000000000000000000" }
+      idempotency_key: cons-e2-exec-$(date +%s)
+  - name: e_accept_2
+    type: accept_all
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { denomination: aud-token-asset, wait: true }
+  - name: e_g_after
+    type: balance
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters: { asset_id: aud-token-asset }
+  - name: e_inv_after
+    type: balance
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: aud-token-asset }
+  - name: e_assert_g_down_200     # two 100-sends ⇒ G down EXACTLY 200 (no drift, no double-debit)
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { actual: "$e_g_after.private_balance", minus: "$e_g_before.private_balance", equals: "-200000000000000000000" }
+  - name: e_assert_inv_up_200     # investor up EXACTLY 200 (conservation across multiple ops)
+    type: assert
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { actual: "$e_inv_after.private_balance", minus: "$e_inv_before.private_balance", equals: "200000000000000000000" }

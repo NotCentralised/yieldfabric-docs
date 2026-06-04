@@ -36,7 +36,7 @@ from typing import Any, Dict, List, Optional
 
 from .base import BaseExecutor
 from ..models import Command, CommandResponse
-from ..utils.crypto import eip191_message_hash
+from ..utils.crypto import eip191_message_hash, recover_eip191_address
 from ..utils.graphql import DataPolicyGraphQL
 from ..utils.jwt import decode_payload, get_sub
 from ..utils.validators import is_provided
@@ -64,6 +64,7 @@ class PolicyExecutor(BaseExecutor):
             "approve_data_policy": self._execute_approve_data_policy,
             "execute_under_policy": self._execute_execute_under_policy,
             "commit_oracle_document": self._execute_commit_oracle_document,
+            "sign_oracle_document": self._execute_sign_oracle_document,
             "data_policies": self._execute_data_policies,
             "data_policy_approval": self._execute_data_policy_approval,
         }
@@ -163,12 +164,12 @@ class PolicyExecutor(BaseExecutor):
             return err
 
         p = command.parameters
-        account_address = p.get("account_address") or self._claim(token, "group_account_address")
+        account = p.get("account") or self._claim(token, "group_account_address")
         wallet_id = p.get("wallet_id") or self._claim(token, "default_wallet_id")
-        if not account_address:
+        if not account:
             return self._fail(
                 command,
-                "add_data_policy requires `account_address` (the group account) — "
+                "add_data_policy requires `account` (the group account) — "
                 "none provided and the JWT carries no group_account_address; submit while "
                 "acting as the group (set user.group).",
             )
@@ -188,7 +189,7 @@ class PolicyExecutor(BaseExecutor):
             return self._fail(command, "add_data_policy requires at least one `requirements` entry")
 
         gql_input: Dict[str, Any] = {
-            "accountAddress": account_address,
+            "account": account,
             "policyId": str(policy_id),
             "expiry": str(p.get("expiry", "0")),
             "maxUse": str(p.get("max_use", "1")),
@@ -215,7 +216,7 @@ class PolicyExecutor(BaseExecutor):
             gql_input["amountBounds"] = [_camel_keys(b) for b in p.get("amount_bounds")]
 
         self.log_parameters({
-            "account_address": account_address,
+            "account": account,
             "policy_id": policy_id,
             "min_signatories": gql_input["minSignatories"],
             "required_signers": required_signers,
@@ -238,7 +239,7 @@ class PolicyExecutor(BaseExecutor):
 
         outputs = {
             "policy_id": data.get("policyId") or str(policy_id),
-            "account_address": account_address,
+            "account": account,
             "message": data.get("message"),
             "message_id": data.get("messageId"),
         }
@@ -262,15 +263,15 @@ class PolicyExecutor(BaseExecutor):
             return err
 
         p = command.parameters
-        account_address = p.get("account_address")
+        account = p.get("account")
         policy_id = p.get("policy_id")
-        if not account_address or not policy_id:
-            return self._fail(command, "approve_data_policy requires `account_address` and `policy_id`")
+        if not account or not policy_id:
+            return self._fail(command, "approve_data_policy requires `account` and `policy_id`")
 
         # 1. Fetch the operation-independent digest the approver must sign.
         approval = self._graphql(
             DataPolicyGraphQL.DATA_POLICY_APPROVAL,
-            {"accountAddress": account_address, "policyId": str(policy_id)},
+            {"account": account, "policyId": str(policy_id)},
             token,
         )
         if not approval.success:
@@ -291,7 +292,7 @@ class PolicyExecutor(BaseExecutor):
             return self._fail(command, f"approve_data_policy: failed to prepare digest: {e}")
 
         self.log_parameters({
-            "account_address": account_address,
+            "account": account,
             "policy_id": policy_id,
             "registered_digest": registered_digest,
             "signer_contact_id": contact_id,
@@ -308,7 +309,7 @@ class PolicyExecutor(BaseExecutor):
         # 3. Submit the signature; the backend recovers the signer and tallies the M-of-N.
         response = self._graphql(
             DataPolicyGraphQL.APPROVE_DATA_POLICY,
-            {"input": {"accountAddress": account_address, "policyId": str(policy_id), "signature": signature}},
+            {"input": {"account": account, "policyId": str(policy_id), "signature": signature}},
             token,
         )
         if not response.success:
@@ -321,7 +322,7 @@ class PolicyExecutor(BaseExecutor):
             )
 
         outputs = {
-            "account_address": account_address,
+            "account": account,
             "policy_id": str(policy_id),
             "signer": data.get("signer"),
             "collected": data.get("collected"),
@@ -349,14 +350,14 @@ class PolicyExecutor(BaseExecutor):
             return err
 
         p = command.parameters
-        account_address = p.get("account_address") or self._claim(token, "group_account_address")
+        account = p.get("account") or self._claim(token, "group_account_address")
         policy_id = p.get("policy_id")
         operation_type = p.get("operation_type")
         operation_data = p.get("operation_data")
-        if not account_address:
+        if not account:
             return self._fail(
                 command,
-                "execute_under_policy requires `account_address` (the group account) — "
+                "execute_under_policy requires `account` (the group account) — "
                 "submit while acting as the group (set user.group).",
             )
         if not policy_id or not operation_type:
@@ -365,14 +366,14 @@ class PolicyExecutor(BaseExecutor):
             return self._fail(command, "execute_under_policy requires `operation_data` (a mapping)")
 
         self.log_parameters({
-            "account_address": account_address,
+            "account": account,
             "policy_id": policy_id,
             "operation_type": operation_type,
             "operation_data": operation_data,
         })
 
         gql_input = {
-            "accountAddress": account_address,
+            "account": account,
             "policyId": str(policy_id),
             "operationType": str(operation_type),
             # The backend takes operationData as a JSON string (the inner op's Data shape).
@@ -389,7 +390,7 @@ class PolicyExecutor(BaseExecutor):
             )
 
         outputs = {
-            "account_address": account_address,
+            "account": account,
             "policy_id": str(policy_id),
             "operation_type": str(operation_type),
             "collected": data.get("collected"),
@@ -415,29 +416,40 @@ class PolicyExecutor(BaseExecutor):
             return err
 
         p = command.parameters
-        account_address = p.get("account_address") or self._claim(token, "group_account_address")
+        obligor = p.get("obligor") or self._claim(token, "group_account_address")
         key = p.get("key")
         value = p.get("value")
         document_json = p.get("document_json")
-        if not account_address:
-            return self._fail(command, "commit_oracle_document requires `account_address` (the committing account)")
-        if not key or value is None or document_json is None:
-            return self._fail(command, "commit_oracle_document requires `key`, `value`, and `document_json`")
+        if not obligor:
+            return self._fail(command, "commit_oracle_document requires `obligor` (the committing account)")
+        if not key:
+            return self._fail(command, "commit_oracle_document requires `key`")
+        if value is None and document_json is None:
+            return self._fail(
+                command,
+                "commit_oracle_document requires `value` (numeric oracle) and/or `document_json` (credential oracle)",
+            )
         # document_json may be authored as a YAML mapping or a JSON string; normalise to a string.
         if isinstance(document_json, (dict, list)):
             document_json = json.dumps(document_json)
 
         gql_input = {
-            "accountAddress": account_address,
+            "obligor": obligor,
             "key": str(key),
-            "value": str(value),
-            "documentJson": str(document_json),
+            # value XOR document_json: send "" for the one omitted (the backend treats empty as absent —
+            # value-only ⇒ numeric oracle/setValue; document-only ⇒ credential oracle/setValueWithCommitment).
+            "value": "" if value is None else str(value),
+            "documentJson": "" if document_json is None else str(document_json),
         }
         if is_provided(p.get("oracle_address")):
             gql_input["oracleAddress"] = p.get("oracle_address")
+        # Optional issuer signature over the document idHash (from `sign_oracle_document`). Stored
+        # on-chain by setValueWithCommitment so a policy's `required_signer` can enforce the issuer.
+        if is_provided(p.get("signature")):
+            gql_input["signature"] = p.get("signature")
 
         self.log_parameters({
-            "account_address": account_address,
+            "obligor": obligor,
             "key": key,
             "value": value,
             "document_json": document_json,
@@ -454,7 +466,7 @@ class PolicyExecutor(BaseExecutor):
             )
 
         outputs = {
-            "account_address": account_address,
+            "obligor": obligor,
             "oracle_address": data.get("oracleAddress"),
             "key": data.get("key") or str(key),
             "message": data.get("message"),
@@ -463,6 +475,78 @@ class PolicyExecutor(BaseExecutor):
         return self._finalize_success(
             command, token, outputs,
             success_message=f"oracle document committed for key {outputs['key']}",
+        )
+
+    # ------------------------------------------------------------------
+    # sign_oracle_document — produce the issuer signature for a document
+    # (the value a policy `required_signer` enforces). Fetches the
+    # message-to-sign (`documentSignerMessage`), EIP-191-signs it with the
+    # caller's server-custodied key via the auth vault/sign API (exactly
+    # like `approve_data_policy`), and recovers the signer EOA so a policy
+    # can name it. Run AS the issuer for a valid signature; AS any other
+    # entity for a wrong-key negative case.
+    # ------------------------------------------------------------------
+
+    def _execute_sign_oracle_document(self, command: Command) -> CommandResponse:
+        self.log_command_start(command)
+        token, err = self._acquire_token_or_error(command, use_delegation=bool(command.user.group))
+        if err:
+            return err
+
+        p = command.parameters
+        document_json = p.get("document_json")
+        if document_json is None:
+            return self._fail(command, "sign_oracle_document requires `document_json`")
+        if isinstance(document_json, (dict, list)):
+            document_json = json.dumps(document_json)
+
+        # 1. Fetch the canonical message an issuer signs (keccak of the document's idHash).
+        msg_resp = self._graphql(
+            DataPolicyGraphQL.DOCUMENT_SIGNER_MESSAGE,
+            {"input": {"documentJson": str(document_json)}},
+            token,
+        )
+        if not msg_resp.success:
+            return self._finalize_graphql_error(command, msg_resp, operation_name="DocumentSignerMessage")
+        message = (msg_resp.get_data("oracleFlow.documentSignerMessage", {}) or {}).get("message")
+        if not message:
+            return self._fail(command, "sign_oracle_document: could not resolve the document signer message")
+
+        # 2. EIP-191-sign it with the caller's server-custodied key (same path as approve_data_policy).
+        contact_id = p.get("signer_contact_id") or get_sub(token)
+        if not contact_id:
+            return self._fail(command, "sign_oracle_document: could not resolve the signer id for signing")
+        try:
+            eip191_hash = eip191_message_hash(message)
+        except Exception as e:
+            return self._fail(command, f"sign_oracle_document: failed to prepare message: {e}")
+
+        sign = self.auth_service.sign_vault(token, contact_id=contact_id, data=eip191_hash, data_format="hex")
+        signature = sign.get("result") if isinstance(sign, dict) else None
+        if not signature:
+            return self._fail(
+                command,
+                f"sign_oracle_document: vault/sign returned no signature ({sign.get('message') or sign})",
+            )
+        signature = signature if str(signature).startswith("0x") else f"0x{signature}"
+
+        # 3. Recover the signer EOA — the exact address on-chain `recoverDocumentSigner` yields, so a
+        #    policy can set `required_signer` to it.
+        try:
+            signer_address = recover_eip191_address(message, signature)
+        except Exception as e:
+            return self._fail(command, f"sign_oracle_document: failed to recover signer address: {e}")
+
+        self.log_parameters({
+            "signer_contact_id": contact_id,
+            "message": message,
+            "signer_address": signer_address,
+        })
+
+        outputs = {"message": message, "signature": signature, "signer_address": signer_address}
+        return self._finalize_success(
+            command, token, outputs,
+            success_message=f"oracle document signed by {signer_address}",
         )
 
     # ------------------------------------------------------------------
@@ -493,20 +577,20 @@ class PolicyExecutor(BaseExecutor):
         if err:
             return err
         p = command.parameters
-        account_address = p.get("account_address") or self._claim(token, "group_account_address")
+        account = p.get("account") or self._claim(token, "group_account_address")
         policy_id = p.get("policy_id")
-        if not account_address or not policy_id:
-            return self._fail(command, "data_policy_approval requires `account_address` and `policy_id`")
+        if not account or not policy_id:
+            return self._fail(command, "data_policy_approval requires `account` and `policy_id`")
         response = self._graphql(
             DataPolicyGraphQL.DATA_POLICY_APPROVAL,
-            {"accountAddress": account_address, "policyId": str(policy_id)},
+            {"account": account, "policyId": str(policy_id)},
             token,
         )
         if not response.success:
             return self._finalize_graphql_error(command, response, operation_name="DataPolicyApproval")
         info = response.get_data("pipelineGate.dataPolicyApproval", {}) or {}
         outputs = {
-            "account_address": account_address,
+            "account": account,
             "policy_id": str(policy_id),
             "registered_digest": info.get("registeredDigest"),
             "min_signatories": info.get("minSignatories"),

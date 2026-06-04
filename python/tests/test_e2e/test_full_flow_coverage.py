@@ -198,7 +198,6 @@ def test_create_then_accept_obligation(config, issuer, investor):
     create_vars = {"input": {
         "counterpart": investor["email"],
         "denomination": SEEDED_ASSET,
-        "notional": "1000",
         "obligor": issuer["email"],
         "expiry": "2027-01-31T23:59:59Z",
         "data": {"name": "TestObligation", "description": "E2E coverage"},
@@ -236,7 +235,6 @@ def test_transfer_obligation(config, issuer, investor, payer):
     create_vars = {"input": {
         "counterpart": investor["email"],
         "denomination": SEEDED_ASSET,
-        "notional": "2000",
         "obligor": issuer["email"],
         "expiry": "2027-01-31T23:59:59Z",
         "data": {"name": "TransferTest", "description": "TransferObligation coverage"},
@@ -274,7 +272,6 @@ def test_cancel_obligation(config, issuer, investor):
     create_vars = {"input": {
         "counterpart": investor["email"],
         "denomination": SEEDED_ASSET,
-        "notional": "500",
         "obligor": issuer["email"],
         "expiry": "2027-01-31T23:59:59Z",
         "data": {"name": "CancelTest", "description": "CancelObligation coverage"},
@@ -313,7 +310,6 @@ def test_create_then_complete_swap(config, issuer, investor):
     create_obl = {"input": {
         "counterpart": issuer["email"],  # issuer owns it
         "denomination": SEEDED_ASSET,
-        "notional": "3000",
         "obligor": issuer["email"],
         "expiry": "2027-01-31T23:59:59Z",
         "data": {"name": "SwapTest", "description": "for swap"},
@@ -395,7 +391,6 @@ def test_cancel_swap(config, issuer, investor):
     obl_vars = {"input": {
         "counterpart": issuer["email"],
         "denomination": SEEDED_ASSET,
-        "notional": "1500",
         "obligor": issuer["email"],
         "expiry": "2027-01-31T23:59:59Z",
         "data": {"name": "CancelSwapPrereq"},
@@ -514,12 +509,11 @@ def test_distribution(config):
 
 # ── repo swap / repurchase / roll flows ────────────────────────────────────
 
-def _make_obligation(payments, token, counterpart_email, obligor_email, notional, label):
+def _make_obligation(payments, token, counterpart_email, obligor_email, label):
     """Create an obligation and return its contract_id."""
     create_vars = {"input": {
         "counterpart": counterpart_email,
         "denomination": SEEDED_ASSET,
-        "notional": str(notional),
         "obligor": obligor_email,
         "expiry": "2027-01-31T23:59:59Z",
         "data": {"name": label, "description": f"E2E repo flow: {label}"},
@@ -558,7 +552,7 @@ def test_repo_swap_and_repurchase(config, issuer, investor):
     collateral_cid = _make_obligation(
         payments, issuer["token"],
         counterpart_email=issuer["email"], obligor_email=issuer["email"],
-        notional="50000", label="RepoCollateral",
+        label="RepoCollateral",
     )
     time.sleep(SETTLE_WAIT_SEC)
 
@@ -655,7 +649,7 @@ def test_initiate_and_complete_roll(config, issuer, investor):
     collateral_cid = _make_obligation(
         payments, issuer["token"],
         counterpart_email=issuer["email"], obligor_email=issuer["email"],
-        notional="40000", label="RollCollateral",
+        label="RollCollateral",
     )
     time.sleep(SETTLE_WAIT_SEC)
 
@@ -732,7 +726,7 @@ def test_expire_collateral(config, issuer, investor):
     collateral_cid = _make_obligation(
         payments, issuer["token"],
         counterpart_email=issuer["email"], obligor_email=issuer["email"],
-        notional="30000", label="ExpireCollateral",
+        label="ExpireCollateral",
     )
     time.sleep(SETTLE_WAIT_SEC)
 

@@ -708,9 +708,6 @@ execute_create_obligation_ergonomic() {
     if [[ -n "$obligor" && "$obligor" != "null" ]]; then
         input_params="$input_params, obligor: \\\"$obligor\\\""
     fi
-    if [[ -n "$notional" && "$notional" != "null" ]]; then
-        input_params="$input_params, notional: \\\"$notional\\\""
-    fi
     if [[ -n "$expiry" && "$expiry" != "null" ]]; then
         input_params="$input_params, expiry: \\\"$expiry\\\""
     fi

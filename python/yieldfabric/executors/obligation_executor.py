@@ -61,8 +61,6 @@ class ObligationExecutor(BaseExecutor):
             input_obj["obligationGroupId"] = params.obligation_group_id
         if params.obligor:
             input_obj["obligor"] = params.obligor
-        if params.notional:
-            input_obj["notional"] = str(params.notional)
         if params.expiry:
             input_obj["expiry"] = params.expiry
         if params.data:
