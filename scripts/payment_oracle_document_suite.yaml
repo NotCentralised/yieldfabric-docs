@@ -1,0 +1,245 @@
+# ════════════════════════════════════════════════════════════════════════════
+#  PAYMENT ZKP-DOCUMENT UNLOCK SUITE  (end-to-end wiring, SENDER gate)
+#
+#  End-to-end coverage for the payment oracle trigger extended to ZKP oracle
+#  DOCUMENTS (the same primitive the data-policy oracle constraint uses):
+#  a confidential payment's unlock is gated on a committed oracle document
+#  satisfying a private range AND signed by a required issuer EOA, verified
+#  on-chain via ConfidentialVault.acceptWithDocument → Vault.checkAccept →
+#  _checkOracleDocument (mirror of DataPolicyLib._checkOracle).
+#
+#  WHY A SELF OBLIGATION (counterpart == obligor == issuer):
+#  the obligation's initial-payment credit is MINTED at accept_obligation only
+#  when the accepter's vault IS the obligor's (account_address == obligor) — a
+#  cross-party obligation would read the obligor's *encrypted* balance from the
+#  counterpart's vault context (undecryptable → 0). This mirrors the proven
+#  loan.yaml / settle_annuity funding pattern. For a self-payment the on-chain
+#  `is_called_by_payer` (sender == receiver) is TRUE, so checkAccept takes the
+#  SENDER branch — hence the constraint is placed on the PAYER side and the
+#  reclaim exercises the sender-side _checkOracleDocument end-to-end.
+#
+#  (The RECEIVER branch + both branches' negatives are covered directly and
+#  exhaustively by the hardhat test
+#  yieldfabric-smart-contracts/test/ConfidentialVaultPaymentDocument.test.ts,
+#  which calls checkAccept with a mock receive verifier — the obligation funding
+#  model can't put a distinct payee on an initial payment.)
+#
+#  Roles: issuer = oracle owner + document signer + obligor + counterpart (self)
+#  + payer. No external funding needed — the self-accept mints the credit.
+#
+#  Flow per case:
+#    sign_oracle_document  → issuer signs the document idHash (EIP-191)
+#    commit_oracle_document→ commit {document, signature} at (issuer, key)
+#    create_obligation     → SELF obligation; the initial payment's PAYER side
+#                            carries oracle_query + required signer; the server
+#                            derives the frozen constraint commitment from the
+#                            committed document
+#    accept_obligation     → issuer self-accepts → mints the initial payment
+#    accept                → issuer (sender) reclaims, supplying {document,query}
+#                            → server rebuilds the witness → acceptWithDocument
+#                            settles via the SENDER-side doc gate
+#
+#  Negatives assert the F5 dual-bind + signer gate: a wrong document at accept
+#  fails the idHash anchor; a wrong signer fails recoverDocumentSigner.
+#
+#  Keys 9800+; a per-run nonce keeps idempotency keys unique.
+# ════════════════════════════════════════════════════════════════════════════
+
+commands:
+
+  # ───────────────────────── SETUP ─────────────────────────
+  - name: owner_ctx                 # issuer = oracle owner + signer + obligor + counterpart (self) + payer
+    type: whoami
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+
+  # ═══════════ POSITIVE — sender reclaim gated on a signed, in-range document ═══════════
+  - name: p_sign                    # issuer signs the document idHash for {"score":750}
+    type: sign_oracle_document
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { document_json: '{"score": 750}' }
+
+  - name: p_commit                  # commit {"score":750} + the issuer signature at key 9800
+    type: commit_oracle_document
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { obligor: $owner_ctx.default_wallet_id, key: "9800", document_json: '{"score": 750}', signature: $p_sign.signature, idempotency_key: pod-p-commit-$(date +%s) }
+
+  - name: p_create                  # SELF obligation; payer (sender) unlock requires score∈[700,1000] signed by issuer
+    type: create_obligation
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      idempotency_key: pod-p-create-$(date +%s)
+      counterpart: issuer@yieldfabric.com         # self: counterpart == obligor → accept mints the credit
+      denomination: aud-token-asset
+      obligor: issuer@yieldfabric.com             # the JWT entity = obligor = payer (mints + signs the payment)
+      expiry: "$(date -v+365d +%Y-%m-%d)"
+      data: { name: "Doc-gated payment", description: "Sender reclaim gated on signed in-range oracle document" }
+      initial_payments:
+        amount: 100000000000000000000
+        payments:
+          - id: pod-pay-1
+            owner: $owner_ctx.default_wallet_id        # oracle owner = where the document is committed
+            payer:
+              key: "9800"                              # oracle_key_sender (the committed doc slot)
+              query: '{"constraints": {"score": {"min": 700, "max": 1000}}}'
+              signer: $p_sign.signer_address           # required issuer EOA
+
+  - name: p_accept_obl              # issuer self-accepts the obligation → mints the initial payment
+    type: accept_obligation
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { contract_id: $p_create.contract_id, idempotency_key: pod-p-acceptobl-$(date +%s), wait: true }
+
+  - name: p_accept                  # sender reclaims, supplying the committed document → witness rebuilt server-side
+    type: accept
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      idempotency_key: pod-p-accept-$(date +%s)
+      payment_id: PAY-INITIAL-$p_create.contract_id-0
+      oracle_document_json: '{"score": 750}'
+      oracle_query: '{"constraints": {"score": {"min": 700, "max": 1000}}}'
+
+  # ═══════════ NEGATIVE 1 — wrong document at accept (idHash anchor / F5) ═══════════
+  - name: n1_sign
+    type: sign_oracle_document
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { document_json: '{"score": 750}' }
+
+  - name: n1_commit
+    type: commit_oracle_document
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { obligor: $owner_ctx.default_wallet_id, key: "9801", document_json: '{"score": 750}', signature: $n1_sign.signature, idempotency_key: pod-n1-commit-$(date +%s) }
+
+  - name: n1_create
+    type: create_obligation
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      idempotency_key: pod-n1-create-$(date +%s)
+      counterpart: issuer@yieldfabric.com
+      denomination: aud-token-asset
+      obligor: issuer@yieldfabric.com
+      expiry: "$(date -v+365d +%Y-%m-%d)"
+      data: { name: "Doc-gated payment (neg doc)", description: "Sender supplies a different in-range document at accept" }
+      initial_payments:
+        amount: 100000000000000000000
+        payments:
+          - id: pod-pay-n1
+            owner: $owner_ctx.default_wallet_id
+            payer:
+              key: "9801"
+              query: '{"constraints": {"score": {"min": 700, "max": 1000}}}'
+              signer: $n1_sign.signer_address
+
+  - name: n1_accept_obl
+    type: accept_obligation
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { contract_id: $n1_create.contract_id, idempotency_key: pod-n1-acceptobl-$(date +%s), wait: true }
+
+  - name: n1_accept_wrong_doc       # {"score":800} is in-range (proof generates) but ≠ the committed {"score":750}
+    type: accept                    # ⇒ witness idHash != getCommitment ⇒ on-chain "oracle doc commitment mismatch"
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      idempotency_key: pod-n1-accept-$(date +%s)
+      payment_id: PAY-INITIAL-$n1_create.contract_id-0
+      oracle_document_json: '{"score": 800}'
+      oracle_query: '{"constraints": {"score": {"min": 700, "max": 1000}}}'
+      expect_failure: true          # negative-test flags live in `parameters` (the runner reads them there)
+      expect_error: "oracle doc commitment mismatch"
+
+  # ═══════════ NEGATIVE 2 — wrong signer (recoverDocumentSigner gate) ═══════════
+  - name: n2_sign_wrong            # the COLLATERAL signs the document (not the required issuer)
+    type: sign_oracle_document
+    user: { id: collateral@yieldfabric.com, password: collateral_password }
+    parameters: { document_json: '{"score": 750}' }
+
+  - name: n2_commit                 # commit the collateral-signed document under the issuer at key 9802
+    type: commit_oracle_document
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { obligor: $owner_ctx.default_wallet_id, key: "9802", document_json: '{"score": 750}', signature: $n2_sign_wrong.signature, idempotency_key: pod-n2-commit-$(date +%s) }
+
+  - name: n2_create                 # but the payment requires the ISSUER as signer
+    type: create_obligation
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      idempotency_key: pod-n2-create-$(date +%s)
+      counterpart: issuer@yieldfabric.com
+      denomination: aud-token-asset
+      obligor: issuer@yieldfabric.com
+      expiry: "$(date -v+365d +%Y-%m-%d)"
+      data: { name: "Doc-gated payment (neg signer)", description: "Document signed by the wrong key" }
+      initial_payments:
+        amount: 100000000000000000000
+        payments:
+          - id: pod-pay-n2
+            owner: $owner_ctx.default_wallet_id
+            payer:
+              key: "9802"
+              query: '{"constraints": {"score": {"min": 700, "max": 1000}}}'
+              signer: $p_sign.signer_address          # require the ISSUER, but the doc was collateral-signed
+
+  - name: n2_accept_obl
+    type: accept_obligation
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { contract_id: $n2_create.contract_id, idempotency_key: pod-n2-acceptobl-$(date +%s), wait: true }
+
+  - name: n2_accept_wrong_signer
+    type: accept
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      idempotency_key: pod-n2-accept-$(date +%s)
+      payment_id: PAY-INITIAL-$n2_create.contract_id-0
+      oracle_document_json: '{"score": 750}'
+      oracle_query: '{"constraints": {"score": {"min": 700, "max": 1000}}}'
+      expect_failure: true          # negative-test flags live in `parameters` (the runner reads them there)
+      expect_error: "document signer mismatch"
+
+  # ═══════════ NEGATIVE 3 — gate is NOT bypassable by omitting the document ═══════════
+  # A doc-constrained payment claimed WITHOUT supplying the document routes through the plain
+  # `accept` (no witness). The on-chain `accept` still builds the doc witness from the STORED
+  # sendOracleDocument (ConfidentialVault `_buildAcceptDoc`), so checkAccept takes the doc-gate
+  # branch with an EMPTY proof → the idHash anchor (`docInput[0..1] == getCommitment`) reverts
+  # BEFORE any proof decode. This is the regression guard for the accept-vs-acceptWithDocument
+  # split: if plain accept ever degraded to `_emptyAcceptDoc`, the constraint would read [0,0],
+  # the plain getValue==expected path would fire, and this case would SETTLE instead of revert —
+  # a silent bypass. It MUST revert.
+  - name: n3_sign
+    type: sign_oracle_document
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { document_json: '{"score": 750}' }
+
+  - name: n3_commit
+    type: commit_oracle_document
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { obligor: $owner_ctx.default_wallet_id, key: "9803", document_json: '{"score": 750}', signature: $n3_sign.signature, idempotency_key: pod-n3-commit-$(date +%s) }
+
+  - name: n3_create
+    type: create_obligation
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      idempotency_key: pod-n3-create-$(date +%s)
+      counterpart: issuer@yieldfabric.com
+      denomination: aud-token-asset
+      obligor: issuer@yieldfabric.com
+      expiry: "$(date -v+365d +%Y-%m-%d)"
+      data: { name: "Doc-gated payment (bypass guard)", description: "Claimed without the document must still revert" }
+      initial_payments:
+        amount: 100000000000000000000
+        payments:
+          - id: pod-pay-n3
+            owner: $owner_ctx.default_wallet_id
+            payer:
+              key: "9803"
+              query: '{"constraints": {"score": {"min": 700, "max": 1000}}}'
+              signer: $n3_sign.signer_address
+
+  - name: n3_accept_obl
+    type: accept_obligation
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { contract_id: $n3_create.contract_id, idempotency_key: pod-n3-acceptobl-$(date +%s), wait: true }
+
+  - name: n3_accept_no_doc          # NO oracle_document_json ⇒ plain accept ⇒ stored constraint still enforced
+    type: accept
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      idempotency_key: pod-n3-accept-$(date +%s)
+      payment_id: PAY-INITIAL-$n3_create.contract_id-0
+      expect_failure: true
+      expect_error: "oracle doc commitment mismatch"

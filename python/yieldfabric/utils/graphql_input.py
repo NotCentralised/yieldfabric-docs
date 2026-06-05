@@ -72,6 +72,12 @@ def normalize_payment(payment: Dict[str, Any]) -> Dict[str, Any]:
     owner = original.get("owner") or original.get("oracle_owner")
 
     has_legacy_shape = bool(payer or payee or owner or "id" in original)
+    # NOTE: this `allowed` set is also the idempotency guard — when a payment is normalized
+    # twice (e.g. a flat camelCase payment re-enters here), the second pass takes the
+    # non-legacy branch below and keeps ONLY these keys. So every per-payment field the
+    # schema accepts MUST appear here, or it is silently dropped on a re-normalize. The ZKP
+    # oracle-document fields (oracleQuery*/oracleQuerySalt*/requiredSigner*) were missing,
+    # which dropped the doc constraint on the second pass.
     allowed = {
         "oracleAddress",
         "oracleOwner",
@@ -84,6 +90,12 @@ def normalize_payment(payment: Dict[str, Any]) -> Dict[str, Any]:
         "unlockSender",
         "unlockReceiver",
         "linearVesting",
+        "oracleQuerySender",
+        "oracleQuerySaltSender",
+        "requiredSignerSender",
+        "oracleQueryRecipient",
+        "oracleQuerySaltRecipient",
+        "requiredSignerRecipient",
     }
 
     if not has_legacy_shape:
@@ -115,6 +127,14 @@ def normalize_payment(payment: Dict[str, Any]) -> Dict[str, Any]:
         "linearVesting": bool(
             original.get("linear_vesting", camel.get("linearVesting", False))
         ),
+        # ZKP oracle-document unlock (per side): the constraint query + salt + required issuer EOA.
+        # The server derives the on-chain commitment from the committed document. Omitted ⇒ no gate.
+        "oracleQuerySender": payer.get("query", camel.get("oracleQuerySender")),
+        "oracleQuerySaltSender": payer.get("salt", camel.get("oracleQuerySaltSender")),
+        "requiredSignerSender": payer.get("signer", camel.get("requiredSignerSender")),
+        "oracleQueryRecipient": payee.get("query", camel.get("oracleQueryRecipient")),
+        "oracleQuerySaltRecipient": payee.get("salt", camel.get("oracleQuerySaltRecipient")),
+        "requiredSignerRecipient": payee.get("signer", camel.get("requiredSignerRecipient")),
     })
 
 

@@ -197,6 +197,17 @@ class PaymentExecutor(BaseExecutor):
         variables = {"input": {"paymentId": params.payment_id}}
         if params.idempotency_key:
             variables["input"]["idempotencyKey"] = params.idempotency_key
+        # ZKP oracle-document unlock: when the payment's unlock side carries a document constraint,
+        # supply the committed document + the SAME query/salt used at create so the server rebuilds
+        # the witness for acceptWithDocument.
+        for key, gql in (
+            ("oracle_document_json", "oracleDocumentJson"),
+            ("oracle_query", "oracleQuery"),
+            ("oracle_query_salt", "oracleQuerySalt"),
+        ):
+            val = params.raw_params.get(key)
+            if val is not None:
+                variables["input"][gql] = val
 
         response = self.payments_service.graphql_mutation(
             GraphQLMutation.ACCEPT, variables, token
