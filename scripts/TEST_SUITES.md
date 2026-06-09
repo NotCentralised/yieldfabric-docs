@@ -45,6 +45,7 @@ chain time; running two back-to-back on one node can collide or skew timestamps.
 | [`swap_lifecycle_combinations_group_suite`](swap_lifecycle_combinations_group_suite.yaml) | 105 | The lifecycle suite run entirely from **group accounts** | ✓ passing |
 | [`swap_exchange_conservation_suite`](swap_exchange_conservation_suite.yaml) | 51 | Every leg credits the right party by the **exact** amount — upfront, repurchase, forfeit, plain swap (E1–E4) | ✓ passing |
 | [`swap_repo_transfer_matrix`](swap_repo_transfer_matrix_suite.yaml) | 39 | **Transfer the repo position** to a new counterparty, then repurchase/forfeit/roll follow the new holder (T1–T4) | T1/T2 ✓; T3 #75 fixed (re-run); T4 pending |
+| [`swap_claim_gated_suite`](swap_claim_gated_suite.yaml) | 40 | Swap of an obligation in a **claim-gated** (ERC-3643/Tokeny) class: a verified buyer receives via the vault/swap **exemption** path; an unverified buyer is blocked at delivery (P, N) | authored; deploy + gate-config live-proven; swap pending re-run |
 
 ### `swap_repo_suite.yaml` — foundational functional gate
 The original pre-deployment suite. Scenarios:
@@ -101,6 +102,28 @@ then each terminal op must follow the new holder:
   recipient follows the holder) · **T3** transfer → roll: **documented limitation** — `complete_roll`
   reverts `InvalidCollateralPayment` on a transferred position (#75) · **T4** double transfer →
   repurchase routes to the final holder.
+
+### `swap_claim_gated_suite.yaml` — claim-gated swap + the vault/swap exemption
+The only suite that gates the **asset itself**: the obligation is minted into a
+ConfidentialObligation **class** with its own ERC-3643 IdentityRegistry requiring a
+KYC claim (topic on the CTR, trusted issuer on the TIR). Proves the
+`ExemptIdentityRegistry` invariant end-to-end:
+- **P** a **verified** buyer (investor) completes the swap and receives the gated
+  obligation — mint into the gated class → escrow into the **exempt** swap → deliver
+  to a verified recipient (gate passes) → cash to the seller (exact delta).
+- **N** an **unverified** buyer (the issuer, which configured the class but never
+  KYC'd itself) is blocked: `create_swap` succeeds (escrow into the exempt swap) but
+  `complete_swap` reverts at the recipient gate; the seller then cancels and recovers
+  the asset — the gate protects **without loss**.
+
+Holder-side companion to `claims_lifecycle_group_suite` (which configures the IR but
+deliberately stops before holder `isVerified`). Live-run notes: the gated-class deploy
+and full gate config (topic→CTR, issuer ClaimIssuer→TIR) are proven. Holder
+registration is **not** a per-class step — accounts are pre-registered in the shared
+IdentityRegistryStorage at account deploy and per-class IRs share it, so an explicit
+`register_identity` reverts `address stored already`; the suite verifies holders by
+claim alone. Still pending a clean re-run: the mint gate on the per-class proxy and
+the recipient-gate revert string (N's `expect_error` left off until captured).
 
 ---
 

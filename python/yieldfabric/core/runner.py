@@ -15,6 +15,7 @@ from ..executors import (
     ObligationExecutor,
     PaymentExecutor,
     PolicyExecutor,
+    ProvisioningExecutor,
     QueryExecutor,
     RepoExecutor,
     SwapExecutor,
@@ -92,6 +93,10 @@ class YieldFabricRunner:
             self.output_store, self.config, self.token_manager
         )
         self.policy_executor = PolicyExecutor(
+            self.auth_service, self.payments_service,
+            self.output_store, self.config, self.token_manager
+        )
+        self.provisioning_executor = ProvisioningExecutor(
             self.auth_service, self.payments_service,
             self.output_store, self.config, self.token_manager
         )
@@ -300,6 +305,16 @@ class YieldFabricRunner:
             "mine_block",
         ]:
             return self.wait_executor.execute(command)
+
+        elif command_type in [
+            # Provisioning + compliance (creation + claims lifecycle + gating).
+            "create_group", "deploy_account", "deploy_token", "deploy_class",
+            "update_claim_requirements", "claim_requirements", "is_verified",
+            "register_identity",
+            "issue_claim", "accept_claim", "decline_claim", "revoke_claim",
+            "reissue_claim", "issued_by_me", "issued_to_me",
+        ]:
+            return self.provisioning_executor.execute(command)
 
         else:
             self.logger.error(f"❌ Unknown command type: {command_type}")

@@ -119,7 +119,7 @@ commands:
   - name: m1_approve         # owner approves once (1-of-1)
     type: approve_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password }
-    parameters: { account_address: $owner_ctx.default_wallet_id, policy_id: "$(cat /tmp/yf_cmp_nonce)01" }
+    parameters: { account: $owner_ctx.group_account_address, policy_id: "$(cat /tmp/yf_cmp_nonce)01" }
 
   # ★ M1: collateral — recognised as a policymember PURELY because P9001 names it — executes a
   # bounded send out of G. No add_member step exists; auth derived the membership at delegation-mint.
@@ -191,7 +191,7 @@ commands:
   - name: s0_unsat_approve
     type: approve_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password }
-    parameters: { account_address: $owner_ctx.default_wallet_id, policy_id: "$(cat /tmp/yf_cmp_nonce)02" }
+    parameters: { account: $owner_ctx.group_account_address, policy_id: "$(cat /tmp/yf_cmp_nonce)02" }
 
   - name: s0_unsat_execute
     type: execute_under_policy
@@ -231,7 +231,7 @@ commands:
   - name: s1_unsat_approve
     type: approve_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password }
-    parameters: { account_address: $owner_ctx.default_wallet_id, policy_id: "$(cat /tmp/yf_cmp_nonce)03" }
+    parameters: { account: $owner_ctx.group_account_address, policy_id: "$(cat /tmp/yf_cmp_nonce)03" }
 
   - name: s1_unsat_execute
     type: execute_under_policy
@@ -293,7 +293,7 @@ commands:
   - name: op_withdraw_approve
     type: approve_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password }
-    parameters: { account_address: $owner_ctx.default_wallet_id, policy_id: "$(cat /tmp/yf_cmp_nonce)08" }
+    parameters: { account: $owner_ctx.group_account_address, policy_id: "$(cat /tmp/yf_cmp_nonce)08" }
 
   - name: op_withdraw_over_bound
     type: execute_under_policy
@@ -308,7 +308,7 @@ commands:
       expect_error: "AmountAboveMax"
 
   # Wrong op: P9001 is bound to `send`; submit a Withdraw → the backend op-binding PRE-CHECK rejects
-  # it before submitting (the built Withdraw selector 0xd0d297b2 matches none of [send 0x840b5300]).
+  # it before submitting (the built Withdraw selector 0xd0d297b2 matches none of [send 0x77bbee73]).
   - name: op_wrong_op
     type: execute_under_policy
     user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
@@ -346,7 +346,7 @@ commands:
   - name: mofn_approve_1of2     # issuer approves → collected 1/2 (not yet approved)
     type: approve_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password }
-    parameters: { account_address: $owner_ctx.default_wallet_id, policy_id: "$(cat /tmp/yf_cmp_nonce)04" }
+    parameters: { account: $owner_ctx.group_account_address, policy_id: "$(cat /tmp/yf_cmp_nonce)04" }
 
   # 2-of-2 PARTIAL: with only 1/2 collected, execution is rejected at the resolver ("not fully approved").
   - name: mofn_partial_execute_fails
@@ -364,12 +364,12 @@ commands:
   - name: mofn_approve_2of2     # payer approves → collected 2/2 (approved)
     type: approve_data_policy
     user: { id: payer@yieldfabric.com, password: payer_password }
-    parameters: { account_address: $owner_ctx.default_wallet_id, policy_id: "$(cat /tmp/yf_cmp_nonce)04" }
+    parameters: { account: $owner_ctx.group_account_address, policy_id: "$(cat /tmp/yf_cmp_nonce)04" }
 
   - name: mofn_approval_state
     type: data_policy_approval
     user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
-    parameters: { account_address: $owner_ctx.default_wallet_id, policy_id: "$(cat /tmp/yf_cmp_nonce)04" }
+    parameters: { account: $owner_ctx.group_account_address, policy_id: "$(cat /tmp/yf_cmp_nonce)04" }
 
   - name: mofn_assert_approved
     type: assert
@@ -392,7 +392,7 @@ commands:
     type: approve_data_policy
     user: { id: collateral@yieldfabric.com, password: collateral_password }
     parameters:
-      account_address: $owner_ctx.default_wallet_id
+      account: $owner_ctx.group_account_address
       policy_id: "$(cat /tmp/yf_cmp_nonce)01"
       expect_failure: true
       expect_error: "caller set"
@@ -435,7 +435,7 @@ commands:
   - name: life_maxuse_approve
     type: approve_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password }
-    parameters: { account_address: $owner_ctx.default_wallet_id, policy_id: "$(cat /tmp/yf_cmp_nonce)07" }
+    parameters: { account: $owner_ctx.group_account_address, policy_id: "$(cat /tmp/yf_cmp_nonce)07" }
 
   - name: life_maxuse_first_ok
     type: execute_under_policy
@@ -483,7 +483,7 @@ commands:
   - name: life_notstarted_approve
     type: approve_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password }
-    parameters: { account_address: $owner_ctx.default_wallet_id, policy_id: "$(cat /tmp/yf_cmp_nonce)05" }
+    parameters: { account: $owner_ctx.group_account_address, policy_id: "$(cat /tmp/yf_cmp_nonce)05" }
 
   - name: life_notstarted_fails
     type: execute_under_policy
@@ -521,7 +521,7 @@ commands:
   - name: life_expired_approve
     type: approve_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password }
-    parameters: { account_address: $owner_ctx.default_wallet_id, policy_id: "$(cat /tmp/yf_cmp_nonce)06" }
+    parameters: { account: $owner_ctx.group_account_address, policy_id: "$(cat /tmp/yf_cmp_nonce)06" }
 
   - name: life_expired_fails
     type: execute_under_policy
@@ -542,7 +542,7 @@ commands:
     type: add_data_policy
     user: { id: issuer@yieldfabric.com, password: issuer_password }   # acts as self, not the group
     parameters:
-      account_address: $owner_ctx.default_wallet_id
+      account: $owner_self_ctx.account_address   # issuer's OWN (non-group) account → reaches the resolver's GROUP-account guard
       wallet_id: $owner_ctx.default_wallet_id
       policy_id: "$(cat /tmp/yf_cmp_nonce)10"
       expiry: "$(date -v+365d +%s)"

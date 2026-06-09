@@ -79,7 +79,6 @@ execute_command() {
     local counterpart=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.counterpart")
     local obligation_address=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.obligation_address")
     local obligation_group_id=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.obligation_group_id")
-    local notional=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.notional")
     local expiry=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.expiry")
     local data=$(yq eval -o json -I 0 ".commands[$command_index].parameters.data" "$COMMANDS_FILE" 2>/dev/null || echo "null")
     local initial_payments_amount=$(parse_yaml "$COMMANDS_FILE" ".commands[$command_index].parameters.initial_payments.amount")
@@ -182,7 +181,6 @@ execute_command() {
     counterpart=$(substitute_variables "$counterpart")
     obligation_address=$(substitute_variables "$obligation_address")
     obligation_group_id=$(substitute_variables "$obligation_group_id")
-    notional=$(substitute_variables "$notional")
     expiry=$(substitute_variables "$expiry")
     data=$(substitute_variables "$data")
     initial_payments_amount=$(substitute_variables "$initial_payments_amount")
@@ -255,7 +253,6 @@ execute_command() {
     if [[ -n "$counterpart" ]]; then echo_with_color $BLUE "    counterpart: $counterpart"; fi
     if [[ -n "$obligation_address" && "$obligation_address" != "null" ]]; then echo_with_color $BLUE "    obligation_address: $obligation_address"; fi
     if [[ -n "$obligation_group_id" && "$obligation_group_id" != "null" ]]; then echo_with_color $BLUE "    obligation_group_id: $obligation_group_id"; fi
-    if [[ -n "$notional" && "$notional" != "null" ]]; then echo_with_color $BLUE "    notional: $notional"; fi
     if [[ -n "$expiry" && "$expiry" != "null" ]]; then echo_with_color $BLUE "    expiry: $expiry"; fi
     if [[ -n "$data" && "$data" != "null" ]]; then echo_with_color $BLUE "    data: $data"; fi
     if [[ -n "$initial_payments_amount" ]]; then echo_with_color $BLUE "    initial_payments_amount: $initial_payments_amount"; fi
@@ -328,7 +325,7 @@ execute_command() {
             execute_balance "$command_name" "$user_email" "$user_password" "$denomination" "$obligor" "$group_id" "$group_name"
             ;;
         "create_obligation")
-            execute_create_obligation_ergonomic "$command_name" "$user_email" "$user_password" "$counterpart" "$obligation_address" "$obligation_group_id" "$denomination" "$obligor" "$notional" "$expiry" "$data" "$initial_payments_amount" "$initial_payments_json" "$idempotency_key" "$group_name" "$create_obligation_contract_id"
+            execute_create_obligation_ergonomic "$command_name" "$user_email" "$user_password" "$counterpart" "$obligation_address" "$obligation_group_id" "$denomination" "$obligor" "$expiry" "$data" "$initial_payments_amount" "$initial_payments_json" "$idempotency_key" "$group_name" "$create_obligation_contract_id"
             ;;
         "accept_obligation")
             execute_accept_obligation "$command_name" "$user_email" "$user_password" "$contract_id" "$idempotency_key" "$group_name"

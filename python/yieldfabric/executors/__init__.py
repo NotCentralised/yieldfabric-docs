@@ -9,6 +9,7 @@ from .group_admin_executor import GroupAdminExecutor
 from .obligation_executor import ObligationExecutor
 from .payment_executor import PaymentExecutor
 from .policy_executor import PolicyExecutor
+from .provisioning_executor import ProvisioningExecutor
 from .query_executor import QueryExecutor
 from .repo_executor import RepoExecutor
 from .swap_executor import SwapExecutor
@@ -23,6 +24,7 @@ __all__ = [
     "ObligationExecutor",
     "PaymentExecutor",
     "PolicyExecutor",
+    "ProvisioningExecutor",
     "QueryExecutor",
     "RepoExecutor",
     "SwapExecutor",

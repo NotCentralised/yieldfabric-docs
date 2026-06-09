@@ -1,0 +1,388 @@
+# ════════════════════════════════════════════════════════════════════════════
+#  SWAP ON A CLAIM-GATED (Tokeny / ERC-3643) OBLIGATION CLASS
+# ════════════════════════════════════════════════════════════════════════════
+#  Proves the end-to-end compliance story for a swap of an obligation minted into
+#  a per-class IdentityRegistry that GATES holders on an ERC-3643 claim (KYC).
+#
+#    • "Tokeny deployed contract" here = a ConfidentialObligation CLASS deployed
+#      through the ERC-3643 / Tokeny compliance stack — its OWN IdentityRegistry
+#      (IR) + ClaimTopicsRegistry (CTR) + TrustedIssuersRegistry (TIR) + per-entity
+#      ClaimIssuer. `deploy_class` mints the EIP-1167 proxy via the
+#      ConfidentialObligationFactory and wires its registries.
+#    • CLAIM GATE — the class IR requires a KYC claim (a topic on its CTR) issued by
+#      a trusted issuer (on its TIR). isVerified(holder) is true only when the
+#      holder is REGISTERED in that IR AND holds an accepted claim for that topic
+#      from that issuer.
+#    • THE EXEMPTION (what makes a swap of a gated asset possible at all) — the
+#      ConfidentialVault and ConfidentialSwap are EXEMPT from the gate
+#      (ExemptIdentityRegistry.isVerified short-circuits true for those two
+#      addresses). So the class obligation can be ESCROWED into the swap contract
+#      even though the swap is not itself a "verified party". The OUTBOUND hop
+#      (swap → buyer) still gates: only a VERIFIED buyer can receive the asset out
+#      of the swap. That asymmetry is the whole security invariant — infra is
+#      pass-through, real recipients are not.
+#
+#  WHAT THIS SUITE PROVES
+#    P (positive) — a VERIFIED buyer (investor, KYC'd by the issuer) completes a
+#                   swap and receives the gated obligation. Exercises the full path:
+#                   mint into the gated class → escrow into the EXEMPT swap →
+#                   deliver to a verified recipient (gate passes) → cash to seller.
+#    N (negative) — an UNVERIFIED buyer (the issuer itself: it configured the class
+#                   but never KYC'd ITSELF) cannot receive. create_swap SUCCEEDS
+#                   (escrow into the exempt swap), but complete_swap REVERTS at the
+#                   recipient gate. The seller then cancels and recovers the asset —
+#                   the gate protects WITHOUT loss. Proves owner/issuer status is
+#                   NOT holder verification, and the exemption's outbound gate holds.
+#
+#  This is the holder-side companion to `claims_lifecycle_group_suite.yaml`, which
+#  deliberately stopped at "the IR is correctly CONFIGURED" and skipped holder
+#  `register_identity` / `isVerified`. This suite picks up exactly there and drives
+#  it through a real swap.
+#
+#  PARTIES (the three funded users seeded by setup.yaml)
+#    • issuer   — COMPLIANCE AUTHORITY: deploys + owns the gated class, is the
+#                 trusted ClaimIssuer that issues the KYC claims. It NEVER KYC's
+#                 itself, so it doubles as the unverified buyer in N. (It does not
+#                 register holders — accounts are pre-registered at deploy; see below.)
+#    • payer    — VERIFIED SELLER: KYC'd + registered → mints gated obligations and
+#                 initiates the swaps.
+#    • investor — VERIFIED BUYER: KYC'd + registered → completes the positive swap.
+#
+#  RUN:  yieldfabric execute ../scripts/tests/swap_claim_gated_suite.yaml
+#
+#  PREREQUISITES (same baseline as the other swap suites)
+#    1. Fresh contract deploy (deploy_clean.ts — seeds public ERC-20 to
+#       payer / investor / issuer) + `setup.yaml` seeded.
+#    2. Services up: auth (:3000), agents (:3001), payments (:3002), test node.
+#    3. No on-chain addresses are hardcoded — the class IR + proxy are read from the
+#       deploy_class output; the topic + issuer ClaimIssuer are read from issue_claim.
+#
+#  VERIFICATION STATUS — authored against the handlers (provisioning executor,
+#    asset-register router, deploy_obligation workflow, swap/obligation resolvers)
+#    and the ExemptIdentityRegistry refactor. This is the FIRST suite to combine
+#    per-class HOLDER verification with a swap, so the first live run is the
+#    shakeout. Watch specifically:
+#      • [RESOLVED on first run] holder registration is NOT a per-class step: every
+#        account is pre-registered in the shared IdentityRegistryStorage at account
+#        deploy and per-class IRs share it, so an explicit register_identity reverts
+#        `address stored already`. The suite now relies on that pre-registration and
+#        only issues/accepts the per-class CLAIM. (register_identity retrying an
+#        already-stored address to a timeout, vs failing fast, is a service-side nit.)
+#      • the mint gate (whenCounterpartVerified) firing on the per-class proxy.
+#      • per-class resolution of an `obligation_ids` reference inside create_swap.
+#      • the recipient-gate revert string in N — `expect_error` is left off so the
+#        negative passes on the failure itself; tighten it once the real message is
+#        captured from a run.
+# ════════════════════════════════════════════════════════════════════════════
+
+commands:
+
+  # ════════ CTX — party contexts (account addresses + user ids; nothing hardcoded) ════════
+  - name: ctx_issuer
+    type: whoami
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: {}
+  - name: ctx_payer
+    type: whoami
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: {}
+  - name: ctx_investor
+    type: whoami
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: {}
+  - name: ctx_assert_issuer_account
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { actual: "$ctx_issuer.account_address", contains: "0x" }
+  - name: ctx_assert_payer_account
+    type: assert
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { actual: "$ctx_payer.account_address", contains: "0x" }
+  - name: ctx_assert_investor_account
+    type: assert
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { actual: "$ctx_investor.account_address", contains: "0x" }
+
+
+  # ════════ D — DEPLOY THE GATED CLASS (ERC-3643 / Tokeny stack, owned by issuer) ════════
+  # deploy_class → ConfidentialObligationFactory EIP-1167 proxy with its OWN IR/CTR/TIR.
+  # open_minting:true so the SELLER (payer) can mint into the issuer's class. The
+  # CTR/TIR start EMPTY — the KYC gate is configured in section G.
+  - name: d_deploy_gated
+    type: deploy_class
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      name: "KYC-Gated Note"
+      symbol: KGN
+      open_minting: true
+      transferable: true
+      idempotency_key: gated-class-$(date +%s)
+  - name: d_assert_class_addr
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { actual: "$d_deploy_gated.obligation_address", contains: "0x" }
+  # The per-class IR is load-bearing for every gate op below — assert it resolved so
+  # a missing IR fails HERE with a clear message, not as an opaque unresolved $ref later.
+  - name: d_assert_class_ir
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { actual: "$d_deploy_gated.identity_registry", contains: "0x" }
+
+
+  # ════════ G — CONFIGURE THE KYC GATE on the class IR (acting AS the owner) ════════
+  # Issue a KYC claim to the seller FIRST (so we learn the on-chain topic number),
+  # then add THAT topic to the class CTR and the issuer as a trusted issuer on the
+  # class TIR. The class owner (issuer) manages its own registries — owner-managed,
+  # no ManageCompliance needed.
+  - name: g_issue_kyc_payer
+    type: issue_claim
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { target_user_id: "$ctx_payer.user_id", claim_type: kyc }
+  - name: g_assert_kyc_payer_id
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { actual: "$g_issue_kyc_payer.issued_claim_id", contains: "-" }   # a UUID
+  # The claim's on-chain issuer IS the issuer's ClaimIssuer contract — exactly the
+  # value the TIR must end up holding. Assert present so the TIR check below isn't vacuous.
+  - name: g_assert_issuer_ci
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { actual: "$g_issue_kyc_payer.claim_issuer_address", contains: "0x" }
+
+  - name: g_set_gate
+    type: update_claim_requirements
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      identity_registry_address: "$d_deploy_gated.identity_registry"
+      add_claim_topics: [ "$g_issue_kyc_payer.topic" ]
+      add_trusted_issuers:
+        # Account address; the resolver maps caller-own-account → its ClaimIssuer.
+        - address: "$ctx_issuer.account_address"
+          topics: [ "$g_issue_kyc_payer.topic" ]
+
+  # Read the gate back: the topic on the CTR and the issuer's ClaimIssuer on the TIR
+  # (matching the claim's own on-chain issuer). The class is fresh per run, so its
+  # registries are empty at start — positive membership is reliable.
+  - name: g_requirements
+    type: claim_requirements
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { identity_registry_address: "$d_deploy_gated.identity_registry" }
+  - name: g_assert_topic_on_ctr
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { actual: "$g_requirements.claim_topics", contains: "$g_issue_kyc_payer.topic" }
+  - name: g_assert_issuer_ci_on_tir
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      actual: "$g_requirements.trusted_issuer_addresses_lc"
+      contains: "$g_issue_kyc_payer.claim_issuer_address_lc"
+
+
+  # ════════ V — VERIFY THE HOLDERS (accept the KYC claim; registration is already done) ════════
+  # A holder is isVerified when its account is REGISTERED in the IR storage AND it
+  # holds an accepted claim for the gated topic from the trusted issuer.
+  #
+  # LIVE-RUN FINDING — holders are ALREADY registered, so the suite does NOT call
+  # register_identity. Every user's account is onboarded into the chain-wide
+  # IdentityRegistryStorage at account deploy (vault relay `try_register_account_in_ir`),
+  # and per-class obligation IRs SHARE that storage — an explicit register_identity on
+  # the per-class IR reverts `address stored already` (and the endpoint retries to a
+  # client timeout). The gate needs only the per-class CTR/TIR config (section G) plus
+  # the holder's accepted claim below.
+
+  # ── payer (the seller): accept the KYC claim → confirm verified (already registered).
+  - name: v_accept_payer
+    type: accept_claim
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { issued_claim_id: "$g_issue_kyc_payer.issued_claim_id" }
+  - name: v_is_verified_payer
+    type: is_verified
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      identity_registry_address: "$d_deploy_gated.identity_registry"
+      user_address: "$ctx_payer.account_address"
+  - name: v_assert_payer_verified
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { actual: "$v_is_verified_payer.is_verified", equals: true }
+
+  # ── investor (the buyer): issue → accept → confirm verified (already registered).
+  - name: v_issue_kyc_investor
+    type: issue_claim
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { target_user_id: "$ctx_investor.user_id", claim_type: kyc }
+  - name: v_accept_investor
+    type: accept_claim
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { issued_claim_id: "$v_issue_kyc_investor.issued_claim_id" }
+  - name: v_is_verified_investor
+    type: is_verified
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      identity_registry_address: "$d_deploy_gated.identity_registry"
+      user_address: "$ctx_investor.account_address"
+  - name: v_assert_investor_verified
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { actual: "$v_is_verified_investor.is_verified", equals: true }
+
+  # ── issuer: the compliance authority is registered (like every account) but was
+  # NEVER issued a KYC claim → NOT a verified holder. This is the unverified buyer in
+  # section N. Registration is held constant, so the MISSING CLAIM is the sole reason
+  # it fails the gate — owner + trusted-ISSUER status is not holder verification.
+  - name: v_is_verified_issuer
+    type: is_verified
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      identity_registry_address: "$d_deploy_gated.identity_registry"
+      user_address: "$ctx_issuer.account_address"
+  - name: v_assert_issuer_unverified
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { actual: "$v_is_verified_issuer.is_verified", equals: false }
+
+
+  # ════════ M — MINT TWO OBLIGATIONS INTO THE GATED CLASS (seller = payer) ════════
+  # obligation_address routes the mint into the gated class proxy. counterpart = self
+  # + no initial_payments → auto-accepts at mint (payer holds it). The mint passes the
+  # class's whenCounterpartVerified gate because payer was verified in section V.
+  # contract_id is a suite-local alias reused as the obligation reference in create_swap.
+  - name: m_mint_pos
+    type: create_obligation
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      idempotency_key: gated-pos-$(date +%s)
+      counterpart: payer@yieldfabric.com
+      obligation_address: "$d_deploy_gated.obligation_address"
+      contract_id: gated_asset_pos
+      expiry: $(date -u -v+90d +%Y-%m-%dT%H:%M:%SZ)
+      data: { name: "Gated note (positive)", description: "to be swapped to a VERIFIED buyer" }
+  - name: m_mint_neg
+    type: create_obligation
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      idempotency_key: gated-neg-$(date +%s)
+      counterpart: payer@yieldfabric.com
+      obligation_address: "$d_deploy_gated.obligation_address"
+      contract_id: gated_asset_neg
+      expiry: $(date -u -v+90d +%Y-%m-%dT%H:%M:%SZ)
+      data: { name: "Gated note (negative)", description: "delivery to an UNVERIFIED buyer must fail" }
+
+
+  # ════════ F — FUND THE BUYERS (public ERC-20 → confidential balance) ════════
+  # Both candidate buyers need cash to attempt the swap payment. issuer is funded too
+  # so the negative fails at the RECIPIENT gate, not for lack of funds.
+  - name: f_fund_investor
+    type: deposit
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: aud-token-asset, amount: 1000000000000000000000000, idempotency_key: gated-fund-inv-$(date +%s) }
+  - name: f_fund_issuer
+    type: deposit
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { asset_id: aud-token-asset, amount: 1000000000000000000000000, idempotency_key: gated-fund-iss-$(date +%s) }
+
+
+  # ════════ P — POSITIVE: VERIFIED buyer (investor) receives the gated obligation ════════
+  # The full exemption path: payer offers the gated obligation (escrows into the
+  # EXEMPT swap), investor completes + pays 1000 AUD, the obligation is delivered to
+  # the VERIFIED investor (recipient gate passes), and payer claims the cash.
+  - name: p_payer_aud_before
+    type: balance
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { asset_id: aud-token-asset }
+  - name: p_create
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "970001"
+      idempotency_key: gated-p-create-$(date +%s)
+      deadline: $(date -u -v+40d +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        obligation_ids: [gated_asset_pos]
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: gated-p-cash-1 }] }
+  - name: p_complete
+    type: complete_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { swap_id: "970001", idempotency_key: gated-p-complete-$(date +%s) }
+  - name: p_payer_claim_cash
+    type: accept
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { payment_id: PAY-SWAP-970001-counterparty-0, idempotency_key: gated-p-claim-$(date +%s) }
+  - name: p_payer_aud_after
+    type: balance
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { asset_id: aud-token-asset }
+  # Seller received EXACTLY the 1000 AUD for the gated obligation.
+  - name: p_assert_seller_paid
+    type: assert
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      actual: "$p_payer_aud_after.private_balance"
+      minus:  "$p_payer_aud_before.private_balance"
+      equals: "1000000000000000000000"
+  # The gated obligation now belongs to the VERIFIED investor — offering it AS
+  # investor succeeds only if owned (and only a verified holder could have received it).
+  - name: p_verify_investor_owns
+    type: create_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      swap_id: "970097"
+      idempotency_key: gated-p-verify-$(date +%s)
+      initiator: { obligation_ids: [gated_asset_pos] }
+      counterparty:
+        id: payer@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: gated-p-verify-1 }] }
+      deadline: $(date -u -v+30d +%Y-%m-%dT%H:%M:%SZ)
+
+
+  # ════════ N — NEGATIVE: UNVERIFIED buyer (issuer) is blocked at delivery ════════
+  # payer offers the second gated obligation to the issuer. create_swap SUCCEEDS —
+  # the obligation escrows into the EXEMPT swap contract (the swap is exempt, so the
+  # inbound hop is fine). complete_swap, run by the UNVERIFIED issuer, REVERTS at the
+  # recipient gate (swap → issuer): the asset is never delivered. This is the exact
+  # ExemptIdentityRegistry invariant — infra is pass-through, the recipient is not.
+  - name: n_create
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "970002"
+      idempotency_key: gated-n-create-$(date +%s)
+      deadline: $(date -u -v+40d +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        obligation_ids: [gated_asset_neg]
+      counterparty:
+        id: issuer@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: gated-n-cash-1 }] }
+  - name: n_complete_blocked
+    type: complete_swap
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      swap_id: "970002"
+      idempotency_key: gated-n-complete-$(date +%s)
+      expect_failure: true
+      # expect_error intentionally omitted: the negative passes on the failure
+      # itself, not a brittle revert string. Tighten to the real recipient-gate
+      # reason (an ERC-3643 isVerified / "Transfer not possible" message) after the
+      # first live run captures it.
+
+  # The gate protected the asset WITHOUT loss: the seller cancels and recovers it.
+  # (Robust to escrow timing: if create_swap escrowed it, cancel returns it; if it
+  # only validated ownership, the seller never lost it — either way payer holds it.)
+  - name: n_cancel_recover
+    type: cancel_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { swap_id: "970002", key: cancel_key, value: cancel_value, idempotency_key: gated-n-cancel-$(date +%s) }
+  - name: n_verify_payer_recovered
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "970098"
+      idempotency_key: gated-n-verify-$(date +%s)
+      initiator: { obligation_ids: [gated_asset_neg] }
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: gated-n-verify-1 }] }
+      deadline: $(date -u -v+30d +%Y-%m-%dT%H:%M:%SZ)

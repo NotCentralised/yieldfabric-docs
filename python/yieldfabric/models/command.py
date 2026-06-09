@@ -25,7 +25,6 @@ class CommandParameters:
     counterpart: Optional[str] = None
     obligation_address: Optional[str] = None
     obligation_group_id: Optional[str] = None
-    notional: Optional[str] = None
     expiry: Optional[str] = None
     data: Optional[Dict[str, Any]] = None
     initial_payments: Optional[Dict[str, Any]] = None
@@ -58,7 +57,6 @@ class CommandParameters:
             'counterpart': data.get('counterpart'),
             'obligation_address': data.get('obligation_address'),
             'obligation_group_id': data.get('obligation_group_id'),
-            'notional': data.get('notional'),
             'expiry': data.get('expiry'),
             'data': data.get('data'),
             'initial_payments': data.get('initial_payments'),
@@ -101,8 +99,6 @@ class CommandParameters:
             result['obligation_address'] = self.obligation_address
         if self.obligation_group_id:
             result['obligation_group_id'] = self.obligation_group_id
-        if self.notional:
-            result['notional'] = self.notional
         if self.expiry:
             result['expiry'] = self.expiry
         if self.data:

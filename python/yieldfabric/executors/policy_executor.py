@@ -139,6 +139,10 @@ class PolicyExecutor(BaseExecutor):
         outputs = {
             "account_address": account_address,
             "group_account_address": group_account_address,
+            # Lowercased variants for case-robust on-chain address comparisons
+            # (on-chain reads come back in mixed case).
+            "account_address_lc": (account_address or "").lower() or None,
+            "group_account_address_lc": (group_account_address or "").lower() or None,
             "default_wallet_id": default_wallet_id,
             "sub": sub,
             "user_id": sub,

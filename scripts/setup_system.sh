@@ -121,6 +121,61 @@ login_with_services() {
     fi
 }
 
+# ── Deployed account-address reporting ──────────────────────────────────
+# Account deployment is async (MQ). A user's default account is deployed on
+# first login (auth `ensure_account_deployment_for_auth`); a group's account is
+# deployed on creation (`create_group_with_deployment`). We poll the read
+# endpoints until the on-chain CREATE2 address appears, then print it. Because
+# the salt is deterministic, a fresh chain yields the SAME address every run.
+
+# Print a USER's deployed default account address.
+# Logs in as the user (this ALSO triggers the deploy) and reads with their OWN
+# token — the chain-accounts endpoint forbids reading another user's accounts.
+print_user_account_address() {
+    local user_id="$1" email="$2" password="$3"
+    local token
+    token=$(login_with_services "$email" "$password")
+    if [[ -z "$token" || "$token" == "null" ]]; then
+        echo_with_color $YELLOW "      🏦 account: (login failed; cannot read address)"
+        return 1
+    fi
+    local attempt resp addr chain
+    for ((attempt=1; attempt<=12; attempt++)); do
+        resp=$(curl -s -X GET "${AUTH_SERVICE_URL}/entities/user/${user_id}/chain-accounts" \
+            -H "Authorization: Bearer ${token}")
+        # Prefer the default wallet; fall back to the first with a real address.
+        addr=$(echo "$resp" | jq -r '(map(select(.is_default==true)) + .) | map(select(.account_address!=null and .account_address!="")) | .[0].account_address // empty' 2>/dev/null)
+        chain=$(echo "$resp" | jq -r '(map(select(.is_default==true)) + .) | map(select(.account_address!=null and .account_address!="")) | .[0].chain_id // empty' 2>/dev/null)
+        if [[ -n "$addr" && "$addr" != "null" ]]; then
+            echo_with_color $PURPLE "      🏦 account: ${addr} (chain ${chain})"
+            return 0
+        fi
+        sleep 2
+    done
+    echo_with_color $YELLOW "      🏦 account: (not on chain yet after ~24s)"
+    return 1
+}
+
+# Print a GROUP's deployed account address (owner/admin token required — the
+# group creator's token works).
+print_group_account_address() {
+    local group_id="$1" token="$2"
+    local attempt resp addr status
+    for ((attempt=1; attempt<=12; attempt++)); do
+        resp=$(curl -s -X GET "${AUTH_SERVICE_URL}/auth/groups/${group_id}/account-status" \
+            -H "Authorization: Bearer ${token}")
+        status=$(echo "$resp" | jq -r '.account_status.status // empty' 2>/dev/null)
+        addr=$(echo "$resp" | jq -r '.account_status.account_address // empty' 2>/dev/null)
+        if [[ -n "$addr" && "$addr" != "null" && "$addr" != "0x0000000000000000000000000000000000000000" ]]; then
+            echo_with_color $PURPLE "      🏦 account: ${addr}${status:+ (${status})}"
+            return 0
+        fi
+        sleep 2
+    done
+    echo_with_color $YELLOW "      🏦 account: (not on chain yet after ~24s)"
+    return 1
+}
+
 # Helper to fetch first user's credentials from setup.yaml
 get_first_user_credentials() {
     local email=$(parse_yaml "$SETUP_FILE" '.users[0].id')
@@ -397,6 +452,7 @@ create_initial_users() {
                 # Store user ID for later use
                 eval "USER_ID_${i}=\"$existing_user_id\""
                 success_count=$((success_count + 1))
+                print_user_account_address "$existing_user_id" "$email" "$password"
                 continue
             fi
             
@@ -423,6 +479,8 @@ create_initial_users() {
                     success_count=$((success_count + 1))
                     # Wait a moment for the user to be fully registered
                     sleep 2
+                    # Trigger deploy (via login) + print the deployed account address
+                    print_user_account_address "$user_id" "$email" "$password"
                 else
                     echo_with_color $RED "  📧 $email - ❌ Failed: invalid response"
                 fi
@@ -466,6 +524,7 @@ create_group() {
         local created_group_id=$(echo "$response_body" | jq -r '.id // empty' 2>/dev/null)
         if [[ -n "$created_group_id" && "$created_group_id" != "null" ]]; then
             echo_with_color $GREEN "    ✅ Created (ID: ${created_group_id:0:8}...)"
+            print_group_account_address "$created_group_id" "$creator_token"
             return 0
         else
             echo_with_color $RED "    ❌ Failed: invalid response"
@@ -473,6 +532,10 @@ create_group() {
         fi
     elif [[ "$http_status" == "409" ]]; then
         echo_with_color $YELLOW "    ⚠️  Already exists"
+        local existing_gid=$(get_group_id_by_name_for_delegation "$creator_token" "$name")
+        if [[ -n "$existing_gid" && "$existing_gid" != "null" ]]; then
+            print_group_account_address "$existing_gid" "$creator_token"
+        fi
         return 0
     else
         echo_with_color $RED "    ❌ Failed (HTTP $http_status)"

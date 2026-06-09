@@ -1,0 +1,371 @@
+# ════════════════════════════════════════════════════════════════════════════
+#  CLAIMS + PROVISIONING LIFECYCLE — accounts · groups · token · class · claims
+# ════════════════════════════════════════════════════════════════════════════
+#  Exercises the CREATION + COMPLIANCE surfaces the swap suites never touch,
+#  end-to-end against the live runtime, for an individual issuer AND a group
+#  (delegation) issuer:
+#
+#    • ACCOUNT EXISTENCE      — whoami proves the caller's confidential
+#                               ConfidentialAccount (deployed at signup, re-ensured
+#                               idempotently on every login).
+#    • GROUP ACCOUNT CREATION — create_group + on-chain group account deploy.
+#    • DEPLOY TOKEN           — deploy_token: a fresh ERC-3643 compliant token
+#                               via CompliantTokenFactory (CREATE2 factory).
+#    • DEPLOY CLASS           — deploy_class: a ConfidentialObligation class via
+#                               ConfidentialObligationFactory (CREATE2 factory).
+#    • CLAIMS LIFECYCLE       — issue → accept → revoke → re-issue → re-accept,
+#                               as a user and as a GROUP (delegation).
+#    • GROUP TRUSTED ISSUER   — set a GROUP as a trusted issuer BY ITS ACCOUNT
+#                               address (the natural input) and confirm it lands on
+#                               the TrustedIssuersRegistry as the group's ClaimIssuer
+#                               contract. Regression guard for the third-party-issuer
+#                               → ClaimIssuer resolution fix in update_claim_requirements.
+#    • NEGATIVES              — wrong-party accept/revoke, re-issue-not-revoked,
+#                               idempotent double-revoke.
+#
+#  RUN:  yieldfabric execute ../scripts/tests/claims_lifecycle_group_suite.yaml
+#
+#  PREREQUISITES
+#    1. Fresh contract deploy (deploy_clean.ts) + `setup.yaml` seeded
+#       (`yieldfabric execute ../scripts/setup.yaml`): users payer/investor/issuer
+#       (all SuperAdmin) + the per-party groups. Same baseline as the swap suites.
+#    2. Services up: auth (:3000), agents (:3001), payments (:3002), test node.
+#    3. No addresses hardcoded in this file — the IdentityRegistry is backend-resolved.
+#
+#  WHAT THE GROUP-TRUSTED-ISSUER CHECK PROVES (and how it avoids false +/-)
+#    A group is just a user operated via a delegate JWT. Acting AS the group, we
+#    register the group's OWN account as a trusted issuer on its own class IR. Three
+#    things are exercised at once: (a) the resolver maps account → the group's
+#    ClaimIssuer CONTRACT (not the raw account); (b) the operate-as-group delegate
+#    path; (c) the decoupling fix — a per-token IR update is a pure owner meta-tx
+#    that no longer fires relay-direct system claims that would steal its nonce.
+#    The GG asserts pin the EXACT outcome (no false positive / negative):
+#      (1) POSITIVE  trusted_issuer_addresses CONTAINS the group's ClaimIssuer
+#                    (== the claim's own issuer) — proves the CI actually landed,
+#                    and is the GROUP's CI, not just the auto-added System CI. A
+#                    negative-only check would pass on an EMPTY TIR (the old hole).
+#      (2) NEGATIVE  the raw group ACCOUNT address is NOT on the TIR — proves it
+#                    was resolved, not stored verbatim (the original bug).
+#      (3) CTR       the claim topic was added — IR fully configured for (topic,
+#                    issuer) gating. The class is fresh per run, so positive
+#                    membership is reliable (no prior-run pollution).
+#    Holder-side `register_identity` / `isVerified` are deliberately NOT exercised:
+#    the obligation-class deploy intentionally skips agent/IR chaining (see
+#    deploy_obligation workflow — "obligation classes don't need agent/IR
+#    chaining"), so holder registration is a SEPARATE subsystem. Asserting it here
+#    would fail for reasons unrelated to this fix (a false negative), so it's out
+#    of scope by design — this suite proves the IR is correctly CONFIGURED.
+#
+#  VERIFICATION STATUS
+#    Authored against the handlers (asset-register router.rs, claims flows.rs,
+#    auth routes, deploy_obligation workflow) + the new provisioning executor.
+#    The IR + chain_id are resolved backend-side (no addresses in this file).
+#    Every endpoint is sourced from the handlers; a first live run is the final
+#    shakeout (workflow result-field names, factory addresses from config).
+# ════════════════════════════════════════════════════════════════════════════
+
+commands:
+
+  # ════════ C — ACCOUNT EXISTENCE ════════
+  # A user's ConfidentialAccount is deployed at signup and re-ensured idempotently
+  # on every login (auth `ensure_account_deployment`), so whoami alone proves it
+  # exists on-chain. NOTE: we intentionally do NOT call the `deploy_account`
+  # endpoint — that endpoint (`deploy_wallet_account`) deploys an ADDITIONAL
+  # wallet, which is not what "ensure the account exists" means.
+  - name: c_payer_ctx
+    type: whoami
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: {}
+  - name: c_assert_payer_account
+    type: assert
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { actual: "$c_payer_ctx.account_address", contains: "0x" }
+
+  - name: c_investor_ctx
+    type: whoami
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: {}
+  - name: c_assert_investor_account
+    type: assert
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { actual: "$c_investor_ctx.account_address", contains: "0x" }
+
+
+  # ════════ G — GROUP ACCOUNT CREATION ════════
+  # Create a fresh group (idempotent: recovered by name on re-run) and deploy its
+  # on-chain confidential account; whoami AS the group surfaces the group account.
+  - name: g_create_compliance_group
+    type: create_group
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { name: "Compliance Group", description: "claims-suite issuer group", group_type: project }
+  - name: g_assert_group_account
+    type: assert
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { actual: "$g_create_compliance_group.account_address", contains: "0x" }
+  - name: g_group_ctx
+    type: whoami
+    user: { id: payer@yieldfabric.com, password: payer_password, group: Compliance Group }
+    parameters: {}
+  - name: g_assert_group_ctx_account
+    type: assert
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { actual: "$g_group_ctx.group_account_address", contains: "0x" }
+
+
+  # ════════ T — DEPLOY TOKEN (ERC-3643, CompliantTokenFactory / CREATE2) ════════
+  - name: t_deploy_token
+    type: deploy_token
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      name: "Claims Suite USD"
+      symbol: CSUSD
+      decimals: 18
+      asset_type: Cash
+      asset_name: "Claims Suite USD"
+  - name: t_assert_token_address
+    type: assert
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { actual: "$t_deploy_token.token_address", contains: "0x" }
+
+
+  # ════════ K — DEPLOY CLASS (ConfidentialObligation, factory / CREATE2) ════════
+  # Deployed AS THE GROUP (delegation JWT, acting_as=group) so the GROUP owns the
+  # per-class IdentityRegistry and is therefore authorised to manage its
+  # TrustedIssuersRegistry in the GG section (owner-managed, no ManageCompliance).
+  # This mirrors a USER deploying its own class one-to-one — a group is identical
+  # to a user, just operated via a delegate JWT.
+  # POST /api/asset_register/deploy_obligation_workflow → poll the workflow →
+  # obligation_address (the EIP-1167 proxy via ConfidentialObligationFactory).
+  - name: k_deploy_class
+    type: deploy_class
+    user: { id: payer@yieldfabric.com, password: payer_password, group: Compliance Group }
+    parameters:
+      name: "Claims Suite Class"
+      symbol: CSC
+      open_minting: true
+      transferable: true
+      idempotency_key: claims-suite-class-$(date +%s)
+  - name: k_assert_class_address
+    type: assert
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { actual: "$k_deploy_class.obligation_address", contains: "0x" }
+  # The per-class IdentityRegistry is load-bearing for the GG section (its CTR/TIR
+  # are what we mutate + read back). Assert it resolved so a missing IR fails here
+  # with a clear message instead of as an opaque unresolved-$ref later.
+  - name: k_assert_class_ir
+    type: assert
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { actual: "$k_deploy_class.identity_registry", contains: "0x" }
+
+
+  # ════════ L — CLAIMS LIFECYCLE (individual issuer → individual target) ════════
+  # payer ISSUES a KYC claim to investor; investor ACCEPTS; payer REVOKES; payer
+  # RE-ISSUES (same row, fresh signature); investor RE-ACCEPTS. Status-only asserts
+  # here are deterministic and directly exercise the revoke-flip + re-issue paths.
+  - name: l_issue
+    type: issue_claim
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { target_user_id: "$c_investor_ctx.user_id", claim_type: kyc }
+  - name: l_assert_issued_id
+    type: assert
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { actual: "$l_issue.issued_claim_id", contains: "-" }   # a UUID
+
+  - name: l_accept
+    type: accept_claim
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { issued_claim_id: "$l_issue.issued_claim_id" }
+
+  - name: l_revoke
+    type: revoke_claim
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { issued_claim_id: "$l_issue.issued_claim_id" }
+
+  # Re-issue is update-in-place (revoked → pending, SAME id, fresh signature),
+  # so the holder re-accepts the SAME issued_claim_id.
+  - name: l_reissue
+    type: reissue_claim
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { issued_claim_id: "$l_issue.issued_claim_id" }
+  - name: l_reaccept
+    type: accept_claim
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { issued_claim_id: "$l_issue.issued_claim_id" }
+
+
+  # ════════ D — DELEGATION: claims issued / managed AS A GROUP ════════
+  # payer acts AS "Compliance Group" (delegation JWT, acting_as=group). The claim
+  # is GROUP-owned (issuer = context_entity_id = group), so issued_by_me AS the
+  # group lists it and the group delegate can revoke/re-issue it — the delegation
+  # fix. (Group account must have a ClaimIssuer, set at group account deploy.)
+  - name: d_group_issue
+    type: issue_claim
+    user: { id: payer@yieldfabric.com, password: payer_password, group: Compliance Group }
+    parameters: { target_user_id: "$c_investor_ctx.user_id", claim_type: aml }
+  - name: d_assert_group_issued_id
+    type: assert
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { actual: "$d_group_issue.issued_claim_id", contains: "-" }
+
+  # The group's claim is visible to the group (delegation-aware issued_by_me).
+  - name: d_group_issued_by_me
+    type: issued_by_me
+    user: { id: payer@yieldfabric.com, password: payer_password, group: Compliance Group }
+    parameters: {}
+  - name: d_assert_group_sees_claim
+    type: assert
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { actual: "$d_group_issued_by_me.claim_count", gte: "1" }
+
+  - name: d_group_accept
+    type: accept_claim
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { issued_claim_id: "$d_group_issue.issued_claim_id" }
+  # A group delegate (here the same owner acting as the group) revokes + re-issues.
+  - name: d_group_revoke
+    type: revoke_claim
+    user: { id: payer@yieldfabric.com, password: payer_password, group: Compliance Group }
+    parameters: { issued_claim_id: "$d_group_issue.issued_claim_id" }
+  - name: d_group_reissue
+    type: reissue_claim
+    user: { id: payer@yieldfabric.com, password: payer_password, group: Compliance Group }
+    parameters: { issued_claim_id: "$d_group_issue.issued_claim_id" }
+
+
+  # ════════ N — NEGATIVES (auth + idempotency guards) ════════
+  # Fresh claim to act on.
+  - name: n_issue
+    type: issue_claim
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { target_user_id: "$c_investor_ctx.user_id", claim_type: accredited_investor }
+
+  # N1: a non-issuer (investor) cannot revoke payer's claim.
+  - name: n_revoke_by_non_issuer_fails
+    type: revoke_claim
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      issued_claim_id: "$n_issue.issued_claim_id"
+      expect_failure: true
+      expect_error: "Not the issuer of this claim"
+
+  # N2: a non-target (payer) cannot accept a claim targeted at investor.
+  - name: n_accept_by_non_target_fails
+    type: accept_claim
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      issued_claim_id: "$n_issue.issued_claim_id"
+      expect_failure: true
+      expect_error: "Not the target of this claim"
+
+  # N3: re-issue only applies to a REVOKED claim.
+  - name: n_reissue_not_revoked_fails
+    type: reissue_claim
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      issued_claim_id: "$n_issue.issued_claim_id"
+      expect_failure: true
+      expect_error: "not revoked"
+
+  # N4: revoke is IDEMPOTENT — revoking an already-revoked claim returns ok
+  # (avoids the on-chain "already revoked" revert). Both succeed.
+  - name: n_revoke_once
+    type: revoke_claim
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { issued_claim_id: "$n_issue.issued_claim_id" }
+  - name: n_revoke_again_idempotent
+    type: revoke_claim
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { issued_claim_id: "$n_issue.issued_claim_id" }
+
+
+  # ════════ GG — GROUP AS TRUSTED ISSUER (operated via delegate JWT) ════════
+  # Regression guard for the reported bug, validated through the CORRECT model: a
+  # group is operated via a DELEGATION JWT and is otherwise IDENTICAL to a user
+  # account. So a group registers ITSELF as a trusted issuer exactly as a user does
+  # for itself — acting AS the group (acting_as=group), it adds its OWN account
+  # address, and the resolver's step-2 self path maps caller-account → caller's
+  # signer EOA → getClaimIssuer. No cross-entity key fetch, no special group
+  # handling — the same path that works for a user adding its own account.
+  #
+  # Why this is the right shape: the group's claim (gg_group_issue, issued AS the
+  # group) carries issuer = getClaimIssuer(group signer EOA); the trust-set, also
+  # AS the group, resolves the SAME signer EOA → the SAME ClaimIssuer. So the TIR
+  # entry matches the claim's on-chain issuer (keccak256(issuer, topic)). The OLD
+  # bug stored the raw account, which never matched.
+  #
+  # The class was deployed AS THE GROUP (section K) so the group owns the per-class
+  # IR and is authorised to manage its TrustedIssuersRegistry (owner-managed, no
+  # ManageCompliance). Holder-side registration / isVerified are a separate
+  # subsystem and NOT exercised here — this targets the resolver + operate-as-group.
+  - name: gg_group_issue
+    type: issue_claim
+    user: { id: payer@yieldfabric.com, password: payer_password, group: Compliance Group }
+    parameters: { target_user_id: "$c_investor_ctx.user_id", claim_type: kyc }
+  - name: gg_assert_group_issue
+    type: assert
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { actual: "$gg_group_issue.issued_claim_id", contains: "-" }
+  # The claim's on-chain issuer IS the group's ClaimIssuer contract — exactly the
+  # value the TIR must end up holding. Assert it exists so the POSITIVE TIR check
+  # below has a real ClaimIssuer to match (a null here would make that check
+  # vacuous — a false positive we explicitly close).
+  - name: gg_assert_group_ci_present
+    type: assert
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { actual: "$gg_group_issue.claim_issuer_address", contains: "0x" }
+
+  # THE FIX, exercised: acting AS the group, register the group's OWN account as a
+  # trusted issuer on the group's own class IR. Resolver step 2 (caller's own
+  # account → caller's signer EOA → getClaimIssuer) maps it to the group's
+  # ClaimIssuer — identical to a user adding itself. A regression would reject.
+  - name: gg_trust_group_by_account
+    type: update_claim_requirements
+    user: { id: payer@yieldfabric.com, password: payer_password, group: Compliance Group }
+    parameters:
+      identity_registry_address: "$k_deploy_class.identity_registry"
+      add_claim_topics: [ "$gg_group_issue.topic" ]
+      add_trusted_issuers:
+        - address: "$g_group_ctx.group_account_address"   # group ACCOUNT addr, not its CI
+          topics: [ "$gg_group_issue.topic" ]
+
+  # Read the TIR + CTR back and assert all THREE properties of a correct resolve.
+  # The class is fresh per run (deployed in section K with a per-run idempotency
+  # key), so its registries are empty at the start of this run — no prior-run
+  # pollution — which lets us assert POSITIVE membership safely, not just absence.
+  - name: gg_requirements
+    type: claim_requirements
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { identity_registry_address: "$k_deploy_class.identity_registry" }
+
+  # (1) POSITIVE — the group's ClaimIssuer CONTRACT is on the TIR. This is the
+  # assertion the old test lacked: a negative-only check passes even when NOTHING
+  # was added (empty TIR), so it could green while the fix was broken. Matching
+  # the claim's own issuer (gg_group_issue.claim_issuer_address) proves the
+  # resolver mapped account → the RIGHT ClaimIssuer and it actually landed — and
+  # that it's the GROUP's CI, not merely the auto-added System CI.
+  - name: gg_assert_ci_on_tir
+    type: assert
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      actual: "$gg_requirements.trusted_issuer_addresses_lc"
+      contains: "$gg_group_issue.claim_issuer_address_lc"
+
+  # (2) NEGATIVE — the raw group ACCOUNT address is NOT on the TIR. The original
+  # bug stored the account verbatim; the resolver must replace it with the CI.
+  # Together with (1) this pins the exact value: CI present, account absent.
+  - name: gg_assert_account_not_raw_on_tir
+    type: assert
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      actual: "$gg_requirements.trusted_issuer_addresses_lc"
+      not_contains: "$g_group_ctx.group_account_address_lc"
+
+  # (3) CTR — the claim topic was added. isVerified gates on (topic, issuer); (1)
+  # covers the issuer, this covers the topic, so the IR is fully configured to
+  # verify a holder of the group's claim.
+  - name: gg_assert_topic_on_ctr
+    type: assert
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      actual: "$gg_requirements.claim_topics"
+      contains: "$gg_group_issue.topic"

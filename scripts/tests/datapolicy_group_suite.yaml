@@ -354,7 +354,7 @@ commands:
       expect_failure: true
       # The backend op-binding PRE-CHECK (transaction_creation.rs) catches the wrong op BEFORE
       # submitting: the built Withdraw op (selector 0xd0d297b2) matches none of policy 9001's allowed
-      # calls ([send 0x840b5300]). A fast-fail — it never reaches the on-chain
+      # calls ([send 0x77bbee73]). A fast-fail — it never reaches the on-chain
       # OperationNotAllowedByPolicy backstop in DataPolicyLib.authorize.
       expect_error: "allowed calls (target/selector mismatch)"
 

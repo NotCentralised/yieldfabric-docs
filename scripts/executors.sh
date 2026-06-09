@@ -661,14 +661,13 @@ execute_create_obligation_ergonomic() {
     local obligation_group_id="$6"
     local denomination="$7"
     local obligor="$8"
-    local notional="$9"
-    local expiry="${10}"
-    local data="${11}"
-    local initial_payments_amount="${12}"
-    local initial_payments_json="${13}"
-    local idempotency_key="${14}"
-    local group_name="${15}"  # Optional group name for delegation
-    local contract_id="${16}"  # Optional contract ID - if not provided, one will be auto-generated
+    local expiry="$9"
+    local data="${10}"
+    local initial_payments_amount="${11}"
+    local initial_payments_json="${12}"
+    local idempotency_key="${13}"
+    local group_name="${14}"  # Optional group name for delegation
+    local contract_id="${15}"  # Optional contract ID - if not provided, one will be auto-generated
     
     echo_with_color $CYAN "🤝 Executing create obligation command via GraphQL: $command_name"
     
