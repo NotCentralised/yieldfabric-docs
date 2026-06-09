@@ -45,7 +45,8 @@ chain time; running two back-to-back on one node can collide or skew timestamps.
 | [`swap_lifecycle_combinations_group_suite`](swap_lifecycle_combinations_group_suite.yaml) | 105 | The lifecycle suite run entirely from **group accounts** | ✓ passing |
 | [`swap_exchange_conservation_suite`](swap_exchange_conservation_suite.yaml) | 51 | Every leg credits the right party by the **exact** amount — upfront, repurchase, forfeit, plain swap (E1–E4) | ✓ passing |
 | [`swap_repo_transfer_matrix`](swap_repo_transfer_matrix_suite.yaml) | 39 | **Transfer the repo position** to a new counterparty, then repurchase/forfeit/roll follow the new holder (T1–T4) | T1/T2 ✓; T3 #75 fixed (re-run); T4 pending |
-| [`swap_claim_gated_suite`](swap_claim_gated_suite.yaml) | 40 | Swap of an obligation in a **claim-gated** (ERC-3643/Tokeny) class: a verified buyer receives via the vault/swap **exemption** path; an unverified buyer is blocked at delivery (P, N) | authored; deploy + gate-config live-proven; swap pending re-run |
+| [`swap_claim_gated_suite`](swap_claim_gated_suite.yaml) | 59 | Swap of an obligation in a **claim-gated** (ERC-3643/Tokeny) class: verified buyer receives via the vault/swap **exemption** (P); unverified buyer blocked at delivery (N); seller who loses KYC mid-escrow can't recover until re-verified (R); soul-bound (`transferable:false`) class can't be escrowed (S) | P/N live-proven; R/S authored |
+| [`swap_claim_gated_repo_suite`](swap_claim_gated_repo_suite.yaml) | 53 | Per-class (gated) obligations through the **repo** flows: gated-collateral repurchase (A), roll (B), expiry/forfeit (C) — proves the per-class routing in `repurchase.rs`/`roll.rs` | authored; pending first run |
 
 ### `swap_repo_suite.yaml` — foundational functional gate
 The original pre-deployment suite. Scenarios:
@@ -115,15 +116,30 @@ KYC claim (topic on the CTR, trusted issuer on the TIR). Proves the
   KYC'd itself) is blocked: `create_swap` succeeds (escrow into the exempt swap) but
   `complete_swap` reverts at the recipient gate; the seller then cancels and recovers
   the asset — the gate protects **without loss**.
+- **R** a verified seller who **loses KYC mid-escrow** can't recover their own asset:
+  after escrow, the issuer `revoke_claim`s the seller, so `cancel_swap`'s refund reverts
+  at the recipient gate; re-issue + re-accept restores the seller and the same cancel
+  succeeds — the (intentional, compliance-consistent) gate-on-return is **recoverable**
+  (security-review finding #2).
+- **S** a **soul-bound** class (`transferable:false`) can be minted + held but **not
+  escrowed**: `create_swap` reverts on the escrow transfer — the per-class `transferable`
+  flag is enforced on the swap path (static form of finding #1).
+
+Repo companion: [`swap_claim_gated_repo_suite`](swap_claim_gated_repo_suite.yaml) drives
+the same gated class through **repurchase, roll, and expiry/forfeit** (proving the
+per-class routing in `repurchase.rs`/`roll.rs`). Contract-level proof lives in hardhat
+[`test/ConfidentialSwapPerClass.test.ts`](../../yieldfabric-smart-contracts/test/ConfidentialSwapPerClass.test.ts):
+escrow + release both route to the per-class proxy, a malicious `obligation_address` is
+bounded to self-harm, and an owner-freeze strands the asset without theft — **8/8 passing**.
 
 Holder-side companion to `claims_lifecycle_group_suite` (which configures the IR but
-deliberately stops before holder `isVerified`). Live-run notes: the gated-class deploy
-and full gate config (topic→CTR, issuer ClaimIssuer→TIR) are proven. Holder
-registration is **not** a per-class step — accounts are pre-registered in the shared
-IdentityRegistryStorage at account deploy and per-class IRs share it, so an explicit
-`register_identity` reverts `address stored already`; the suite verifies holders by
-claim alone. Still pending a clean re-run: the mint gate on the per-class proxy and
-the recipient-gate revert string (N's `expect_error` left off until captured).
+deliberately stops before holder `isVerified`). Live-run notes: **P/N are live-proven**
+(deploy, full gate config topic→CTR + issuer ClaimIssuer→TIR, escrow, delivery, and the
+recipient-gate block); R/S and the repo companion are authored, pending a first run.
+Holder registration is **not** a per-class step — accounts are pre-registered in the
+shared IdentityRegistryStorage at account deploy and per-class IRs share it, so an
+explicit `register_identity` reverts `address stored already`; the suite verifies holders
+by claim alone.
 
 ---
 

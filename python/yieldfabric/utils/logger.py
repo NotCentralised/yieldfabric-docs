@@ -66,6 +66,10 @@ class YieldFabricLogger:
     def cyan(self, message: str):
         """Log message in cyan."""
         self._print(Colors.CYAN, message)
+
+    def purple(self, message: str):
+        """Log message in purple (always shown, unlike debug())."""
+        self._print(Colors.PURPLE, message)
     
     def section(self, title: str, char: str = "=", length: int = 80):
         """Log a section header."""

@@ -13,11 +13,19 @@ Usage (programmatic):
     with YieldFabricSetupRunner(config) as runner:
         ok = runner.run("../scripts/setup.yaml")
 
-Usage (CLI, once wired):
+Usage (CLI):
 
-    python -m yieldfabric.cli setup ../scripts/setup.yaml
+    python -m yieldfabric.cli setup ../scripts/setup.yaml            # full setup
+    python -m yieldfabric.cli setup ../scripts/setup.yaml tokens assets
+    python -m yieldfabric.cli setup ../scripts/setup.yaml validate   # offline check
+
+Granular phases mirror `setup_system.sh`'s commands one-for-one
+(setup/all, users, groups, owners, tokens, assets, fiat, status,
+validate). Multiple phases run in the order given, so `tokens assets`
+seeds tokens then assets in a single invocation.
 """
 
+import os
 import time
 from typing import Any, Dict, List, Optional
 
@@ -51,7 +59,27 @@ class YieldFabricSetupRunner:
     5. Create tokens under an admin JWT.
     6. Create assets under an admin JWT.
     7. Create fiat accounts (US/UK/AU) if the section exists.
+
+    Each step is also runnable on its own via :meth:`run_phases`, which
+    is how the CLI exposes `setup_system.sh`'s granular commands.
     """
+
+    # Canonical phase names — one per `setup_system.sh` command.
+    ALL_PHASE = "all"
+    PHASES = (
+        "all", "users", "groups", "owners",
+        "tokens", "assets", "fiat", "status", "validate",
+    )
+    # Accept a few friendly synonyms (CLI ergonomics + bash parity).
+    _PHASE_ALIASES = {
+        "setup": "all",
+        "fiat_accounts": "fiat",
+        "relationships": "owners",
+        "user": "users",
+        "group": "groups",
+        "token": "tokens",
+        "asset": "assets",
+    }
 
     def __init__(self, config: Optional[YieldFabricConfig] = None):
         self.config = config or YieldFabricConfig.from_env()
@@ -68,26 +96,130 @@ class YieldFabricSetupRunner:
         # not emails).
         self._user_ids: Dict[str, str] = {}
 
+        # Lazy, cached prerequisites so running several phases in one
+        # invocation (e.g. `tokens assets`) doesn't re-validate services,
+        # re-create users, or re-acquire the admin token for each phase.
+        self._services_ok: Optional[bool] = None
+        self._users_ensured: bool = False
+        self._admin_token: Optional[str] = None
+
     # ------------------------------------------------------------------
+
+    @classmethod
+    def normalize_phase(cls, name: str) -> str:
+        """Lower-case a phase name and resolve any alias (setup→all, …)."""
+        n = (name or "").strip().lower()
+        return cls._PHASE_ALIASES.get(n, n)
+
+    @classmethod
+    def is_known_phase(cls, name: str) -> bool:
+        """True if `name` (after alias resolution) is a runnable phase."""
+        return cls.normalize_phase(name) in cls.PHASES
 
     def run(self, setup_file: str) -> bool:
         """
-        Full setup from `setup_file`. Returns True iff every step
+        Full setup from `setup_file` (the `all` phase). Back-compat thin
+        wrapper over :meth:`run_phases`. Returns True iff every step
         succeeded (or was idempotently skipped because it already
         existed).
         """
-        self.logger.cyan("🚀 Running system setup")
-        self.logger.separator()
+        return self.run_phases(setup_file, [self.ALL_PHASE])
 
+    def run_phases(self, setup_file: str, phases: List[str]) -> bool:
+        """
+        Run one or more named phases against `setup_file`, in order.
+
+        `phases` is a list of `setup_system.sh`-equivalent command names
+        (see :attr:`PHASES`). An empty list defaults to the full setup.
+        Phases share cached prerequisites (service validation, admin
+        token, user creation) so `["tokens", "assets"]` validates once
+        and reuses the same admin token for both.
+
+        Returns True iff every requested phase succeeded.
+        """
         if yaml is None:
             self.logger.error("❌ PyYAML is not installed (see requirements.txt)")
             return False
 
-        if not self.service_validator.validate_services():
-            return False
+        # Normalise + validate the requested phases up front so a typo
+        # fails fast instead of half-running a multi-phase sequence.
+        normalized: List[str] = []
+        for raw in (phases or [self.ALL_PHASE]):
+            name = self.normalize_phase(raw)
+            if name not in self.PHASES:
+                self.logger.error(
+                    f"❌ unknown phase: {raw!r} "
+                    f"(valid: {', '.join(self.PHASES)})"
+                )
+                return False
+            normalized.append(name)
+        if not normalized:
+            normalized = [self.ALL_PHASE]
 
         setup = self._parse_setup_file(setup_file)
         if setup is None:
+            return False
+
+        self.logger.cyan(f"📄 Config file: {setup_file}")
+        self.logger.cyan(f"▶  Phases: {', '.join(normalized)}")
+        self.logger.separator()
+
+        all_ok = True
+        for phase in normalized:
+            all_ok &= self._run_one_phase(phase, setup, setup_file)
+        return all_ok
+
+    def _run_one_phase(self, phase: str, setup: Dict[str, Any], setup_file: str) -> bool:
+        """Dispatch a single normalized phase. Acquires only the
+        prerequisites that phase needs (validate/status/owners differ)."""
+        # Offline / read-only phases — no services or admin token needed.
+        if phase == "validate":
+            return self._validate(setup, setup_file)
+        if phase == "status":
+            return self._status(setup, setup_file)
+        if phase == self.ALL_PHASE:
+            return self._run_full(setup)
+
+        # Every mutating phase needs the services up.
+        if not self._ensure_services():
+            return False
+
+        if phase == "users":
+            ok = self._setup_users(setup.get("users") or [])
+            self._users_ensured = True
+            return ok
+
+        # groups/owners need user_ids to resolve members; tokens/assets/fiat
+        # only need users when there's no API key (so first-user admin login
+        # works). This mirrors `setup_system.sh` calling create_initial_users
+        # before each of those commands.
+        needs_user_ids = phase in ("groups", "owners")
+        if needs_user_ids or not self.config.api_key:
+            self._ensure_users(setup)
+
+        admin_token = self._ensure_admin(setup)
+        if not admin_token:
+            self.logger.error("❌ Could not acquire an admin token; aborting phase")
+            return False
+
+        if phase == "groups":
+            return self._setup_groups(setup.get("groups") or [], admin_token)
+        if phase == "owners":
+            return self._setup_owners(setup.get("groups") or [], admin_token)
+        if phase == "tokens":
+            return self._setup_tokens(setup.get("tokens") or [], admin_token)
+        if phase == "assets":
+            return self._setup_assets(setup.get("assets") or [], admin_token)
+        if phase == "fiat":
+            return self._setup_fiat_accounts(setup.get("fiat_accounts") or [], admin_token)
+        # Unreachable — phase was validated above.
+        return False
+
+    def _run_full(self, setup: Dict[str, Any]) -> bool:
+        """The complete bootstrap (the `all` phase): users → groups →
+        owners → tokens → assets → fiat, in the order the shell expects."""
+        self.logger.cyan("🚀 Running system setup")
+        if not self._ensure_services():
             return False
 
         all_ok = True
@@ -95,17 +227,26 @@ class YieldFabricSetupRunner:
         # 1. Users.
         self.logger.subsection("👥 Users")
         all_ok &= self._setup_users(setup.get("users") or [])
+        self._users_ensured = True
 
-        # Everything else needs an admin token. Use the FIRST user in
-        # the YAML (by convention all setup-yaml users are SuperAdmin).
-        admin_token = self._acquire_admin_token(setup.get("users") or [])
+        # Everything else needs an admin token. Use the API key if set,
+        # else the FIRST user in the YAML (conventionally a SuperAdmin).
+        admin_token = self._ensure_admin(setup)
         if not admin_token:
             self.logger.error("❌ Could not acquire an admin token; aborting")
             return False
 
-        # 2. Groups (with per-creator login, deploy, and members).
+        # 2. Groups (create + per-creator login + deploy + members).
         self.logger.subsection("🏢 Groups")
         all_ok &= self._setup_groups(setup.get("groups") or [], admin_token)
+
+        # 2b. On-chain account owners / relationships. No-op when no group
+        # declares members (the common case for the current setup.yaml),
+        # so existing token/asset-only files are unaffected.
+        groups = setup.get("groups") or []
+        if any((g.get("members") for g in groups)):
+            self.logger.subsection("🔗 Group owners")
+            all_ok &= self._setup_owners(groups, admin_token)
 
         # 3. Tokens.
         self.logger.subsection("🪙 Tokens")
@@ -127,6 +268,29 @@ class YieldFabricSetupRunner:
         else:
             self.logger.warning("⚠️  Setup completed with some failures")
         return all_ok
+
+    # ------------------------------------------------------------------
+    # Cached prerequisites (shared across phases in one invocation).
+    # ------------------------------------------------------------------
+
+    def _ensure_services(self) -> bool:
+        """Validate auth + payments are reachable (once per runner)."""
+        if self._services_ok is None:
+            self._services_ok = self.service_validator.validate_services()
+        return self._services_ok
+
+    def _ensure_users(self, setup: Dict[str, Any]) -> None:
+        """Idempotently create the declared users (once per runner),
+        populating `_user_ids` for downstream member resolution."""
+        if not self._users_ensured:
+            self._setup_users(setup.get("users") or [])
+            self._users_ensured = True
+
+    def _ensure_admin(self, setup: Dict[str, Any]) -> Optional[str]:
+        """Acquire and cache the admin JWT (API key, else first user)."""
+        if self._admin_token is None:
+            self._admin_token = self._acquire_admin_token(setup.get("users") or [])
+        return self._admin_token
 
     # ------------------------------------------------------------------
     # Internals.
@@ -160,21 +324,29 @@ class YieldFabricSetupRunner:
 
             result = self.auth_service.create_user(email, password, role)
             status = result.get("status")
+            user_id = None
             if status == "created":
                 user_id = result.get("user_id")
-                if user_id:
-                    self._user_ids[email] = user_id
                 self.logger.success(f"  ✅ {email} ({role}) created")
             elif status == "exists":
                 # Already there — log in to learn the user_id so we can
                 # still add them to groups downstream.
                 self.logger.info(f"  ⚠️  {email} already exists; logging in to recover user_id")
                 user_id = self._login_and_extract_user_id(email, password)
-                if user_id:
-                    self._user_ids[email] = user_id
             else:
                 self.logger.error(f"  ❌ {email}: {result.get('message')}")
                 ok = False
+                continue
+
+            if user_id:
+                self._user_ids[email] = user_id
+                # Log in (triggers the account deploy) and print the
+                # deployed default account address — shell parity.
+                self._print_user_account_address(user_id, email, password)
+            else:
+                self.logger.warning(
+                    f"  ⚠️  {email}: no user_id resolved; cannot show account address"
+                )
         return ok
 
     def _login_and_extract_user_id(self, email: str, password: str) -> Optional[str]:
@@ -280,6 +452,9 @@ class YieldFabricSetupRunner:
             # Deploy the group's on-chain account if not already deployed.
             ok &= self._deploy_group_if_needed(admin_token, name, group_id)
 
+            # Print the deployed group account address — shell parity.
+            self._print_group_account_address(creator_token, group_id, name)
+
             # Add any declared members (optional — commented out in current setup.yaml).
             members = group.get("members") or []
             for m in members:
@@ -342,6 +517,79 @@ class YieldFabricSetupRunner:
         # Unknown status — log and continue (non-fatal).
         self.logger.warning(f"  ⚠️  group {name} account status: {status!r}")
         return True
+
+    # ------------------------------------------------------------------
+    # Deployed account-address reporting — parity with setup_system.sh's
+    # print_user_account_address / print_group_account_address.
+    #
+    # Account deployment is async (MQ): a user's default account deploys
+    # on first login (auth `ensure_account_deployment_for_auth`); a
+    # group's account deploys on creation. We poll the read endpoints
+    # until the deterministic CREATE2 address appears, then print it.
+    # ------------------------------------------------------------------
+
+    _ACCT_POLL_ATTEMPTS = 12       # ~24s ceiling, matching the shell's loop
+    _ACCT_POLL_INTERVAL = 2.0
+    _ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
+
+    def _print_user_account_address(
+        self, user_id: str, email: str, password: str
+    ) -> None:
+        """
+        Log in as the user (which ALSO triggers the deploy) and print
+        their default on-chain account address, polling until it shows up.
+
+        The chain-accounts endpoint forbids reading another user's
+        accounts, so this reads with the user's OWN token — exactly as
+        the shell does.
+        """
+        token = self.auth_service.login(email, password)
+        if not token:
+            self.logger.warning("      🏦 account: (login failed; cannot read address)")
+            return
+        for attempt in range(self._ACCT_POLL_ATTEMPTS):
+            accounts = self.auth_service.get_user_chain_accounts(token, user_id)
+            addr, chain = self._pick_chain_account(accounts)
+            if addr:
+                self.logger.purple(f"      🏦 account: {addr} (chain {chain})")
+                return
+            if attempt < self._ACCT_POLL_ATTEMPTS - 1:
+                time.sleep(self._ACCT_POLL_INTERVAL)
+        self.logger.warning("      🏦 account: (not on chain yet)")
+
+    def _print_group_account_address(
+        self, token: str, group_id: str, name: str
+    ) -> None:
+        """Print a group's deployed account address, polling the
+        account-status endpoint until the (non-zero) address appears."""
+        for attempt in range(self._ACCT_POLL_ATTEMPTS):
+            info = self.auth_service.group_account_info(token, group_id)
+            addr = info.get("account_address")
+            status = info.get("status")
+            if addr and addr != self._ZERO_ADDRESS:
+                suffix = f" ({status})" if status else ""
+                self.logger.purple(f"      🏦 account: {addr}{suffix}")
+                return
+            if attempt < self._ACCT_POLL_ATTEMPTS - 1:
+                time.sleep(self._ACCT_POLL_INTERVAL)
+        self.logger.warning("      🏦 account: (not on chain yet)")
+
+    @staticmethod
+    def _pick_chain_account(accounts: Any):
+        """
+        Mirror the shell's jq selection: prefer the default wallet, else
+        the first account that actually carries an address. Returns
+        (account_address, chain_id) or (None, None).
+        """
+        if not isinstance(accounts, list):
+            return None, None
+        ordered = [a for a in accounts if isinstance(a, dict) and a.get("is_default")]
+        ordered += [a for a in accounts if isinstance(a, dict) and not a.get("is_default")]
+        for a in ordered:
+            addr = a.get("account_address")
+            if addr not in (None, ""):
+                return addr, a.get("chain_id")
+        return None, None
 
     @staticmethod
     def _normalize_eth_address(value: Any) -> str:
@@ -475,6 +723,239 @@ class YieldFabricSetupRunner:
                 self.logger.error(f"  ❌ fiat account {inputs['account_id']}: {res.get('message')}")
                 ok = False
         return ok
+
+    def _setup_owners(
+        self,
+        groups: List[Dict[str, Any]],
+        admin_token: str,
+    ) -> bool:
+        """
+        The `owners` phase — port of `setup_system.sh`'s
+        `setup_group_relationships`.
+
+        For each declared group: resolve its real UUID by name (YAML ids
+        are human labels, not UUIDs), ensure the on-chain account is
+        deployed, then for every declared member add them BOTH as a group
+        member (role-scoped) AND as an on-chain account owner. The
+        add-owner call uses a group-scoped delegation JWT, matching the
+        shell's `add_member_as_owner`.
+
+        Idempotent: re-adding an existing member/owner is a no-op on the
+        backend. Safe to run standalone (assumes groups already exist;
+        creates a missing group on the fly to mirror the shell).
+        """
+        if not groups:
+            self.logger.info("  (no groups declared)")
+            return True
+
+        ok = True
+        for group in groups:
+            name = group.get("name")
+            if not name:
+                self.logger.error(f"  ❌ group missing name: {group}")
+                ok = False
+                continue
+
+            members = group.get("members") or []
+
+            # Resolve the real group UUID by name.
+            group_id = self.auth_service.get_group_id_by_name(admin_token, name)
+            if not group_id:
+                # Mirror the shell: try to create it, then re-resolve.
+                creator = group.get("user") or {}
+                creator_token = admin_token
+                if creator.get("id") and creator.get("password"):
+                    ct = self.auth_service.login(creator["id"], creator["password"])
+                    if ct:
+                        creator_token = ct
+                self.auth_service.create_group(
+                    creator_token,
+                    name=name,
+                    description=group.get("description") or "",
+                    group_type=group.get("group_type", "project"),
+                )
+                group_id = self.auth_service.get_group_id_by_name(admin_token, name)
+            if not group_id:
+                self.logger.error(f"  ❌ could not resolve group id for {name}; skipping")
+                ok = False
+                continue
+
+            # The account must be deployed before owners can be added.
+            ok &= self._deploy_group_if_needed(admin_token, name, group_id)
+
+            if not members:
+                self.logger.info(f"  ℹ️  group {name} has no members; nothing to own")
+                continue
+
+            # Prefer the group creator's token for member/owner ops (the
+            # shell does this); fall back to the admin token.
+            creator = group.get("user") or {}
+            member_token = admin_token
+            if creator.get("id") and creator.get("password"):
+                ct = self.auth_service.login(creator["id"], creator["password"])
+                if ct:
+                    member_token = ct
+
+            # add-owner expects a group-scoped delegation JWT.
+            delegation = self.auth_service.create_delegation_token(
+                member_token, group_id, name
+            )
+            owner_token = delegation or member_token
+
+            for m in members:
+                m_email = m.get("id")
+                m_role = m.get("role", "member")
+                if not m_email:
+                    continue
+                m_user_id = self._user_ids.get(m_email)
+                if not m_user_id and m.get("password"):
+                    m_user_id = self._login_and_extract_user_id(m_email, m["password"])
+                if not m_user_id:
+                    self.logger.error(
+                        f"    ❌ member {m_email}: unknown user_id (was the user created?)"
+                    )
+                    ok = False
+                    continue
+
+                # 1. Group membership (role-scoped, idempotent).
+                self.auth_service.add_group_member(
+                    member_token, group_id, m_user_id, m_role
+                )
+                # 2. On-chain account owner.
+                res = self.auth_service.add_group_owner(owner_token, group_id, m_user_id)
+                if res.get("status") == "error":
+                    self.logger.warning(
+                        f"    ⚠️  owner {m_email}: {res.get('message')}"
+                    )
+                    ok = False
+                else:
+                    self.logger.success(f"    ✅ owner {m_email} ({m_role})")
+        return ok
+
+    # ------------------------------------------------------------------
+    # Read-only / offline phases (validate, status).
+    # ------------------------------------------------------------------
+
+    def validate(self, setup_file: str) -> bool:
+        """Public entry: parse + structurally validate a setup file
+        (offline). Returns True iff the structure is valid."""
+        setup = self._parse_setup_file(setup_file)
+        if setup is None:
+            return False
+        return self._validate(setup, setup_file)
+
+    def show_status(self, setup_file: str) -> bool:
+        """Public entry: parse + print a status summary."""
+        setup = self._parse_setup_file(setup_file)
+        if setup is None:
+            return False
+        return self._status(setup, setup_file)
+
+    def _validate(self, setup: Dict[str, Any], setup_file: str) -> bool:
+        """
+        Offline structural validation — port of `validate_setup_file`.
+        Checks required fields per item across every section. No network
+        calls. Returns True iff there are no errors.
+        """
+        self.logger.cyan(f"🔍 Validating {os.path.basename(setup_file)}...")
+
+        users = setup.get("users") or []
+        groups = setup.get("groups") or []
+        tokens = setup.get("tokens") or []
+        assets = setup.get("assets") or []
+        fiat = setup.get("fiat_accounts") or []
+
+        errors: List[str] = []
+        valid_member_roles = {"owner", "admin", "member", "viewer", "policymember"}
+        valid_fiat_currencies = {"USD", "GBP", "AUD"}
+
+        if not (users or groups or tokens or assets or fiat):
+            errors.append(
+                "file declares none of: users, groups, tokens, assets, fiat_accounts"
+            )
+
+        for i, u in enumerate(users):
+            if not u.get("id"):
+                errors.append(f"users[{i}]: missing id (email)")
+            if not u.get("password"):
+                errors.append(f"users[{i}]: missing password")
+
+        for i, g in enumerate(groups):
+            if not g.get("name"):
+                errors.append(f"groups[{i}]: missing name")
+            for j, m in enumerate(g.get("members") or []):
+                if not m.get("id"):
+                    errors.append(f"groups[{i}].members[{j}]: missing id")
+                role = (m.get("role") or "").lower()
+                if role and role not in valid_member_roles:
+                    errors.append(
+                        f"groups[{i}].members[{j}]: invalid role {m.get('role')!r} "
+                        f"(valid: {', '.join(sorted(valid_member_roles))})"
+                    )
+
+        for i, t in enumerate(tokens):
+            for field in ("id", "name", "chain_id", "address"):
+                if t.get(field) in (None, ""):
+                    errors.append(f"tokens[{i}]: missing {field}")
+
+        for i, a in enumerate(assets):
+            if not (a.get("type") or a.get("asset_type")):
+                errors.append(f"assets[{i}]: missing type")
+            for field in ("name", "currency", "token_id"):
+                if a.get(field) in (None, ""):
+                    errors.append(f"assets[{i}]: missing {field}")
+
+        for i, fa in enumerate(fiat):
+            if not fa.get("id"):
+                errors.append(f"fiat_accounts[{i}]: missing id")
+            currency = (fa.get("currency") or "").upper()
+            if currency not in valid_fiat_currencies:
+                errors.append(
+                    f"fiat_accounts[{i}]: unsupported currency {fa.get('currency')!r} "
+                    f"(supported: USD, GBP, AUD)"
+                )
+
+        self.logger.info(
+            f"  users={len(users)} groups={len(groups)} tokens={len(tokens)} "
+            f"assets={len(assets)} fiat={len(fiat)}"
+        )
+        if errors:
+            self.logger.error(f"  ❌ {len(errors)} validation error(s):")
+            for err in errors:
+                self.logger.error(f"    - {err}")
+            return False
+        self.logger.success("  ✅ setup file is structurally valid")
+        return True
+
+    def _status(self, setup: Dict[str, Any], setup_file: str) -> bool:
+        """
+        Read-only status summary — port of `show_setup_status`. Reports
+        service reachability (best-effort, non-fatal) plus a count of
+        each section. Always returns True (informational).
+        """
+        self.logger.cyan("📊 Setup status")
+
+        # Service reachability — informational, never fails the phase, and
+        # uses the validator directly so it doesn't poison the cached flag.
+        self.service_validator.validate_services()
+
+        users = setup.get("users") or []
+        groups = setup.get("groups") or []
+        tokens = setup.get("tokens") or []
+        assets = setup.get("assets") or []
+        fiat = setup.get("fiat_accounts") or []
+
+        self.logger.info(f"  📄 file: {setup_file}")
+        self.logger.info(f"  👥 users:  {len(users)}")
+        self.logger.info(f"  🏢 groups: {len(groups)}")
+        for g in groups:
+            members = g.get("members") or []
+            self.logger.info(f"     - {g.get('name')} ({len(members)} member(s))")
+        self.logger.info(f"  🪙 tokens: {len(tokens)}")
+        self.logger.info(f"  💎 assets: {len(assets)}")
+        self.logger.info(f"  🏦 fiat:   {len(fiat)}")
+        self.logger.info(f"  🔑 API key configured: {bool(self.config.api_key)}")
+        return True
 
     def close(self):
         self.auth_service.close()

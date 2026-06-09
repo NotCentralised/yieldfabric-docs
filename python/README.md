@@ -67,8 +67,29 @@ pip install -e .
 ### Deploy assets from a setup.yaml (port of `setup_system.sh`)
 
 The `setup` subcommand bootstraps users, groups (+ on-chain account
-deploy), tokens, assets, and fiat accounts from a `setup.yaml` — the same
-file shape `scripts/setup_system.sh` uses.
+deploy and owners), tokens, assets, and fiat accounts from a `setup.yaml`
+— the same file shape `scripts/setup_system.sh` uses, and a one-for-one
+port of its commands.
+
+Like the shell, you can run individual **phases** (and several in order)
+instead of the whole bootstrap — append phase names after the file:
+
+```bash
+yieldfabric setup setup.yaml                 # full bootstrap (= `all`)
+yieldfabric setup setup.yaml tokens assets   # only tokens, then assets
+yieldfabric setup setup.yaml validate        # offline structure check
+yieldfabric setup setup.yaml status          # summary + service health
+```
+
+Phases (run in the given order) mirror `setup_system.sh`'s commands:
+`all` (default), `users`, `groups`, `owners`, `tokens`, `assets`,
+`fiat`, `status`, `validate`. The file defaults to `./setup.yaml` (or
+`$SETUP_FILE`) when omitted, so `yieldfabric setup tokens assets` works
+too. `validate` is fully offline; `status` is read-only.
+
+> Note: the top-level `yieldfabric status` / `yieldfabric validate`
+> subcommands operate on a **commands.yaml** (the `execute` flow). To
+> inspect a **setup.yaml**, use `setup <file> status|validate`.
 
 Provide service URLs and an API key via a `.env` file (auto-loaded from
 the current directory). Copy `.env.example` to `.env` and fill in:
@@ -121,6 +142,11 @@ email/password — the original `setup_system.sh` behaviour.
 ```bash
 # Bootstrap a system (users/groups/tokens/assets/fiat) from setup.yaml
 yieldfabric setup setup.yaml
+
+# Run individual phases, in order (mirrors setup_system.sh commands)
+yieldfabric setup setup.yaml tokens assets
+yieldfabric setup setup.yaml validate   # offline structural check
+yieldfabric setup setup.yaml status      # summary + service health
 
 # Execute commands
 yieldfabric execute commands.yaml

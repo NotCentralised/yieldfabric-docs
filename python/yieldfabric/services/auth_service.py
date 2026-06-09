@@ -596,6 +596,28 @@ class AuthService(BaseServiceClient):
             self.logger.debug(f"group_account_info failed: {e}")
             return {}
 
+    def get_user_chain_accounts(self, token: str, user_id: str) -> List[dict]:
+        """
+        GET /entities/user/{user_id}/chain-accounts — the user's on-chain
+        (smart-)account deployments. Each item carries `is_default`,
+        `account_address`, and `chain_id`.
+
+        MUST be read with the user's OWN token — the endpoint forbids
+        reading another user's accounts. Returns [] on any failure or
+        when nothing is deployed yet (the caller polls). Mirrors the
+        `print_user_account_address` read in setup_system.sh.
+        """
+        try:
+            response = self._get(
+                f"/entities/user/{user_id}/chain-accounts",
+                token=token,
+            )
+            data = response.json()
+            return data if isinstance(data, list) else []
+        except Exception as e:
+            self.logger.debug(f"get_user_chain_accounts failed: {e}")
+            return []
+
     def sign_vault(
         self,
         token: str,

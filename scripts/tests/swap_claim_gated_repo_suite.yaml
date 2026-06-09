@@ -1,0 +1,643 @@
+# ════════════════════════════════════════════════════════════════════════════
+#  REPO SWAPS ON A CLAIM-GATED (Tokeny / ERC-3643) OBLIGATION CLASS
+# ════════════════════════════════════════════════════════════════════════════
+#  Proves the REPO lifecycle — repurchase, roll, expire/forfeit — works when the
+#  collateral is an obligation minted into a per-class IdentityRegistry that GATES
+#  holders on an ERC-3643 KYC claim. This is the repo-flow companion to
+#  `swap_claim_gated_suite.yaml` (which proved only the ATOMIC swap of a gated
+#  obligation). It exercises the per-class routing that was just added to the repo
+#  paths:
+#
+#    • on-chain `swapObligationAddress[swapId]` (ConfidentialSwapBase.sol:169) is
+#      stamped at createSwap and inherited by a roll
+#      (ConfidentialSwapRoll.sol:65 — `swapObligationAddress[newSwapId] =
+#      _swapOblAddr(oldSwapId)`).
+#    • the vault reads it back via `resolve_swap_obligation_contract`
+#      (yieldfabric-vault/src/contracts/swap.rs:224), used by repurchase.rs:82 and
+#      roll.rs:134 so the repo's payment legs, ownership checks (`ownerOf`), and
+#      obligation approves all hit the gated PROXY, not the chain-default
+#      obligation contract — which would otherwise revert `ERC721: invalid token
+#      id` for a user-deployed / gated class.
+#
+#  WHY THE REPO YAML LOOKS IDENTICAL TO THE DEFAULT-CLASS REPO SUITE
+#    The per-class routing is ENTIRELY automatic below the YAML layer:
+#    `repurchase_swap`, `initiate_roll`, `complete_roll`, and `expire_collateral`
+#    take only `swap_id` (+ roll params) — they do NOT thread an obligation
+#    address. The vault resolves the class from the swap's stored
+#    `swapObligationAddress`. So the ONLY gated-specific step is minting the
+#    collateral obligation into the gated class via `obligation_address` at
+#    create_obligation time (section M). Everything from create_swap onward is the
+#    same command shape as `swap_repo_suite.yaml` — the test value is that those
+#    same commands now succeed against a NON-default class.
+#
+#  THE EXEMPTION (recap from the atomic gated suite)
+#    The ConfidentialVault and ConfidentialSwap are EXEMPT from the per-class gate
+#    (ExemptIdentityRegistry.isVerified short-circuits true for those two
+#    addresses), so a gated obligation can be ESCROWED into the swap even though
+#    the swap isn't a "verified party". The OUTBOUND hop still gates: an obligation
+#    leaving the swap to a real holder requires that holder to be verified. For a
+#    repo this matters at TWO outbound moments:
+#      • repurchase / roll: the collateral returns to (or the repo position is
+#        rebuilt for) the collateral provider — already verified (it minted the
+#        obligation, which itself passed the mint gate).
+#      • EXPIRE / forfeit: the NFT collateral is pushed to the LENDER. So in the
+#        expire scenario the lender MUST be a verified holder, else the forfeit
+#        delivery would itself be gated. We therefore use the VERIFIED investor as
+#        the lender in scenario C.
+#
+#  WHAT THIS SUITE PROVES
+#    A (repurchase) — a repo whose collateral is a gated-class obligation:
+#                     create_swap → counterparty completes → initiator
+#                     repurchase_swap recovers the gated collateral. Proven by the
+#                     seller being paid AND by re-pledging the recovered gated NFT
+#                     (escrow at create reverts unless the provider owns it again).
+#    B (roll)       — a gated-collateral repo is rolled to a NEW (also verified)
+#                     counterparty: initiate_roll + complete_roll succeed, and the
+#                     rolled repo is then repurchased — proving the new swap
+#                     inherited the gated class on-chain (else the roll mint /
+#                     repurchase payment legs would hit the wrong contract).
+#    C (expire)     — a gated-collateral repo with a short expiry, never
+#                     repurchased: advance_chain_time past expiry →
+#                     expire_collateral forfeits the gated NFT to the verified
+#                     lender (investor). Proven by the lender then owning the
+#                     gated NFT (re-pledge succeeds only if owned).
+#
+#  PARTIES (the three funded users seeded by setup.yaml — same as the atomic suite)
+#    • issuer   — COMPLIANCE AUTHORITY: deploys + owns the gated class, is the
+#                 trusted ClaimIssuer that issues the KYC claims. Also the NEW
+#                 (verified) counterparty for the roll in scenario B.
+#    • payer    — VERIFIED SELLER / BORROWER: KYC'd → mints the gated obligations
+#                 used as repo collateral and initiates the repos.
+#    • investor — VERIFIED LENDER / BUYER: KYC'd → completes the repos and, in the
+#                 expire scenario, is the lender that receives the forfeited
+#                 gated collateral.
+#
+#  SWAP-ID NAMESPACE — 971xxx, deliberately disjoint from the atomic gated suite's
+#    970001-970098 range so the two suites can run back-to-back on the same node.
+#      A repurchase ......... 971001  (+ 971091 ownership re-pledge proof)
+#      B roll ............... 971002 → 971003  (+ 971092 ownership re-pledge proof)
+#      C expire / forfeit ... 971004  (+ 971093 ownership re-pledge proof)
+#
+#  RUN:  yieldfabric execute ../scripts/tests/swap_claim_gated_repo_suite.yaml
+#
+#  PREREQUISITES (same baseline as the other swap / gated suites)
+#    1. Fresh contract deploy (deploy_clean.ts seeds public ERC-20 to
+#       payer / investor / issuer) + `setup.yaml` seeded.
+#    2. Services up: auth (:3000), agents (:3001), payments (:3002), test node
+#       (advance_chain_time uses evm_increaseTime + evm_mine — test node only).
+#    3. No on-chain addresses are hardcoded — the class IR + proxy come from the
+#       deploy_class output; the topic + issuer ClaimIssuer come from issue_claim.
+#
+#  `expect_failure: true` marks negative tests (a failed command counts as PASS);
+#  this suite has none by default — it is a HAPPY-PATH proof that the gated class
+#  survives the full repo lifecycle. The atomic suite already covers the
+#  recipient-gate negative.
+#
+#  VERIFICATION STATUS — authored against swap_repo_suite.yaml (the working
+#    default-class repo flows) and swap_claim_gated_suite.yaml (the gated-class
+#    setup), plus the per-class repo routing in repurchase.rs / roll.rs /
+#    contracts/swap.rs. This is the FIRST suite to drive a gated class through the
+#    repo lifecycle, so the first live run is the shakeout. Watch specifically:
+#      • the repurchase / roll payment legs resolving to the gated PROXY (the
+#        repurchase.rs:447 equality check between the swap's stored obligation
+#        class and the NFT-payment recipient contract — a mismatch surfaces as a
+#        payment-hash error, not a silent wrong-class write).
+#      • the rolled swap (971003) inheriting 971002's class on-chain — if the roll
+#        mint or the source-repo repurchase coverage hit the chain default, watch
+#        for `ERC721: invalid token id` on complete_roll / repurchase.
+#      • the forfeit (scenario C) delivering the gated NFT to the verified lender
+#        — if the lender weren't verified the push would gate; investor is KYC'd
+#        in section V so this should pass.
+# ════════════════════════════════════════════════════════════════════════════
+
+commands:
+
+  # ════════ CTX — party contexts (account addresses + user ids; nothing hardcoded) ════════
+  - name: ctx_issuer
+    type: whoami
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: {}
+  - name: ctx_payer
+    type: whoami
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: {}
+  - name: ctx_investor
+    type: whoami
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: {}
+  - name: ctx_assert_issuer_account
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { actual: "$ctx_issuer.account_address", contains: "0x" }
+  - name: ctx_assert_payer_account
+    type: assert
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { actual: "$ctx_payer.account_address", contains: "0x" }
+  - name: ctx_assert_investor_account
+    type: assert
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { actual: "$ctx_investor.account_address", contains: "0x" }
+
+
+  # ════════ D — DEPLOY THE GATED CLASS (ERC-3643 / Tokeny stack, owned by issuer) ════════
+  # deploy_class → ConfidentialObligationFactory EIP-1167 proxy with its OWN IR/CTR/TIR.
+  # open_minting:true so the SELLER (payer) can mint the repo collateral into the
+  # issuer's class. transferable:true is required so the obligation can move into the
+  # EXEMPT swap (escrow) and back out to a verified holder. The CTR/TIR start EMPTY —
+  # the KYC gate is configured in section G.
+  - name: d_deploy_gated
+    type: deploy_class
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      name: "KYC-Gated Repo Note"
+      symbol: KGR
+      open_minting: true
+      transferable: true
+      idempotency_key: gated-repo-class-$(date +%s)
+  - name: d_assert_class_addr
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { actual: "$d_deploy_gated.obligation_address", contains: "0x" }
+  # The per-class IR is load-bearing for every gate op below — assert it resolved so
+  # a missing IR fails HERE with a clear message, not as an opaque unresolved $ref later.
+  - name: d_assert_class_ir
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { actual: "$d_deploy_gated.identity_registry", contains: "0x" }
+
+
+  # ════════ G — CONFIGURE THE KYC GATE on the class IR (acting AS the owner) ════════
+  # Issue a KYC claim to the seller FIRST (so we learn the on-chain topic number),
+  # then add THAT topic to the class CTR and the issuer as a trusted issuer on the
+  # class TIR. The class owner (issuer) manages its own registries — owner-managed,
+  # no ManageCompliance needed.
+  - name: g_issue_kyc_payer
+    type: issue_claim
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { target_user_id: "$ctx_payer.user_id", claim_type: kyc }
+  - name: g_assert_kyc_payer_id
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { actual: "$g_issue_kyc_payer.issued_claim_id", contains: "-" }   # a UUID
+  # The claim's on-chain issuer IS the issuer's ClaimIssuer contract — exactly the
+  # value the TIR must end up holding. Assert present so the TIR check below isn't vacuous.
+  - name: g_assert_issuer_ci
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { actual: "$g_issue_kyc_payer.claim_issuer_address", contains: "0x" }
+
+  - name: g_set_gate
+    type: update_claim_requirements
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      identity_registry_address: "$d_deploy_gated.identity_registry"
+      add_claim_topics: [ "$g_issue_kyc_payer.topic" ]
+      add_trusted_issuers:
+        # Account address; the resolver maps caller-own-account → its ClaimIssuer.
+        - address: "$ctx_issuer.account_address"
+          topics: [ "$g_issue_kyc_payer.topic" ]
+
+  # Read the gate back: the topic on the CTR and the issuer's ClaimIssuer on the TIR
+  # (matching the claim's own on-chain issuer). The class is fresh per run, so its
+  # registries are empty at start — positive membership is reliable.
+  - name: g_requirements
+    type: claim_requirements
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { identity_registry_address: "$d_deploy_gated.identity_registry" }
+  - name: g_assert_topic_on_ctr
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { actual: "$g_requirements.claim_topics", contains: "$g_issue_kyc_payer.topic" }
+  - name: g_assert_issuer_ci_on_tir
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      actual: "$g_requirements.trusted_issuer_addresses_lc"
+      contains: "$g_issue_kyc_payer.claim_issuer_address_lc"
+
+
+  # ════════ V — VERIFY THE HOLDERS (accept the KYC claim; registration is already done) ════════
+  # A holder is isVerified when its account is REGISTERED in the IR storage AND it
+  # holds an accepted claim for the gated topic from the trusted issuer.
+  #
+  # LIVE-RUN FINDING (carried over from swap_claim_gated_suite.yaml) — holders are
+  # ALREADY registered, so the suite does NOT call register_identity. Every user's
+  # account is onboarded into the chain-wide IdentityRegistryStorage at account
+  # deploy and per-class obligation IRs SHARE that storage — an explicit
+  # register_identity on the per-class IR reverts `address stored already`. The gate
+  # needs only the per-class CTR/TIR config (section G) plus the holder's accepted
+  # claim below.
+  #
+  # All three actionable parties get KYC'd here because all three appear on an
+  # outbound hop somewhere in the repo lifecycle: payer (mints + repurchases),
+  # investor (lender that receives the forfeited NFT in C and the rolled-from
+  # position), and issuer (the NEW verified counterparty the roll delivers to in B).
+
+  # ── payer (the seller/borrower): accept the KYC claim → confirm verified.
+  - name: v_accept_payer
+    type: accept_claim
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { issued_claim_id: "$g_issue_kyc_payer.issued_claim_id" }
+  - name: v_is_verified_payer
+    type: is_verified
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      identity_registry_address: "$d_deploy_gated.identity_registry"
+      user_address: "$ctx_payer.account_address"
+  - name: v_assert_payer_verified
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { actual: "$v_is_verified_payer.is_verified", equals: true }
+
+  # ── investor (the lender/buyer): issue → accept → confirm verified.
+  - name: v_issue_kyc_investor
+    type: issue_claim
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { target_user_id: "$ctx_investor.user_id", claim_type: kyc }
+  - name: v_accept_investor
+    type: accept_claim
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { issued_claim_id: "$v_issue_kyc_investor.issued_claim_id" }
+  - name: v_is_verified_investor
+    type: is_verified
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      identity_registry_address: "$d_deploy_gated.identity_registry"
+      user_address: "$ctx_investor.account_address"
+  - name: v_assert_investor_verified
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { actual: "$v_is_verified_investor.is_verified", equals: true }
+
+  # ── issuer (the NEW counterparty for the roll in B): issue → accept → confirm.
+  # Unlike the atomic suite (where issuer was deliberately left UNVERIFIED to be the
+  # negative buyer), here issuer must be VERIFIED so the roll can deliver the repo
+  # position to it. Owner status alone is NOT holder verification — it still needs
+  # an accepted claim like any other holder.
+  - name: v_issue_kyc_issuer
+    type: issue_claim
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { target_user_id: "$ctx_issuer.user_id", claim_type: kyc }
+  - name: v_accept_issuer
+    type: accept_claim
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { issued_claim_id: "$v_issue_kyc_issuer.issued_claim_id" }
+  - name: v_is_verified_issuer
+    type: is_verified
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      identity_registry_address: "$d_deploy_gated.identity_registry"
+      user_address: "$ctx_issuer.account_address"
+  - name: v_assert_issuer_verified
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { actual: "$v_is_verified_issuer.is_verified", equals: true }
+
+
+  # ════════ F — FUND THE CASH LEGS (public ERC-20 → confidential balance) ════════
+  # The repos pay AUD cash up-front (lender → borrower) and USDC repurchase
+  # (borrower → lender). Fund every party that pays a leg. Mirrors the funding block
+  # of swap_repo_suite.yaml, scoped to the parties this suite uses.
+  - name: f_fund_payer_usdc
+    type: deposit
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { asset_id: usdc-asset, amount: 1000000000000000000000000, idempotency_key: gated-repo-fund-payer-usdc-$(date +%s) }
+  - name: f_fund_investor_aud
+    type: deposit
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: aud-token-asset, amount: 1000000000000000000000000, idempotency_key: gated-repo-fund-inv-aud-$(date +%s) }
+  - name: f_fund_investor_usdc
+    type: deposit
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters: { asset_id: usdc-asset, amount: 1000000000000000000000000, idempotency_key: gated-repo-fund-inv-usdc-$(date +%s) }
+  - name: f_fund_issuer_aud
+    type: deposit
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { asset_id: aud-token-asset, amount: 1000000000000000000000000, idempotency_key: gated-repo-fund-iss-aud-$(date +%s) }
+
+
+  # ════════ M — MINT THE GATED REPO COLLATERAL (seller = payer) ════════
+  # One gated obligation per scenario, each minted INTO THE GATED CLASS via
+  # obligation_address. counterpart = self + no initial_payments → auto-accepts at
+  # mint (payer holds it), passing the class's whenCounterpartVerified gate because
+  # payer was verified in section V. Each contract_id is a suite-local alias reused
+  # as the collateral_obligation_ids reference in the create_swap below — exactly the
+  # `obligation_ids` aliasing pattern the atomic gated suite uses, here in the
+  # collateral slot.
+  - name: m_collat_a
+    type: create_obligation
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      idempotency_key: gated-repo-collat-a-$(date +%s)
+      counterpart: payer@yieldfabric.com
+      obligation_address: "$d_deploy_gated.obligation_address"
+      contract_id: gated_repo_collat_a
+      expiry: $(date -u -v+120d +%Y-%m-%dT%H:%M:%SZ)
+      data: { name: "Gated repo collateral A", description: "gated NFT collateral for the repurchase scenario" }
+  - name: m_collat_b
+    type: create_obligation
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      idempotency_key: gated-repo-collat-b-$(date +%s)
+      counterpart: payer@yieldfabric.com
+      obligation_address: "$d_deploy_gated.obligation_address"
+      contract_id: gated_repo_collat_b
+      expiry: $(date -u -v+120d +%Y-%m-%dT%H:%M:%SZ)
+      data: { name: "Gated repo collateral B", description: "gated NFT collateral for the roll scenario" }
+  - name: m_collat_c
+    type: create_obligation
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      idempotency_key: gated-repo-collat-c-$(date +%s)
+      counterpart: payer@yieldfabric.com
+      obligation_address: "$d_deploy_gated.obligation_address"
+      contract_id: gated_repo_collat_c
+      expiry: $(date -u -v+120d +%Y-%m-%dT%H:%M:%SZ)
+      data: { name: "Gated repo collateral C", description: "gated NFT collateral for the expire/forfeit scenario" }
+
+
+  # ════════════════════════════════════════════════════════════════════════════
+  #  SCENARIO A — REPO + REPURCHASE on a gated-class obligation
+  # ════════════════════════════════════════════════════════════════════════════
+  #  payer (borrower) posts the gated NFT (gated_repo_collat_a) as collateral, gets
+  #  1000 AUD up-front from investor (lender), promises 1050 USDC repurchase. Far
+  #  expiry ⇒ repurchase path. Then payer repurchases ⇒ the gated NFT returns.
+  #  The whole point: every repo leg (escrow at create, the lender's cash, the
+  #  borrower's repurchase USDC, the ownerOf/approve on repurchase) resolves to the
+  #  GATED proxy via the swap's stored swapObligationAddress — not the chain default.
+  #
+  #  Mirrors swap_repo_suite.yaml scenario B, with the collateral pointed at the
+  #  gated class.
+
+  - name: a_payer_aud_before
+    type: balance
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { asset_id: aud-token-asset }
+
+  - name: a_create
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "971001"
+      idempotency_key: gated-a-create-$(date +%s)
+      deadline: $(date -u -v+1H +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+30d +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_obligation_ids: [gated_repo_collat_a]
+        repurchase_payments:
+          denomination: usdc-asset
+          amount: 1050000000000000000000
+          payments: [{ id: gated-a-repurchase-1 }]
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments:
+          denomination: aud-token-asset
+          amount: 1000000000000000000000
+          payments: [{ id: gated-a-cash-1 }]
+
+  - name: a_complete
+    type: complete_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      swap_id: "971001"
+      idempotency_key: gated-a-complete-$(date +%s)
+
+  # The borrower received the 1000 AUD up-front cash for the repo (claim it so the
+  # balance delta is isolated to exactly this leg). The lender's expected payment to
+  # the borrower lands on the address-based borrower side, id PAY-SWAP-<id>-counterparty-0
+  # (same id shape the atomic gated suite claims).
+  - name: a_payer_claim_cash
+    type: accept
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { payment_id: PAY-SWAP-971001-counterparty-0, idempotency_key: gated-a-claim-$(date +%s) }
+  - name: a_payer_aud_after
+    type: balance
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { asset_id: aud-token-asset }
+  - name: a_assert_borrower_funded
+    type: assert
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      actual: "$a_payer_aud_after.private_balance"
+      minus:  "$a_payer_aud_before.private_balance"
+      equals: "1000000000000000000000"
+
+  # happy: the collateral provider (payer) repurchases ⇒ the gated NFT collateral
+  # returns. This is the per-class-routed leg: repurchase.rs resolves the gated proxy
+  # from the swap's stored class for the ownerOf check + approve + repurchase USDC
+  # payment to the lender. A default-class read here would revert `ERC721: invalid
+  # token id`, so this succeeding IS the per-class proof.
+  - name: a_repurchase
+    type: repurchase_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "971001"
+      idempotency_key: gated-a-repurchase-$(date +%s)
+
+  # OUTCOME PROOF: the gated NFT collateral actually RETURNED to payer. Re-pledging it
+  # as the offered asset in a new swap escrows it at create, which reverts on-chain
+  # unless payer owns it again — so this create succeeding proves the repurchase
+  # returned it. (Same proof technique as swap_repo_suite.yaml's *_verify_repledge.)
+  # The re-pledge necessarily routes through the gated class too (the obligation
+  # carries its class), exercising the gated escrow once more.
+  - name: a_verify_repledge
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "971091"
+      idempotency_key: gated-a-repledge-$(date +%s)
+      initiator:
+        obligation_ids: [gated_repo_collat_a]
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments:
+          denomination: aud-token-asset
+          amount: 1000000000000000000000
+          payments: [{ id: gated-a-repledge-want-1 }]
+      deadline: $(date -u -v+24H +%Y-%m-%dT%H:%M:%SZ)
+
+
+  # ════════════════════════════════════════════════════════════════════════════
+  #  SCENARIO B — REPO + ROLL on a gated-class obligation
+  # ════════════════════════════════════════════════════════════════════════════
+  #  payer's gated-collateral repo with investor is rolled to a NEW (also verified)
+  #  counterparty, issuer, before repurchase; the gated collateral position migrates;
+  #  payer then repurchases the rolled repo. The crux for per-class: the new swap
+  #  (971003) inherits 971002's obligation class on-chain
+  #  (swapObligationAddress[newSwapId] = _swapOblAddr(oldSwapId),
+  #  ConfidentialSwapRoll.sol:65), and roll.rs reads it back so the roll mint +
+  #  approve + the source repo's repurchase coverage all hit the GATED proxy.
+  #
+  #  Mirrors swap_repo_suite.yaml scenario E (roll → complete → repurchase) with
+  #  gated collateral. issuer is verified (section V) so the roll's outbound delivery
+  #  of the repo position to it passes the recipient gate.
+
+  - name: b_create
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "971002"
+      idempotency_key: gated-b-create-$(date +%s)
+      deadline: $(date -u -v+1H +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+30d +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_obligation_ids: [gated_repo_collat_b]
+        repurchase_payments:
+          denomination: usdc-asset
+          amount: 1050000000000000000000
+          payments: [{ id: gated-b-repurchase-1 }]
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments:
+          denomination: aud-token-asset
+          amount: 1000000000000000000000
+          payments: [{ id: gated-b-cash-1 }]
+
+  - name: b_complete
+    type: complete_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      swap_id: "971002"
+      idempotency_key: gated-b-complete-$(date +%s)
+
+  # initiator (collateral provider) initiates the roll to the new verified counterparty.
+  - name: b_roll_initiate
+    type: initiate_roll
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      old_swap_id: "971002"
+      new_swap_id: "971003"
+      new_counterparty: issuer@yieldfabric.com
+      new_deadline: $(date -u -v+1H +%Y-%m-%dT%H:%M:%SZ)
+      new_expiry:   $(date -u -v+30d +%Y-%m-%dT%H:%M:%SZ)
+      idempotency_key: gated-b-roll-$(date +%s)
+
+  # the NEW counterparty (issuer) completes the roll. This is where the rolled swap's
+  # inherited gated class is exercised end-to-end — complete_roll's coverage payment
+  # repurchases the old repo and routes through the gated proxy. A wrong-class route
+  # would revert here (ERC721 / payment-hash mismatch).
+  - name: b_roll_complete
+    type: complete_roll
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      new_swap_id: "971003"
+      idempotency_key: gated-b-roll-complete-$(date +%s)
+
+  # happy: payer repurchases the NEW (rolled) repo ⇒ the gated collateral returns.
+  # Repurchase on 971003 resolves the gated class from 971003's stored
+  # swapObligationAddress (inherited at roll), proving the inheritance stuck.
+  - name: b_repurchase_new
+    type: repurchase_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "971003"
+      idempotency_key: gated-b-repurchase-new-$(date +%s)
+
+  # OUTCOME PROOF: post-roll gated NFT collateral returned to payer. Re-pledge ⇒
+  # create reverts unless payer owns gated_repo_collat_b again (and the obligation
+  # still carries its gated class).
+  - name: b_verify_repledge
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "971092"
+      idempotency_key: gated-b-repledge-$(date +%s)
+      initiator:
+        obligation_ids: [gated_repo_collat_b]
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments:
+          denomination: aud-token-asset
+          amount: 1000000000000000000000
+          payments: [{ id: gated-b-repledge-want-1 }]
+      deadline: $(date -u -v+24H +%Y-%m-%dT%H:%M:%SZ)
+
+
+  # ════════════════════════════════════════════════════════════════════════════
+  #  SCENARIO C — REPO + EXPIRE / FORFEIT on a gated-class obligation
+  # ════════════════════════════════════════════════════════════════════════════
+  #  Short-expiry repo: payer posts the gated NFT (gated_repo_collat_c) as
+  #  collateral, investor (lender) pays 1000 AUD, payer never repurchases; after
+  #  expiry the lender seizes the gated NFT via expire_collateral. The forfeit pushes
+  #  the gated NFT to the lender — so the lender MUST be a verified holder (investor
+  #  is, from section V), else the outbound delivery would gate. The forfeit's
+  #  per-class routing is the on-chain swap reading its own stored
+  #  swapObligationAddress to move the right NFT.
+  #
+  #  Mirrors swap_repo_suite.yaml scenario C's expire-after-time structure, but with
+  #  NFT collateral (push-based forfeit, like the transfer-matrix T2) instead of
+  #  payment collateral (pull-based). NFT forfeit needs no `accept` — the
+  #  expire_collateral post-processor moves the NFT — so ownership is proven directly
+  #  by a re-pledge.
+
+  - name: c_create
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "971004"
+      idempotency_key: gated-c-create-$(date +%s)
+      # deadline must be >=120s ahead of CHAIN time (the node clock can run ahead of
+      # wall); keep it well ahead, then jump the chain past expiry below. This suite
+      # runs from a fresh node so accumulated advance_chain_time drift starts at 0,
+      # but we still use a generous window to match swap_repo_suite.yaml scenario C.
+      deadline: $(date -u -v+600S +%Y-%m-%dT%H:%M:%SZ)
+      expiry:   $(date -u -v+660S +%Y-%m-%dT%H:%M:%SZ)
+      initiator:
+        collateral_obligation_ids: [gated_repo_collat_c]
+        repurchase_payments:
+          denomination: usdc-asset
+          amount: 1050000000000000000000
+          payments: [{ id: gated-c-repurchase-1 }]
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments:
+          denomination: aud-token-asset
+          amount: 1000000000000000000000
+          payments: [{ id: gated-c-cash-1 }]
+
+  - name: c_complete
+    type: complete_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      swap_id: "971004"
+      idempotency_key: gated-c-complete-$(date +%s)
+
+  # deterministically jump the chain past the 660s expiry so the collateral is
+  # forfeitable (test-node only — evm_increaseTime + evm_mine).
+  - name: c_wait_expiry
+    type: advance_chain_time
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { seconds: 1200 }
+
+  # happy: after expiry the protected lender (investor) seizes the forfeited gated
+  # NFT. expire_collateral is permissionless to TRIGGER, but the forfeit recipient is
+  # the current holder of the lender position (investor). The NFT push to investor
+  # passes the recipient gate because investor is verified — this is the gated-class
+  # forfeit invariant the suite is here to prove.
+  - name: c_forfeit
+    type: expire_collateral
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      swap_id: "971004"
+      idempotency_key: gated-c-forfeit-$(date +%s)
+
+  # OUTCOME PROOF: the forfeited gated NFT now belongs to the VERIFIED lender
+  # (investor) — offering it AS investor escrows it at create, which reverts unless
+  # investor owns it. Succeeding proves (a) the forfeit delivered the NFT and (b) it
+  # delivered to a verified holder out of the gated class. (Same re-pledge proof the
+  # transfer-matrix T2 uses for an NFT forfeit.)
+  - name: c_verify_lender_owns
+    type: create_swap
+    user: { id: investor@yieldfabric.com, password: investor_password }
+    parameters:
+      swap_id: "971093"
+      idempotency_key: gated-c-verify-$(date +%s)
+      initiator:
+        obligation_ids: [gated_repo_collat_c]
+      counterparty:
+        id: payer@yieldfabric.com
+        expected_payments:
+          denomination: aud-token-asset
+          amount: 1000000000000000000000
+          payments: [{ id: gated-c-verify-1 }]
+      deadline: $(date -u -v+24H +%Y-%m-%dT%H:%M:%SZ)

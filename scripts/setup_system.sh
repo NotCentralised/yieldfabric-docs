@@ -429,7 +429,7 @@ check_user_exists() {
 
 # Function to create initial users (without admin token)
 create_initial_users() {
-    echo_with_color $CYAN "👥 Creating initial users from setup.yaml..."
+    echo_with_color $CYAN "👥 Creating initial users from $(basename "$SETUP_FILE")..."
     
     local success_count=0
     local total_count=0
@@ -960,7 +960,7 @@ create_au_bank_account() {
 
 # Function to setup users (requires admin token)
 setup_users() {
-    echo_with_color $CYAN "Setting up users from setup.yaml..."
+    echo_with_color $CYAN "Setting up users from $(basename "$SETUP_FILE")..."
     
     local admin_token="$1"
     local success_count=0
@@ -990,7 +990,7 @@ setup_users() {
 
 # Function to setup groups
 setup_groups() {
-    echo_with_color $CYAN "🏢 Setting up groups from setup.yaml..."
+    echo_with_color $CYAN "🏢 Setting up groups from $(basename "$SETUP_FILE")..."
     
     # Always use a fresh token from the first user (which has SuperAdmin role)
     echo_with_color $BLUE "🔑 Getting fresh token for group operations..."
@@ -1219,7 +1219,7 @@ add_member_as_owner() {
 
 # Function to setup group relationships
 setup_group_relationships() {
-    echo_with_color $CYAN "🔗 Setting up group relationships from setup.yaml..."
+    echo_with_color $CYAN "🔗 Setting up group relationships from $(basename "$SETUP_FILE")..."
     
     # Always use a fresh token from the first user (which has SuperAdmin role)
     echo_with_color $BLUE "🔑 Getting fresh token for group operations..."
@@ -1319,7 +1319,7 @@ setup_group_relationships() {
 
 # Function to setup tokens
 setup_tokens() {
-    echo_with_color $CYAN "🪙 Setting up tokens from setup.yaml..."
+    echo_with_color $CYAN "🪙 Setting up tokens from $(basename "$SETUP_FILE")..."
     
     # Check if token service is running
     if ! check_token_service_running; then
@@ -1346,7 +1346,7 @@ setup_tokens() {
     local token_count=$(parse_yaml "$SETUP_FILE" '.tokens | length' 2>/dev/null)
     
     if [[ -z "$token_count" || "$token_count" == "0" ]]; then
-        echo_with_color $YELLOW "⚠️  No tokens defined in setup.yaml, skipping token setup"
+        echo_with_color $YELLOW "⚠️  No tokens defined in $(basename "$SETUP_FILE"), skipping token setup"
         return 0
     fi
     
@@ -1373,7 +1373,7 @@ setup_tokens() {
 
 # Function to setup assets
 setup_assets() {
-    echo_with_color $CYAN "💎 Setting up assets from setup.yaml..."
+    echo_with_color $CYAN "💎 Setting up assets from $(basename "$SETUP_FILE")..."
     
     # Check if payment service is running (where asset GraphQL is available)
     if ! check_token_service_running; then
@@ -1400,7 +1400,7 @@ setup_assets() {
     local asset_count=$(parse_yaml "$SETUP_FILE" '.assets | length' 2>/dev/null)
     
     if [[ -z "$asset_count" || "$asset_count" == "0" ]]; then
-        echo_with_color $YELLOW "⚠️  No assets defined in setup.yaml, skipping asset setup"
+        echo_with_color $YELLOW "⚠️  No assets defined in $(basename "$SETUP_FILE"), skipping asset setup"
         return 0
     fi
     
@@ -1432,7 +1432,7 @@ setup_assets() {
 
 # Function to setup fiat accounts
 setup_fiat_accounts() {
-    echo_with_color $CYAN "🏦 Setting up fiat accounts from setup.yaml..."
+    echo_with_color $CYAN "🏦 Setting up fiat accounts from $(basename "$SETUP_FILE")..."
     
     # Check if payment service is running (where fiat account GraphQL is available)
     if ! check_token_service_running; then
@@ -1459,7 +1459,7 @@ setup_fiat_accounts() {
     local fiat_account_count=$(parse_yaml "$SETUP_FILE" '.fiat_accounts | length' 2>/dev/null)
     
     if [[ -z "$fiat_account_count" || "$fiat_account_count" == "0" ]]; then
-        echo_with_color $YELLOW "⚠️  No fiat accounts defined in setup.yaml, skipping fiat account setup"
+        echo_with_color $YELLOW "⚠️  No fiat accounts defined in $(basename "$SETUP_FILE"), skipping fiat account setup"
         return 0
     fi
     
@@ -1549,7 +1549,7 @@ setup_fiat_accounts() {
 
 # Function to validate setup.yaml
 validate_setup_file() {
-    echo_with_color $CYAN "Validating setup.yaml..."
+    echo_with_color $CYAN "Validating $(basename "$SETUP_FILE")..."
     
     if [[ ! -f "$SETUP_FILE" ]]; then
         echo_with_color $RED "Setup file not found: $SETUP_FILE"
@@ -1566,7 +1566,7 @@ validate_setup_file() {
     local has_groups=$(parse_yaml "$SETUP_FILE" '.groups | length > 0')
     
     if [[ "$has_users" != "true" ]]; then
-        echo_with_color $RED "No users defined in setup.yaml"
+        echo_with_color $RED "No users defined in $(basename "$SETUP_FILE")"
         return 1
     fi
     
@@ -1850,7 +1850,7 @@ show_setup_status() {
     # Check setup file
     echo_with_color $BLUE "Setup File:"
     if [[ -f "$SETUP_FILE" ]]; then
-        echo_with_color $GREEN "   setup.yaml - Found"
+        echo_with_color $GREEN "   $(basename "$SETUP_FILE") - Found"
         
         if check_yq_available; then
             local user_count=$(parse_yaml "$SETUP_FILE" '.users | length')
@@ -1912,7 +1912,7 @@ show_setup_status() {
             echo_with_color $YELLOW "   yq not available - cannot parse YAML"
         fi
     else
-        echo_with_color $RED "   setup.yaml - Not found"
+        echo_with_color $RED "   $(basename "$SETUP_FILE") - Not found"
         return 1
     fi
     
@@ -2012,7 +2012,11 @@ show_help() {
     echo_with_color $CYAN "YieldFabric System Setup Script"
     echo "=========================================="
     echo ""
-    echo "Usage: $0 [command]"
+    echo "Usage: $0 [-f|--file <yaml>] [<yaml>] [command ...]"
+    echo ""
+    echo "  • A leading *.yaml/*.yml argument (or -f <yaml>) selects the config"
+    echo "    file. Defaults to setup.yaml beside this script."
+    echo "  • One or more commands run in order, e.g. '$0 tokens assets'."
     echo ""
     echo "Commands:"
     echo_with_color $GREEN "  setup" "     - Run complete system setup from setup.yaml"
@@ -2049,15 +2053,19 @@ show_help() {
     echo "  • Use 'owners' command to setup only group account owners"
     echo ""
     echo "Examples:"
-    echo "  $0 setup     # Complete system setup"
-    echo "  $0 status    # Check setup requirements"
-    echo "  $0 validate  # Validate setup.yaml structure"
+    echo "  $0 setup                              # Complete system setup (setup.yaml)"
+    echo "  $0 status                             # Check setup requirements"
+    echo "  $0 validate                           # Validate setup.yaml structure"
+    echo "  $0 setup_testnet.yaml tokens assets   # tokens + assets from a custom file"
+    echo "  $0 -f setup_testnet.yaml tokens       # tokens only, custom file via flag"
     echo ""
     echo_with_color $YELLOW "For first-time users, run: $0 setup"
 }
 
-# Main execution
-case "${1:-setup}" in
+# Dispatch a single command name through the original command table.
+# Called once per command given on the command line.
+dispatch_command() {
+case "${1}" in
     "setup")
         run_setup
         ;;
@@ -2180,3 +2188,78 @@ case "${1:-setup}" in
         exit 1
         ;;
 esac
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main execution
+#
+# Usage: setup_system.sh [-f|--file <yaml>] [<yaml>] [command ...]
+#
+#   • A leading argument ending in .yaml/.yml — or one given via -f/--file —
+#     selects the config file. Defaults to setup.yaml next to this script.
+#   • One or more commands run in the order given, so you can do e.g.
+#         setup_system.sh setup_testnet.yaml tokens assets
+#     to run tokens and then assets against setup_testnet.yaml.
+#   • With no command, runs the full `setup`.
+# ─────────────────────────────────────────────────────────────────────────────
+COMMANDS=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -f|--file)
+            if [[ -z "${2:-}" ]]; then
+                echo_with_color $RED "Error: $1 requires a YAML file path"
+                exit 1
+            fi
+            SETUP_FILE="$2"
+            shift 2
+            ;;
+        --file=*)
+            SETUP_FILE="${1#*=}"
+            shift
+            ;;
+        *.yaml|*.yml)
+            SETUP_FILE="$1"
+            shift
+            ;;
+        *)
+            COMMANDS+=("$1")
+            shift
+            ;;
+    esac
+done
+
+# Resolve a bare/relative filename against the script directory when it isn't
+# found relative to the current working directory (mirrors execute_commands.sh).
+if [[ "$SETUP_FILE" != /* && ! -f "$SETUP_FILE" && -f "$SCRIPT_DIR/$SETUP_FILE" ]]; then
+    SETUP_FILE="$SCRIPT_DIR/$SETUP_FILE"
+fi
+
+# Default to the full setup when no command is given.
+if [[ ${#COMMANDS[@]} -eq 0 ]]; then
+    COMMANDS=("setup")
+fi
+
+# Every command except help needs the config file to exist — fail early with a
+# clear message instead of letting yq quietly return empty values downstream.
+needs_file=false
+for cmd in "${COMMANDS[@]}"; do
+    case "$cmd" in
+        help|-h|--help) ;;
+        *) needs_file=true ;;
+    esac
+done
+if [[ "$needs_file" == true ]]; then
+    if [[ ! -f "$SETUP_FILE" ]]; then
+        echo_with_color $RED "Setup file not found: $SETUP_FILE"
+        exit 1
+    fi
+    echo_with_color $CYAN "📄 Using config file: $SETUP_FILE"
+    echo_with_color $CYAN "▶  Commands: ${COMMANDS[*]}"
+    echo ""
+fi
+
+# Run each command in order. Infra failures inside a command `exit` the whole
+# script (fail-fast); soft per-item setup issues are warned and do not stop it.
+for cmd in "${COMMANDS[@]}"; do
+    dispatch_command "$cmd"
+done

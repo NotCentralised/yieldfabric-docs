@@ -33,6 +33,10 @@
 #                   recipient gate. The seller then cancels and recovers the asset —
 #                   the gate protects WITHOUT loss. Proves owner/issuer status is
 #                   NOT holder verification, and the exemption's outbound gate holds.
+#    R (refund-gate)— a VERIFIED seller who LOSES KYC after escrowing cannot recover
+#                   their own asset: cancel_swap's refund REVERTS at the recipient gate
+#                   while unverified, then SUCCEEDS once re-verified. Proves the
+#                   (intentional, compliance-consistent) gate-on-return is recoverable.
 #
 #  This is the holder-side companion to `claims_lifecycle_group_suite.yaml`, which
 #  deliberately stopped at "the IR is correctly CONFIGURED" and skipped holder
@@ -386,3 +390,161 @@ commands:
         id: investor@yieldfabric.com
         expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: gated-n-verify-1 }] }
       deadline: $(date -u -v+30d +%Y-%m-%dT%H:%M:%SZ)
+
+
+  # ════════ R — REFUND-GATE: a holder who LOSES KYC mid-escrow can't recover, until re-verified ════════
+  # Documents the security review's (intentional, compliance-consistent) finding: the recipient
+  # gate fires on RETURN-to-owner too. payer escrows a gated obligation WHILE verified; the issuer
+  # then REVOKES payer's KYC; cancel_swap's refund (swap → payer) now REVERTS at the recipient gate
+  # — payer's OWN asset is stranded. Re-issuing + re-accepting the claim restores payer and the
+  # SAME cancel succeeds. Proves (a) the gate-on-return behavior, and (b) that it is fully
+  # recoverable — no permanent loss. Exercises the per-class cancel return path (resolve via
+  # swapObligationAddress) under both unverified (revert) and verified (success) recipient states.
+  - name: r_mint
+    type: create_obligation
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      idempotency_key: gated-r-mint-$(date +%s)
+      counterpart: payer@yieldfabric.com
+      obligation_address: "$d_deploy_gated.obligation_address"
+      contract_id: gated_asset_refund
+      expiry: $(date -u -v+90d +%Y-%m-%dT%H:%M:%SZ)
+      data: { name: "Gated note (refund-gate)", description: "escrowed, then payer's KYC is revoked" }
+  - name: r_create
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "970003"
+      idempotency_key: gated-r-create-$(date +%s)
+      deadline: $(date -u -v+40d +%Y-%m-%dT%H:%M:%SZ)
+      initiator: { obligation_ids: [gated_asset_refund] }
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: gated-r-cash-1 }] }
+  # Revoke payer's KYC claim (issued in section G) → payer is now UNVERIFIED on the class IR.
+  - name: r_revoke_payer_kyc
+    type: revoke_claim
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { issued_claim_id: "$g_issue_kyc_payer.issued_claim_id" }
+  - name: r_is_verified_payer_revoked
+    type: is_verified
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      identity_registry_address: "$d_deploy_gated.identity_registry"
+      user_address: "$ctx_payer.account_address"
+  - name: r_assert_payer_unverified
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { actual: "$r_is_verified_payer_revoked.is_verified", equals: false }
+  # The refund to the now-unverified payer REVERTS at the recipient gate — asset stranded (recoverable).
+  - name: r_cancel_blocked
+    type: cancel_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "970003"
+      key: cancel_key
+      value: cancel_value
+      idempotency_key: gated-r-cancel-blocked-$(date +%s)
+      expect_failure: true
+  # RECOVERY — re-issue (update-in-place, SAME id) + re-accept restores payer's verification …
+  - name: r_reissue_payer_kyc
+    type: reissue_claim
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { issued_claim_id: "$g_issue_kyc_payer.issued_claim_id" }
+  - name: r_reaccept_payer
+    type: accept_claim
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { issued_claim_id: "$g_issue_kyc_payer.issued_claim_id" }
+  - name: r_is_verified_payer_restored
+    type: is_verified
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      identity_registry_address: "$d_deploy_gated.identity_registry"
+      user_address: "$ctx_payer.account_address"
+  - name: r_assert_payer_reverified
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { actual: "$r_is_verified_payer_restored.is_verified", equals: true }
+  # … and the SAME cancel now SUCCEEDS — the asset is returned, no permanent loss.
+  - name: r_cancel_ok
+    type: cancel_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters: { swap_id: "970003", key: cancel_key, value: cancel_value, idempotency_key: gated-r-cancel-ok-$(date +%s) }
+  # payer holds the obligation again — offering it in a fresh swap proves recovery.
+  - name: r_verify_payer_recovered
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "970099"
+      idempotency_key: gated-r-verify-$(date +%s)
+      initiator: { obligation_ids: [gated_asset_refund] }
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: gated-r-verify-1 }] }
+      deadline: $(date -u -v+30d +%Y-%m-%dT%H:%M:%SZ)
+
+
+  # ════════ S — SOUL-BOUND: a non-transferable gated class cannot be escrowed into a swap ════════
+  # A class deployed with transferable:false is soul-bound — mint/accept/cancel/expire still work
+  # (those are exempt from the transfer gate), but a real holder→holder transfer reverts. Because
+  # create_swap ESCROWS the obligation (a transfer into the swap contract), a soul-bound obligation
+  # can be minted + held but NOT swapped. Proves the per-class `transferable` flag is enforced on
+  # the swap escrow path (the static, deploy-time form of the owner-freeze finding).
+  - name: s_deploy_soulbound
+    type: deploy_class
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      name: "Soul-Bound Note"
+      symbol: SBN
+      open_minting: true
+      transferable: false
+      idempotency_key: soulbound-class-$(date +%s)
+  - name: s_assert_soulbound_addr
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { actual: "$s_deploy_soulbound.obligation_address", contains: "0x" }
+  # Gate the soul-bound class on the SAME KYC topic + issuer so payer (already KYC'd in G/V) is
+  # verified on it and the mint passes — isolating transferable:false as the SOLE reason the swap fails.
+  - name: s_set_gate
+    type: update_claim_requirements
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      identity_registry_address: "$s_deploy_soulbound.identity_registry"
+      add_claim_topics: [ "$g_issue_kyc_payer.topic" ]
+      add_trusted_issuers:
+        - address: "$ctx_issuer.account_address"
+          topics: [ "$g_issue_kyc_payer.topic" ]
+  - name: s_is_verified_payer
+    type: is_verified
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      identity_registry_address: "$s_deploy_soulbound.identity_registry"
+      user_address: "$ctx_payer.account_address"
+  - name: s_assert_payer_verified
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { actual: "$s_is_verified_payer.is_verified", equals: true }
+  # Mint succeeds (mint is exempt from the transferable gate); payer holds the soul-bound note.
+  - name: s_mint
+    type: create_obligation
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      idempotency_key: gated-s-mint-$(date +%s)
+      counterpart: payer@yieldfabric.com
+      obligation_address: "$s_deploy_soulbound.obligation_address"
+      contract_id: gated_asset_soulbound
+      expiry: $(date -u -v+90d +%Y-%m-%dT%H:%M:%SZ)
+      data: { name: "Soul-bound note", description: "mintable + holdable, but NOT swappable" }
+  # Escrow into a swap is a holder→holder transfer → soul-bound class reverts → create_swap FAILS.
+  - name: s_create_blocked
+    type: create_swap
+    user: { id: payer@yieldfabric.com, password: payer_password }
+    parameters:
+      swap_id: "970004"
+      idempotency_key: gated-s-create-$(date +%s)
+      deadline: $(date -u -v+40d +%Y-%m-%dT%H:%M:%SZ)
+      initiator: { obligation_ids: [gated_asset_soulbound] }
+      counterparty:
+        id: investor@yieldfabric.com
+        expected_payments: { denomination: aud-token-asset, amount: 1000000000000000000000, payments: [{ id: gated-s-cash-1 }] }
+      expect_failure: true

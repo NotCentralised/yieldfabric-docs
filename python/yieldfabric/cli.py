@@ -29,11 +29,19 @@ def _build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  yieldfabric setup ../scripts/setup.yaml
+  yieldfabric setup ../scripts/setup.yaml                 # full bootstrap
+  yieldfabric setup ../scripts/setup.yaml tokens assets   # only tokens then assets
+  yieldfabric setup ../scripts/setup.yaml validate        # offline structure check
+  yieldfabric setup ../scripts/setup.yaml status          # summary + service health
   yieldfabric execute ../scripts/commands.yaml
-  yieldfabric status ../scripts/commands.yaml
-  yieldfabric validate ../scripts/commands.yaml
+  yieldfabric status ../scripts/commands.yaml             # NOTE: status of a commands.yaml
+  yieldfabric validate ../scripts/commands.yaml           # NOTE: validates a commands.yaml
   yieldfabric version
+
+Setup phases (run in order; mirror setup_system.sh's commands):
+  all (default), users, groups, owners, tokens, assets, fiat, status, validate
+  To validate/inspect a setup.yaml use `setup <file> validate|status`
+  (the top-level status/validate subcommands operate on a commands.yaml).
 
 Environment Variables (also read from ./.env, or --env-file):
   API_KEY             Backend-service API key (yf_api_…) for non-interactive
@@ -58,6 +66,14 @@ Environment Variables (also read from ./.env, or --env-file):
         nargs="?",
         help="YAML file (setup: setup.yaml, execute/status/validate: commands.yaml); "
              "ignored for register-key and version",
+    )
+    parser.add_argument(
+        "phases",
+        nargs="*",
+        help="for `setup` only: one or more phases to run IN ORDER — "
+             "all, users, groups, owners, tokens, assets, fiat, status, validate "
+             "(default: all). e.g. `setup setup.yaml tokens assets`. "
+             "Mirrors setup_system.sh's commands. Ignored by other subcommands.",
     )
     parser.add_argument("--debug", action="store_true", help="enable debug logging")
     parser.add_argument("--pay-service-url", help="override payments service URL")
@@ -150,7 +166,31 @@ def main() -> int:
     if args.command == "register-key":
         return _cmd_register_key(args, config, logger)
 
-    # All remaining subcommands take a yaml_file.
+    # ---- setup -----------------------------------------------------------
+    # `setup [file] [phase ...]` mirrors `setup_system.sh [file] [command ...]`:
+    #   • the file defaults to ./setup.yaml (or $SETUP_FILE) when omitted;
+    #   • a leading phase name that isn't an existing path is treated as a
+    #     phase, so `setup tokens assets` works just like the shell;
+    #   • zero phases → full setup; multiple phases run in the given order.
+    if args.command == "setup":
+        file_arg = args.yaml_file
+        phases = list(args.phases or [])
+        if (
+            file_arg
+            and YieldFabricSetupRunner.is_known_phase(file_arg)
+            and not os.path.exists(file_arg)
+        ):
+            phases.insert(0, file_arg)
+            file_arg = None
+        if not file_arg:
+            file_arg = os.environ.get("SETUP_FILE") or "setup.yaml"
+        if not os.path.exists(file_arg):
+            logger.error(f"❌ setup file not found: {file_arg}")
+            return 1
+        with YieldFabricSetupRunner(config) as runner:
+            return 0 if runner.run_phases(file_arg, phases or ["all"]) else 1
+
+    # ---- execute / status / validate (operate on a commands.yaml) --------
     if not args.yaml_file:
         logger.error("❌ yaml_file argument is required")
         return 1
@@ -158,12 +198,6 @@ def main() -> int:
         logger.error(f"❌ YAML file not found: {args.yaml_file}")
         return 1
 
-    # ---- setup -----------------------------------------------------------
-    if args.command == "setup":
-        with YieldFabricSetupRunner(config) as runner:
-            return 0 if runner.run(args.yaml_file) else 1
-
-    # ---- execute / status / validate -------------------------------------
     with YieldFabricRunner(config) as runner:
         if args.command == "execute":
             return 0 if runner.execute_file(args.yaml_file) else 1
