@@ -314,6 +314,13 @@ commands:
     type: deposit
     user: { id: issuer@yieldfabric.com, password: issuer_password }
     parameters: { asset_id: aud-token-asset, amount: 1000000000000000000000000, idempotency_key: gated-repo-fund-iss-aud-$(date +%s) }
+  # issuer also pays a USDC leg: as the roll's NEW counterparty (scenario B) the
+  # complete_roll coverage payment is the OLD repo's 1050 USDC repurchase, fronted
+  # by the issuer to the old lender. Same pairing as swap_repo_suite's fund_issuer_usdc.
+  - name: f_fund_issuer_usdc
+    type: deposit
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { asset_id: usdc-asset, amount: 1000000000000000000000000, idempotency_key: gated-repo-fund-iss-usdc-$(date +%s) }
 
 
   # ════════ M — MINT THE GATED REPO COLLATERAL (seller = payer) ════════
