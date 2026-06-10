@@ -185,7 +185,11 @@ class YieldFabricSetupRunner:
             return False
 
         if phase == "users":
-            ok = self._setup_users(setup.get("users") or [])
+            # Provision under the admin JWT when one is available, so elevated
+            # roles are accepted. Falls back to None (public path → consumer
+            # role only) when no admin credential is configured.
+            admin_token = self._ensure_admin(setup)
+            ok = self._setup_users(setup.get("users") or [], admin_token)
             self._users_ensured = True
             return ok
 
@@ -224,17 +228,24 @@ class YieldFabricSetupRunner:
 
         all_ok = True
 
-        # 1. Users.
-        self.logger.subsection("👥 Users")
-        all_ok &= self._setup_users(setup.get("users") or [])
-        self._users_ensured = True
-
-        # Everything else needs an admin token. Use the API key if set,
-        # else the FIRST user in the YAML (conventionally a SuperAdmin).
+        # Acquire the admin token FIRST. The public POST /auth/users path no
+        # longer accepts elevated roles (SuperAdmin/Admin/…) from an
+        # unauthenticated caller, so provisioning the setup.yaml admins — and
+        # everything after (groups, tokens, assets, fiat) — needs an admin JWT.
         admin_token = self._ensure_admin(setup)
         if not admin_token:
-            self.logger.error("❌ Could not acquire an admin token; aborting")
+            self.logger.error(
+                "❌ Could not acquire an admin token; aborting. Provisioning "
+                "privileged users now requires admin auth — set ADMIN_EMAIL/"
+                "ADMIN_PASSWORD to the bootstrap admin (system.yaml "
+                "bootstrap_users + BOOTSTRAP_PASSWORD_*), or a valid API_KEY."
+            )
             return False
+
+        # 1. Users (created UNDER the admin JWT so elevated roles are allowed).
+        self.logger.subsection("👥 Users")
+        all_ok &= self._setup_users(setup.get("users") or [], admin_token)
+        self._users_ensured = True
 
         # 2. Groups (create + per-creator login + deploy + members).
         self.logger.subsection("🏢 Groups")
@@ -281,9 +292,11 @@ class YieldFabricSetupRunner:
 
     def _ensure_users(self, setup: Dict[str, Any]) -> None:
         """Idempotently create the declared users (once per runner),
-        populating `_user_ids` for downstream member resolution."""
+        populating `_user_ids` for downstream member resolution. Creates them
+        under the admin JWT so elevated roles are accepted."""
         if not self._users_ensured:
-            self._setup_users(setup.get("users") or [])
+            admin_token = self._ensure_admin(setup)
+            self._setup_users(setup.get("users") or [], admin_token)
             self._users_ensured = True
 
     def _ensure_admin(self, setup: Dict[str, Any]) -> Optional[str]:
@@ -307,7 +320,11 @@ class YieldFabricSetupRunner:
             self.logger.error(f"❌ YAML parse error: {e}")
             return None
 
-    def _setup_users(self, users: List[Dict[str, Any]]) -> bool:
+    def _setup_users(
+        self,
+        users: List[Dict[str, Any]],
+        admin_token: Optional[str] = None,
+    ) -> bool:
         if not users:
             self.logger.info("  (no users declared)")
             return True
@@ -322,7 +339,12 @@ class YieldFabricSetupRunner:
                 ok = False
                 continue
 
-            result = self.auth_service.create_user(email, password, role)
+            # Pass the admin JWT so elevated roles (SuperAdmin/Admin/…) are
+            # accepted. The public path only allows the consumer default; an
+            # unauthenticated create of a privileged role now returns 403.
+            result = self.auth_service.create_user(
+                email, password, role, admin_token=admin_token
+            )
             status = result.get("status")
             user_id = None
             if status == "created":
@@ -361,15 +383,22 @@ class YieldFabricSetupRunner:
 
     def _acquire_admin_token(self, users: List[Dict[str, Any]]) -> Optional[str]:
         """
-        Acquire the admin JWT used for tokens/assets/fiat and group-member
-        operations. Preference order:
+        Acquire the admin JWT used to PROVISION users (now required, since the
+        public path rejects elevated roles) and for tokens/assets/fiat and
+        group-member operations. Preference order:
 
           1. `config.api_key` (API_KEY env) — the canonical backend-service
              auth path. Exchanged for a short-lived JWT via POST /auth/api-key.
              The key owner must have enough permissions (SuperAdmin/Admin)
              for the create-* mutations downstream.
-          2. The first user in setup.yaml (conventionally a SuperAdmin),
-             logged in with email/password.
+          2. `config.admin_email` / `config.admin_password` (ADMIN_EMAIL /
+             ADMIN_PASSWORD env) — the BOOTSTRAP admin. This is the robust
+             path: it exists on a fresh DB (seeded at auth boot) before any
+             setup.yaml user does, and survives DB resets, so it can mint the
+             setup.yaml SuperAdmins on the very first run.
+          3. The first user in setup.yaml (conventionally a SuperAdmin),
+             logged in with email/password — only works once that user
+             already exists.
         """
         if self.config.api_key:
             self.logger.info("  🔑 Using API key for admin token")
@@ -377,7 +406,20 @@ class YieldFabricSetupRunner:
             if token:
                 return token
             self.logger.warning(
-                "  ⚠️  API-key auth failed; falling back to first-user login"
+                "  ⚠️  API-key auth failed; trying ADMIN_EMAIL/ADMIN_PASSWORD"
+            )
+
+        if self.config.admin_email and self.config.admin_password:
+            self.logger.info(
+                f"  🔑 Acquiring admin token as {self.config.admin_email} (bootstrap admin)"
+            )
+            token = self.auth_service.login(
+                self.config.admin_email, self.config.admin_password
+            )
+            if token:
+                return token
+            self.logger.warning(
+                "  ⚠️  Admin-credential login failed; falling back to first-user login"
             )
 
         if not users:

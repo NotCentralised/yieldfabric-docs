@@ -31,6 +31,22 @@ class YieldFabricConfig:
         default_factory=lambda: os.getenv('API_KEY', '')
     )
 
+    # Explicit admin credentials for provisioning. Since the auth service now
+    # rejects elevated roles (SuperAdmin/Admin/…) from unauthenticated
+    # callers, creating the privileged users a setup.yaml declares requires an
+    # admin JWT. The cleanest stable source is the BOOTSTRAP admin (seeded at
+    # auth boot from system.yaml::bootstrap_users + BOOTSTRAP_PASSWORD_*),
+    # which survives DB resets and exists on a fresh DB before any setup.yaml
+    # user does. Set ADMIN_EMAIL / ADMIN_PASSWORD to those bootstrap creds.
+    # Empty means "not configured" — the runner falls back to API key, then
+    # to logging in the first setup.yaml user.
+    admin_email: str = field(
+        default_factory=lambda: os.getenv('ADMIN_EMAIL', '')
+    )
+    admin_password: str = field(
+        default_factory=lambda: os.getenv('ADMIN_PASSWORD', '')
+    )
+
     # Execution settings — default is 0 (no blind sleep between
     # commands). Callers that need sequencing should set `wait: true`
     # on the individual command so the framework polls real state
