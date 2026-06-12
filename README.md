@@ -49,6 +49,7 @@ YieldFabric provides **intelligent accounts** that enable sophisticated financia
 - **[07-WORKFLOWS.md](./07-WORKFLOWS.md)** - End-to-end examples: annuity securitization, distributions, repo rolling 🎯
 - **[08-REFERENCE.md](./08-REFERENCE.md)** - Error codes, assets, quick reference 📚
 - **[09-CRYPTOGRAPHIC-OPERATIONS.md](./09-CRYPTOGRAPHIC-OPERATIONS.md)** - Key management, encryption, signatures 🔑
+- **[13-LLM-ACCESS.md](./13-LLM-ACCESS.md)** - LLM access through YieldFabric: OpenAI-compatible /v1, tool calling, RAG grounding, multi-agent reasoning 🧠
 
 ### Complete Reference
 - **[SIMPLE.md](./SIMPLE.md)** - All API examples in one comprehensive file

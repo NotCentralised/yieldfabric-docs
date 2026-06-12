@@ -64,6 +64,28 @@
 #    O1        execute an oracle-gated policy whose doc was NOT committed → fail (no document, at execute)
 #    O2        register an oracle req whose doc was NOT committed        → fail (no document, fail-fast at register)
 #
+#  RETIRE / ON-CHAIN REVOCATION (removeDataPolicy → DataPolicyLib.removePolicy;
+#  the settle hook flips the projection row to revoked + deletes the approval
+#  artifact; a revoked policy can never be approved or executed again — the
+#  only path forward is a successor registration, and the freed id is reusable):
+#    R-happy   register → approve → execute (proves LIVE) → owner retires      → passes
+#    R-read    default dataPolicies read EXCLUDES the retired policy;
+#              includeRevoked read returns it flagged revoked=true             → asserts
+#    R1        approve AFTER retire                                            → fail ("revoked on-chain … novation")
+#    R2        execute AFTER retire                                            → fail ("revoked on-chain … novation")
+#    R3        retire while NOT acting as the group                            → fail (group-accounts-only)
+#    R4        the restricted MEMBER (non-owner) tries to retire               → fail (member can execute,
+#              never administer: the narrowed PolicyExecution delegation can't sign with group keys, and
+#              the on-chain backstop is owners-only — OnlyOwnersCanRemovePolicies)
+#    R5        retire a policy id that was never registered                    → fail (PolicyDoesNotExist, on-chain)
+#    R6        re-register the SAME id (chain freed it; projection row revives
+#              active), approve afresh (old artifact was deleted), execute     → passes (full id-reuse loop)
+#
+#  ⚠️  R-suite REQUIRES the post-removePolicy ConfidentialAccountImplementation —
+#  group accounts are EIP-1167 clones, so on a stack whose implementation predates
+#  removePolicy the retire reverts (no such function) and the R commands fail.
+#  Redeploy the chain stack (fresh implementation) before running.
+#
 #  vIdHash is now SERVER-DERIVED: registering an oracle requirement freezes its
 #  `constraintCommitment` (DataVerifier vIdHash). Callers OMIT it and pass the raw
 #  `oracle_query` instead — addDataPolicy reads the committed document and runs the
@@ -329,13 +351,15 @@ commands:
         amount: "600000000000000000000"
       idempotency_key: dp-9001-exec-over-bad-$(date +%s)
       expect_failure: true
-      # Over-bound CONFIDENTIAL send. The amount is private, so the bound is enforced by a ZK
-      # amount-range proof (DataPolicyLib._checkAmountRange), NOT the plaintext AmountAboveMax check
-      # (which fires only for PUBLIC deposit/withdraw). 600 ∉ [0,500] makes the range proof
-      # unsatisfiable, so its `who` public signal (input[2]) is garbage and fails the on-chain
-      # `who == address(this)` bind → WhoMismatch. (A backend pre-check could reject this with a
-      # clearer "amount exceeds bound" before proving — see note in the response.)
-      expect_error: "WhoMismatch"
+      # Over-bound CONFIDENTIAL send. The plaintext PRE-FLIGHT in
+      # `yieldfabric-vault/src/account/execute_policy.rs::build_witnesses` now rejects
+      # this BEFORE proof generation with the real reason ("policy amount bound not
+      # met: this send of … exceeds the per-transfer maximum of …"). The previous
+      # surface was the on-chain proof-binding backstop (600 ∉ [0,500] → the range
+      # proof's `who` signal is garbage → WhoMismatch); that ZK bind still exists as
+      # the trust boundary — the pre-flight just refuses to attempt an impossible
+      # proof and says why.
+      expect_error: "amount bound not met"
 
   # ─── E — execute an op the policy is NOT bound to (Withdraw vs the bound Send) ───
   - name: e_execute_wrong_op_fails
@@ -657,3 +681,248 @@ commands:
       idempotency_key: dp-9022-add-bad-$(date +%s)
       expect_failure: true
       expect_error: "no committed document"
+
+
+  # ════════════════════════ RETIRE / ON-CHAIN REVOCATION ════════════════════════
+  # removeDataPolicy → MQ → relay self-call → DataPolicyLib.removePolicy on G:
+  # deletes the on-chain policy struct (+ data reqs, allowed calls, amount bounds),
+  # frees the id for re-registration. On settle the backend flips the projection
+  # row to revoked (is_active=FALSE — kept, NOT dropped, so UIs show it AS revoked)
+  # and deletes the reusable approval artifact. After that, approve and execute
+  # both fail with the explicit "revoked on-chain … register a successor policy
+  # (novation)" error — never the misleading "not found (register it first)".
+
+  # ─── R-happy: full lifecycle — register …30, approve, execute once (proves the
+  #     policy is LIVE so the post-retire failures below are meaningful), retire. ───
+  - name: r_add_policy
+    type: add_data_policy
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters:
+      account: $owner_ctx.default_wallet_id
+      wallet_id: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_grp_nonce)30"
+      expiry: "$(date -v+365d +%s)"
+      max_use: "5"
+      min_signatories: 1
+      required_signers: [ $owner_self_ctx.default_wallet_id ]
+      executor_accounts: [ $member_ctx.default_wallet_id ]   # collateral = policy holder / executor (its account I is msg.sender at G via relay→I→G)
+      allowed_operations: [ send ]
+      amount_bounds:
+        - { token: aud-token-asset, lo: "0", hi: "500000000000000000000" }
+      requirements:
+        - { source: 0, denomination: aud-token-asset, lo: "0", hi: "1000000000000000000000000000" }
+      idempotency_key: dp-9030-add-$(date +%s)
+
+  - name: r_approve
+    type: approve_data_policy
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_grp_nonce)30"
+
+  - name: r_execute_ok                    # the policy WORKS before retirement
+    type: execute_under_policy
+    user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
+    parameters:
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_grp_nonce)30"
+      operation_type: Send
+      operation_data:
+        token_address: aud-token-asset
+        destination_id: collateral@yieldfabric.com
+        amount: "100000000000000000000"
+      idempotency_key: dp-9030-exec-$(date +%s)
+
+  # ─── R3 — retire while NOT acting as the group (run BEFORE the real retire so
+  #     the policy still exists; same group-accounts-only guard as registration). ───
+  - name: r3_retire_as_individual_fails
+    type: remove_data_policy
+    user: { id: issuer@yieldfabric.com, password: issuer_password }   # NOTE: no `group:` → acts as self
+    parameters:
+      account: $owner_ctx.default_wallet_id
+      wallet_id: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_grp_nonce)30"
+      expect_failure: true
+      expect_error: "GROUP accounts"
+
+  # ─── R4 — the restricted MEMBER tries to retire the policy it executes under.
+  #     A policymember can EXECUTE, never ADMINISTER: its acting-as-group delegation
+  #     is force-narrowed to [PolicyExecution, CryptoOperations], which auth's
+  #     sign_for_vault refuses to let sign with GROUP keys (the retire meta-tx runs
+  #     ON G, unlike executeUnderPolicy which runs on the member's own account I);
+  #     even reaching the chain, DataPolicyLib.removePolicy is owners-only
+  #     (OnlyOwnersCanRemovePolicies). No expect_error: which layer rejects first
+  #     is an implementation detail — the invariant is that it MUST fail. ───
+  - name: r4_retire_by_member_fails
+    type: remove_data_policy
+    user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
+    parameters:
+      account: $owner_ctx.default_wallet_id
+      wallet_id: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_grp_nonce)30"
+      expect_failure: true
+
+  # ─── ★ THE RETIRE: the owner (acting as the group) revokes …30 on-chain. The
+  #     command waits for the MQ message to execute (the on-chain removePolicy). ───
+  - name: r_retire
+    type: remove_data_policy
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters:
+      account: $owner_ctx.default_wallet_id
+      wallet_id: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_grp_nonce)30"
+
+  # The projection flip + approval-artifact delete run in the settle hook (graph
+  # post-processing), ASYNC relative to the message's `executed` flag the retire
+  # waited on. Give it a beat before reading back.
+  - name: r_settle_lag
+    type: sleep
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters: { seconds: 5 }
+
+  # ─── R-read — the DEFAULT read excludes the retired policy… ───
+  - name: r_read_default
+    type: data_policies
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      wallet_id: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_grp_nonce)30"
+
+  - name: r_assert_excluded_by_default
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      actual: "$r_read_default.found"
+      equals: "False"
+
+  # …while the includeRevoked read returns it FLAGGED revoked (shown, not dropped).
+  - name: r_read_revoked
+    type: data_policies
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      wallet_id: $owner_ctx.default_wallet_id
+      include_revoked: true
+      policy_id: "$(cat /tmp/yf_grp_nonce)30"
+
+  - name: r_assert_revoked_visible
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      actual: "$r_read_revoked.found"
+      equals: "True"
+
+  - name: r_assert_revoked_flagged
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      actual: "$r_read_revoked.revoked"
+      equals: "True"
+
+  # ─── R1 — a revoked policy can NOT be approved again (the owner's own prior
+  #     approval was deleted at settle; re-approving must fail with the truthful
+  #     revoked error, not "not found (register it first)"). ───
+  - name: r1_approve_after_retire_fails
+    type: approve_data_policy
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_grp_nonce)30"
+      expect_failure: true
+      expect_error: "revoked on-chain"
+
+  # ─── R2 — a revoked policy can NOT be executed (fails at the same off-chain
+  #     gate; the deleted on-chain struct is the backstop). The member's group
+  #     delegation still mints — its OTHER live policies (9001/9020) carry the
+  #     membership — so the rejection is genuinely the revoked gate. ───
+  - name: r2_execute_after_retire_fails
+    type: execute_under_policy
+    user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
+    parameters:
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_grp_nonce)30"
+      operation_type: Send
+      operation_data:
+        token_address: aud-token-asset
+        destination_id: collateral@yieldfabric.com
+        amount: "100000000000000000000"
+      idempotency_key: dp-9030-exec-revoked-bad-$(date +%s)
+      expect_failure: true
+      expect_error: "revoked on-chain"
+
+  # ─── R5 — retire a policy id that was NEVER registered. No off-chain existence
+  #     pre-check exists (by design — the chain is authoritative), so this submits
+  #     and reverts on-chain: DataPolicyLib.removePolicy's empty-struct gate. ───
+  - name: r5_retire_nonexistent_fails
+    type: remove_data_policy
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters:
+      account: $owner_ctx.default_wallet_id
+      wallet_id: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_grp_nonce)31"   # never registered
+      expect_failure: true
+      expect_error: "PolicyDoesNotExist"
+
+  # ─── R6 — the freed id is REUSABLE: re-register …30 (the chain accepts it —
+  #     removePolicy freed the slot; the projection upsert revives the row as
+  #     ACTIVE), approve afresh (the old artifact is gone), and execute. The
+  #     execute succeeding proves the re-registration minted a FRESH on-chain
+  #     policy struct (counter reset, new approval) — the complete reuse loop. ───
+  - name: r6_reregister_same_id
+    type: add_data_policy
+    user: { id: issuer@yieldfabric.com, password: issuer_password, group: Issuer Group }
+    parameters:
+      account: $owner_ctx.default_wallet_id
+      wallet_id: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_grp_nonce)30"   # SAME id as the retired policy
+      expiry: "$(date -v+365d +%s)"
+      max_use: "5"
+      min_signatories: 1
+      required_signers: [ $owner_self_ctx.default_wallet_id ]
+      executor_accounts: [ $member_ctx.default_wallet_id ]
+      allowed_operations: [ send ]
+      amount_bounds:
+        - { token: aud-token-asset, lo: "0", hi: "500000000000000000000" }
+      requirements:
+        - { source: 0, denomination: aud-token-asset, lo: "0", hi: "1000000000000000000000000000" }
+      idempotency_key: dp-9030-readd-$(date +%s)
+
+  - name: r6_read_back_active
+    type: data_policies
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      wallet_id: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_grp_nonce)30"
+
+  - name: r6_assert_active_again
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      actual: "$r6_read_back_active.found"
+      equals: "True"
+
+  - name: r6_assert_not_revoked
+    type: assert
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      actual: "$r6_read_back_active.revoked"
+      equals: "False"
+
+  - name: r6_approve_again
+    type: approve_data_policy
+    user: { id: issuer@yieldfabric.com, password: issuer_password }
+    parameters:
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_grp_nonce)30"
+
+  - name: r6_execute_ok
+    type: execute_under_policy
+    user: { id: collateral@yieldfabric.com, password: collateral_password, group: Issuer Group }
+    parameters:
+      account: $owner_ctx.default_wallet_id
+      policy_id: "$(cat /tmp/yf_grp_nonce)30"
+      operation_type: Send
+      operation_data:
+        token_address: aud-token-asset
+        destination_id: collateral@yieldfabric.com
+        amount: "100000000000000000000"
+      idempotency_key: dp-9030-exec-reuse-$(date +%s)

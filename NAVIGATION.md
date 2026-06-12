@@ -90,6 +90,12 @@ Choose your path based on your needs and experience level.
 1. [09-CRYPTOGRAPHIC-OPERATIONS.md](./09-CRYPTOGRAPHIC-OPERATIONS.md) — Key pairs, encryption, signing
 2. [02-AUTHENTICATION.md](./02-AUTHENTICATION.md) — JWT structure and key providers
 
+### I Want LLM / AI Features in My App
+
+1. [13-LLM-ACCESS.md](./13-LLM-ACCESS.md) — The full guide: OpenAI-compatible `/v1` (point your SDK at YF), per-request model selection, tool calling, RAG grounding via the `yf` extension, multi-agent reasoning runs, citation-to-frame exploration, usage metering
+2. [02-AUTHENTICATION.md](./02-AUTHENTICATION.md) — API keys for backend services (`yf_api_…` works directly as the SDK `api_key`)
+3. [../docs/getting-started/agents-and-workspaces.md](../docs/getting-started/agents-and-workspaces.md) — The conceptual model: workspaces, threads, agents, knowledge graphs, frames
+
 ### I Want to Understand the Architecture
 
 1. [00-ARCHITECTURE.md](./00-ARCHITECTURE.md) — Services, libraries, smart contracts, data flows

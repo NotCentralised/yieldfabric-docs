@@ -107,6 +107,21 @@ class ProvisioningExecutor(BaseExecutor):
             token=token, description=path, default={"status": "error", "error": "no response"},
         )
 
+    @staticmethod
+    def _wallet_id_for_address(account_address, explicit=None):
+        """Canonical wallet id for an on-chain account: `WLT-<lowercased address>`.
+
+        The `/auth/groups/{id}/account-status` payload carries `account_address`
+        but NO `wallet_id`, so derive it — wallet rows and JWT `default_wallet_id`
+        claims use the `WLT-<lowercase 0x…>` form. An explicit value (if a future
+        endpoint provides one) wins.
+        """
+        if explicit:
+            return explicit
+        if account_address:
+            return f"WLT-{str(account_address).lower()}"
+        return None
+
     def _finish(self, command: Command, ok: bool, outputs: dict, body, op: str) -> CommandResponse:
         if ok:
             self.store_outputs(command.name, outputs)
@@ -161,10 +176,11 @@ class ProvisioningExecutor(BaseExecutor):
                 return self._finish(command, False, {}, {"error": str(e)}, "deploy_group_account")
 
         info = self.auth_service.group_account_info(token, group_id) or {}
+        account_address = info.get("account_address")
         outputs = {
             "group_id": group_id,
-            "account_address": info.get("account_address"),
-            "wallet_id": info.get("wallet_id"),
+            "account_address": account_address,
+            "wallet_id": self._wallet_id_for_address(account_address, info.get("wallet_id")),
             "created": status == "created",
         }
         return self._finish(command, True, outputs, res, "create_group")
@@ -194,9 +210,11 @@ class ProvisioningExecutor(BaseExecutor):
                 except TimeoutError:
                     pass
                 info = self.auth_service.group_account_info(token, group_id) or {}
+                acct = info.get("account_address")
                 return self._finish(
-                    command, bool(info.get("account_address")),
-                    {"account_address": info.get("account_address"), "wallet_id": info.get("wallet_id")},
+                    command, bool(acct),
+                    {"account_address": acct,
+                     "wallet_id": self._wallet_id_for_address(acct, info.get("wallet_id"))},
                     info, "deploy_account(group)",
                 )
 

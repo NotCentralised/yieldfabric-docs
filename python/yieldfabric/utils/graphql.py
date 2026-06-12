@@ -424,8 +424,12 @@ class DataPolicyGraphQL:
 
     Lifecycle: addDataPolicy (register, MQ) → approveDataPolicy (record one
     reusable M-of-N approval signature, off-chain) → executeUnderPolicy (run a
-    bound op under the approved policy, MQ). dataPolicies / dataPolicyApproval
-    are reads.
+    bound op under the approved policy, MQ) → removeDataPolicy (on-chain
+    revocation, MQ; the settle hook flips the projection row to revoked and
+    deletes the approval artifact — a revoked policy can never be approved or
+    executed again, and its freed id may be re-registered).
+    dataPolicies / dataPolicyApproval are reads; dataPolicies only returns
+    revoked rows (flagged `revoked: true`) when `includeRevoked` is passed.
     """
 
     ADD_DATA_POLICY = """
@@ -466,6 +470,19 @@ class DataPolicyGraphQL:
                 policyId
                 collected
                 approved
+            }
+        }
+    }
+    """
+
+    REMOVE_DATA_POLICY = """
+    mutation RemoveDataPolicy($input: RemoveDataPolicyInput!) {
+        pipelineGate {
+            removeDataPolicy(input: $input) {
+                success
+                message
+                messageId
+                policyId
             }
         }
     }
@@ -517,9 +534,9 @@ class DataPolicyGraphQL:
     """
 
     DATA_POLICIES = """
-    query GetDataPolicies($walletId: String!) {
+    query GetDataPolicies($walletId: String!, $includeRevoked: Boolean! = false) {
         pipelineGate {
-            dataPolicies(walletId: $walletId) {
+            dataPolicies(walletId: $walletId, includeRevoked: $includeRevoked) {
                 id
                 walletId
                 walletAddress
@@ -533,6 +550,7 @@ class DataPolicyGraphQL:
                 executors
                 allowedOperations
                 amountBounds { token lo hi }
+                revoked
             }
         }
     }

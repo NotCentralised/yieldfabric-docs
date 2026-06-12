@@ -197,6 +197,19 @@ class ComposedExecutor(BaseExecutor):
                     continue
                 self.output_store.store(command.name, f"[{idx}].{_snake(k)}", v)
 
+        # ALSO surface the FIRST op's scalars as plain `$name.field` outputs —
+        # the common case is a single-op composed command (e.g. a group-context
+        # create_obligation, which must ride the composed path: the standalone
+        # resolver makes the obligor's wallet the mint target, the composed one
+        # keeps the caller's account). Never clobbers the envelope outputs
+        # (message_id, composed_id, ...).
+        first = next((r for r in (data.get("operationResults") or []) if isinstance(r, dict)), None)
+        if first:
+            for k, v in first.items():
+                key = _snake(k)
+                if v is not None and key not in outputs:
+                    outputs[key] = v
+
         return self._finalize_success(
             command, token, outputs,
             success_message=f"composed_operation ok: {outputs['operation_count']} ops executed",

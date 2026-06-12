@@ -108,34 +108,45 @@ class OutputStore:
             except json.JSONDecodeError:
                 pass  # Not valid JSON, proceed with string substitution
         
-        # Handle single variable or string with embedded variables
+        # Handle single variable or string with embedded variables.
+        #
+        # Two reference forms:
+        #   plain    $command.field            → stored under "command_field"
+        #   indexed  $command[0].field         → stored under "command_[0].field"
+        # The indexed form is what composed_operation emits per sub-operation
+        # (`store(name, "[0].contract_id", v)`) — e.g. `$mint[0].contract_id`.
+        # It must be tried FIRST: the plain pattern stops at `[` and would
+        # otherwise leave indexed refs untouched.
+        pattern_indexed = r'\$([a-zA-Z_][a-zA-Z0-9_]*)(\[\d+\]\.[a-zA-Z_][a-zA-Z0-9_]*)'
         pattern = r'\$([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)'
-        
+
         def replace_var(match):
             command_name = match.group(1)
             field_name = match.group(2)
-            var_ref = f"${command_name}.{field_name}"
-            
+            var_ref = f"${command_name}{field_name if field_name.startswith('[') else '.' + field_name}"
+
             stored_value = self.get(command_name, field_name)
             if stored_value is not None:
                 self.logger.substitution(var_ref, str(stored_value))
                 return str(stored_value)
             else:
                 self.logger.warning(f"    ⚠️  Variable '{var_ref}' not found in stored outputs")
-                return var_ref  # Return original if not found
-        
-        # Check if entire value is a single variable reference
-        full_match = re.fullmatch(pattern, value)
-        if full_match:
-            command_name = full_match.group(1)
-            field_name = full_match.group(2)
-            stored_value = self.get(command_name, field_name)
-            if stored_value is not None:
-                self.logger.substitution(value, str(stored_value))
-                return stored_value  # Return raw value (not stringified)
-        
-        # Replace all variable references in string
-        result = re.sub(pattern, replace_var, value)
+                return match.group(0)  # Return original if not found
+
+        # Check if entire value is a single variable reference (either form)
+        for p in (pattern_indexed, pattern):
+            full_match = re.fullmatch(p, value)
+            if full_match:
+                command_name = full_match.group(1)
+                field_name = full_match.group(2)
+                stored_value = self.get(command_name, field_name)
+                if stored_value is not None:
+                    self.logger.substitution(value, str(stored_value))
+                    return stored_value  # Return raw value (not stringified)
+
+        # Replace all variable references in string (indexed first — see above)
+        result = re.sub(pattern_indexed, replace_var, value)
+        result = re.sub(pattern, replace_var, result)
         if result != value:
             self.logger.substitution(value, result)
         return result

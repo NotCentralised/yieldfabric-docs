@@ -21,7 +21,15 @@ Command types:
     approve_data_policy   → pipelineGate.approveDataPolicy (record one reusable
                             approval signature, obtained from the auth REST sign API)
     execute_under_policy  → pipelineGate.executeUnderPolicy (MQ; run a bound op)
-    data_policies         → pipelineGate.dataPolicies      (read, for asserts)
+    remove_data_policy    → pipelineGate.removeDataPolicy  (MQ; on-chain revocation —
+                            deletes the policy struct on G; the settle hook flips the
+                            projection row to revoked + deletes the approval artifact.
+                            Irreversible for that registration; the freed id may be
+                            re-registered)
+    data_policies         → pipelineGate.dataPolicies      (read, for asserts;
+                            `include_revoked: true` also returns revoked rows, and an
+                            optional `policy_id` surfaces `found` / `revoked` outputs
+                            for that one policy)
     data_policy_approval  → pipelineGate.dataPolicyApproval (read, for asserts)
 
 Signing note: `approve_data_policy` never touches a private key. It fetches the
@@ -63,6 +71,7 @@ class PolicyExecutor(BaseExecutor):
             "add_data_policy": self._execute_add_data_policy,
             "approve_data_policy": self._execute_approve_data_policy,
             "execute_under_policy": self._execute_execute_under_policy,
+            "remove_data_policy": self._execute_remove_data_policy,
             "commit_oracle_document": self._execute_commit_oracle_document,
             "sign_oracle_document": self._execute_sign_oracle_document,
             "data_policies": self._execute_data_policies,
@@ -408,6 +417,71 @@ class PolicyExecutor(BaseExecutor):
         )
 
     # ------------------------------------------------------------------
+    # remove_data_policy — on-chain revocation (MQ). Deletes the policy
+    # struct on G (DataPolicyLib.removePolicy via the relay self-call);
+    # on settle the backend flips the projection row to revoked and
+    # deletes the reusable approval artifact. A revoked policy can never
+    # be approved or executed again — the freed id may be re-registered.
+    # ------------------------------------------------------------------
+
+    def _execute_remove_data_policy(self, command: Command) -> CommandResponse:
+        self.log_command_start(command)
+        # Retiring requires acting AS the group (require_group_policy_account) —
+        # the same guard as add/execute. Without `user.group` this falls back to a
+        # plain self token, which the resolver rejects (group-accounts-only).
+        token, err = self._acquire_token_or_error(command, use_delegation=True)
+        if err:
+            return err
+
+        p = command.parameters
+        account = p.get("account") or self._claim(token, "group_account_address")
+        wallet_id = p.get("wallet_id") or self._claim(token, "default_wallet_id")
+        policy_id = p.get("policy_id")
+        if not account:
+            return self._fail(
+                command,
+                "remove_data_policy requires `account` (the group account) — "
+                "none provided and the JWT carries no group_account_address; submit while "
+                "acting as the group (set user.group).",
+            )
+        if not policy_id:
+            return self._fail(command, "remove_data_policy requires `policy_id`")
+
+        gql_input: Dict[str, Any] = {
+            "account": account,
+            "policyId": str(policy_id),
+        }
+        if wallet_id:
+            gql_input["walletId"] = wallet_id
+
+        self.log_parameters({
+            "account": account,
+            "wallet_id": wallet_id,
+            "policy_id": policy_id,
+        })
+
+        response = self._graphql(DataPolicyGraphQL.REMOVE_DATA_POLICY, {"input": gql_input}, token)
+        if not response.success:
+            return self._finalize_graphql_error(command, response, operation_name="RemoveDataPolicy")
+        data = response.get_data("pipelineGate.removeDataPolicy", {}) or {}
+        if not data.get("success"):
+            return self._finalize_business_error(
+                command, data.get("message", "removeDataPolicy not successful"),
+                operation_name="RemoveDataPolicy",
+            )
+
+        outputs = {
+            "policy_id": data.get("policyId") or str(policy_id),
+            "account": account,
+            "message": data.get("message"),
+            "message_id": data.get("messageId"),
+        }
+        return self._finalize_success(
+            command, token, outputs,
+            success_message=f"Data policy {outputs['policy_id']} removal submitted",
+        )
+
+    # ------------------------------------------------------------------
     # commit_oracle_document — publish a confidential document to the oracle
     # (MQ). The committing account becomes the `obligor` an oracle data
     # requirement names; `getCommitment(obligor, key)` reads it on-chain.
@@ -558,20 +632,54 @@ class PolicyExecutor(BaseExecutor):
     # ------------------------------------------------------------------
 
     def _execute_data_policies(self, command: Command) -> CommandResponse:
+        """
+        List a wallet's registered data policies. Optional parameters:
+
+            include_revoked: true  → also return revoked rows (flagged `revoked`)
+            policy_id: <id>        → surface assert-friendly outputs for ONE policy:
+                                       <cmd>.found    "True"/"False" — id in the result set
+                                       <cmd>.revoked  that row's revoked flag (when found)
+        """
         self.log_command_start(command)
         token, err = self._acquire_token_or_error(command, use_delegation=bool(command.user.group))
         if err:
             return err
-        wallet_id = command.parameters.get("wallet_id") or self._claim(token, "default_wallet_id")
+        p = command.parameters
+        wallet_id = p.get("wallet_id") or self._claim(token, "default_wallet_id")
         if not wallet_id:
             return self._fail(command, "data_policies requires `wallet_id` (or a group delegation token)")
-        response = self._graphql(DataPolicyGraphQL.DATA_POLICIES, {"walletId": wallet_id}, token)
+        include_revoked = bool(p.get("include_revoked"))
+        response = self._graphql(
+            DataPolicyGraphQL.DATA_POLICIES,
+            {"walletId": wallet_id, "includeRevoked": include_revoked},
+            token,
+        )
         if not response.success:
             return self._finalize_graphql_error(command, response, operation_name="DataPolicies")
         policies = response.get_data("pipelineGate.dataPolicies", []) or []
-        outputs = {"wallet_id": wallet_id, "policies": policies, "policy_count": len(policies)}
+        outputs: Dict[str, Any] = {
+            "wallet_id": wallet_id,
+            "policies": policies,
+            "policy_count": len(policies),
+        }
+        lookup_id = p.get("policy_id")
+        if is_provided(lookup_id):
+            match = next(
+                (pol for pol in policies if str(pol.get("policyId")) == str(lookup_id)), None
+            )
+            outputs["found"] = match is not None
+            if match is not None:
+                outputs["revoked"] = match.get("revoked")
         self.store_outputs(command.name, outputs)
-        self.logger.success(f"    ✅ data_policies: {len(policies)} policy(ies)")
+        self.logger.success(
+            f"    ✅ data_policies: {len(policies)} policy(ies)"
+            + (f" (include_revoked={include_revoked})" if include_revoked else "")
+            + (
+                f" — policy {lookup_id}: found={outputs.get('found')} revoked={outputs.get('revoked')}"
+                if is_provided(lookup_id)
+                else ""
+            )
+        )
         self.log_command_success(command)
         return CommandResponse.success_response(command.name, command.type, outputs)
 
